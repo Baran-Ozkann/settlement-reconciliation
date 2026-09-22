@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.0
+Version: 1.1 — aligned with the published `ledger-payment-core` README (stack, money, conventions)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -60,6 +60,7 @@ This is a **three-way reconciliation**:
 | Grace period | Time an item may stay unmatched before it becomes a break (settlement delay). |
 | Run | One execution of the matching engine for a source and a value-date window. |
 | Value date | The date funds are considered moved. Used for date windows. |
+| Internal vs external reconciliation | The ledger's own `ReconciliationJob` checks *internal* consistency (its I2, I3). This service checks *external* consistency against PSP and bank data. The README must keep the two apart. |
 
 ---
 
@@ -166,10 +167,20 @@ flowchart LR
 Reconciliation owns its own database. It never reads the ledger's database and never
 calls the ledger's API. The only coupling is the event contract in `contracts/`.
 
+### 5.1.1 Stack and ports (aligned with the ledger)
+
+- Java 21, **Spring Boot 4** (same version as the ledger), Maven wrapper, `JdbcClient` with explicit SQL.
+  **No JPA** (the ledger's `ci/check-rules.sh` forbids it; this repo adopts the same rule).
+- Base package `com.baran.recon`.
+- The ledger's local stack already uses 8080, 8081, 5433, 3000, 9090 and 3200. This service must not
+  collide: API `127.0.0.1:8090`, management `127.0.0.1:8091`, PostgreSQL `127.0.0.1:5434`.
+  Kafka: Phase 0 determines whether to join the ledger's broker (for a live end-to-end demo) or run a
+  separate broker for local development; tests always use Testcontainers.
+
 ### 5.2 Internal structure (hexagonal)
 
 ```
-<base-package>.recon
+com.baran.recon
 ├── domain            pure Java: Money, items, matching rules, break state machine, invariants
 ├── application       use cases + ports (interfaces): IngestStatement, RunMatching, TransitionBreak …
 ├── adapters
@@ -188,7 +199,6 @@ ArchUnit rules (Phase 1):
 - `adapters` depend on `application` and `domain`, never on each other.
 - Controllers never access repositories directly.
 
-`<base-package>` follows the ledger's convention (confirmed in Phase 0).
 
 ### 5.3 Processing flows
 
@@ -220,20 +230,31 @@ ArchUnit rules (Phase 1):
 
 ## 6. Money and numbers
 
-- Amounts are exact decimals. Domain type `Money(BigDecimal amount, CurrencyCode currency)`.
-- Scale equals the currency's ISO 4217 minor units (TRY/EUR/USD = 2, JPY = 0). Any input with a
-  larger scale is **invalid**, never rounded.
-- Arithmetic between different currencies throws.
-- Database type: `NUMERIC(19,4)` plus a `CHAR(3)` currency column, with a `CHECK` that the currency
-  is in the supported set. **If the ledger uses minor units as `BIGINT`, Phase 0 records this and the
-  projection converts at the boundary; the domain type stays `Money`.**
-- Sign convention (from the perspective of our settlement account):
-  - Ledger: an entry increasing the mapped clearing account balance is positive. Exact mapping from
-    the ledger's debit/credit representation is determined in Phase 0 and documented in
-    `docs/ledger-integration-notes.md`.
+The ledger stores money as `BIGINT` minor units (kuruş), chosen over `NUMERIC` and `BigDecimal`
+(ledger ADR-007). This service follows the same decision so the two repositories tell one story.
+
+- Domain type `Money(long minorUnits, CurrencyCode currency)`. Arithmetic uses `Math.addExact` /
+  `Math.subtractExact`; overflow throws, never wraps. Arithmetic between different currencies throws.
+- Database type: `BIGINT` plus a `CHAR(3)` currency column with a `CHECK` on the supported set.
+- **Parsing file input:** CSV amounts are decimal strings (`12.50`). The parser converts them to minor
+  units exactly (`new BigDecimal(text).movePointRight(minorDigits).longValueExact()`); any input with more
+  decimal places than the currency's ISO 4217 minor units is **invalid** (`SCALE_EXCEEDS_CURRENCY`), never
+  rounded. `BigDecimal` is allowed only inside the file-parsing adapter for this conversion; it never
+  reaches `domain` or `application` (ArchUnit rule).
+- Supported currencies: **TRY only** by default, matching the ledger's single-currency scope. The set is
+  configurable so PSP/bank lines in another currency can be ingested and reported as `CURRENCY_MISMATCH`.
+- Sign convention (from the perspective of our settlement/clearing account):
+  - Ledger: the ledger uses a signed `amount` per entry (ledger ADR-001). An entry on the mapped clearing
+    account is taken as-is: positive increases that account. Phase 0 confirms this against the event payload.
   - PSP: `gross_amount` positive for payments, negative for refunds and chargebacks.
     `net_amount = gross_amount − fee_amount`. Fees are non-negative.
   - Bank: `amount` positive for credits to our account, negative for debits.
+- **Value date of a ledger entry:** the ledger records `created_at` (UTC instant), not a value date. The
+  projection derives `value_date = created_at` converted to `Europe/Istanbul`, then `toLocalDate()`. The zone
+  is configuration, snapshotted onto each run. Phase 0 confirms the event carries `created_at`.
+- **Matching reference:** in this synthetic world the PSP echoes the **ledger transaction id** (UUID) as
+  `transaction_reference`. Phase 0 confirms the event carries the transaction id and records the decision
+  in ADR-0003.
 
 ---
 
@@ -260,7 +281,7 @@ line_id,transaction_reference,batch_id,transaction_date,value_date,type,gross_am
 | gross_amount | decimal | PAYMENT > 0; REFUND/CHARGEBACK < 0 |
 | fee_amount | decimal | ≥ 0 |
 | net_amount | decimal | must equal gross − fee exactly |
-| currency | ISO 4217 | supported set: TRY, EUR, USD (configurable) |
+| currency | ISO 4217 | supported set: TRY by default (configurable) |
 
 ### 7.2 Bank statement CSV v1
 
@@ -381,8 +402,24 @@ Each invariant must be enforced by a mechanism **and** verified by at least one 
 | INV-5 | Determinism: shuffling inputs does not change results. | Stable ordering + no arbitrary tie-breaks; jqwik property test |
 | INV-6 | Audit integrity: break/match events are append-only and current status = replayed status. | Privileges + trigger + replay test |
 | INV-7 | One open break per item. | Partial unique index on `breaks(item_side, item_id) WHERE status <> 'RESOLVED'` |
-| INV-8 | Money exactness: no floating point anywhere in the money path; no silent rounding. | `Money` type, ArchUnit rule banning `double`/`float` in domain, validation |
+| INV-8 | Money exactness: integer minor units end to end; no floating point, no `BigDecimal` outside the parser, no silent rounding, overflow throws. | `Money` type, ArchUnit + `ci/check-rules.sh`, parser validation |
 | INV-9 | Ledger isolation: the service never writes to the ledger or its database. | No ledger DB credentials; no producer on ledger topics; ArchUnit/config test |
+
+---
+
+### 9.1 Break proof (adopted from the ledger)
+
+A green test proves nothing on its own. For every invariant and every database-level mechanism
+(constraint, partial unique index, trigger, grant, dedupe insert, advisory lock), the phase that
+introduces it must:
+
+1. break the mechanism on purpose in a throwaway change that is **never committed**,
+2. run the test that should catch it and record the failing output,
+3. restore the mechanism and record the passing output,
+4. add a row to `docs/break-proofs.md`: mechanism broken → what the test reported.
+
+A mechanism without a recorded break proof is not considered done. Tests must also never reuse
+containers across runs (`withReuse(false)`), for the reason recorded in the ledger README.
 
 ---
 
@@ -391,7 +428,7 @@ Each invariant must be enforced by a mechanism **and** verified by at least one 
 ```
 sources_state         (source_code PK, last_run_id, updated_at)            -- operational state only
 ledger_entries        (id UUID PK, event_id UNIQUE, ledger_entry_id, account_id, source_code,
-                       reference, amount NUMERIC, currency CHAR(3), value_date, occurred_at, received_at)
+                       transaction_id, amount BIGINT, currency CHAR(3), value_date, created_at, received_at)
 statement_files       (id UUID PK, source_code, statement_reference, sha256 CHAR(64) UNIQUE,
                        sanitized_filename, size_bytes, line_count, status, error_summary JSONB,
                        uploaded_by, received_at, UNIQUE(source_code, statement_reference))
@@ -404,7 +441,7 @@ bank_lines            (id UUID PK, file_id FK, source_code, line_id, booking_dat
 reconciliation_runs   (id UUID PK, source_code, value_date_from, value_date_to, status,
                        config_snapshot JSONB, stats JSONB, started_at, finished_at, triggered_by)
 matches               (id UUID PK, run_id FK, rule_id, rule_version, cardinality, status,
-                       amount_difference NUMERIC, low_confidence BOOL, created_at)
+                       amount_difference BIGINT, low_confidence BOOL, created_at)
 match_items           (match_id FK, side, item_id, active BOOL, PRIMARY KEY(match_id, side, item_id))
 match_events          (id BIGSERIAL PK, match_id FK, event_type, actor, reason, occurred_at)   -- append-only
 breaks                (id UUID PK, break_type, item_side, item_id, related_items JSONB, status,
@@ -488,7 +525,8 @@ identifiers masked, no file contents.
 
 ## 14. Phases
 
-Each phase ends with a report (see `CLAUDE.md` §5). A phase is done only when every exit criterion is met.
+Each phase ends with a report (see `CLAUDE.md` §5). A phase is done only when every exit criterion is met,
+including the break proofs (§9.1) for every mechanism the phase introduces.
 
 ### Phase 0 — Discovery and contract extraction (no application code)
 Goal: replace every assumption about the ledger with facts.
@@ -512,7 +550,11 @@ Goal: replace every assumption about the ledger with facts.
 - Build with wrapper, Spring Boot app, profiles (`local`, `test`), `.env.example`.
 - `docker-compose.yml`: PostgreSQL + Kafka, ports on `127.0.0.1`, named volumes, healthchecks.
 - Flyway baseline migration creating the schema and the two DB roles (migration role, app role).
-- ArchUnit rules from §5.2 and INV-8/INV-9 (ban `float`/`double` in `domain`).
+- ArchUnit rules from §5.2 and INV-8/INV-9 (ban `float`/`double` everywhere in `domain`/`application`,
+  `BigDecimal` outside the parsing adapter).
+- `ci/check-rules.sh` modelled on the ledger's: fails on floating point in the money path, `TODO`, a JPA
+  dependency, `withReuse(true)`, and AI tool references in the commit range. It must distinguish
+  "no match" from "could not run" (grep exit 1 vs ≥ 2), exactly as the ledger's fix does.
 - JaCoCo configured with thresholds from NFR-TEST-1 (enforced from Phase 2 onward).
 - GitHub Actions workflow: build + all tests (Testcontainers on `ubuntu-latest`).
 - Actuator restricted to `health`, `info`, `prometheus`. Placeholder README.
@@ -574,8 +616,10 @@ Goal: replace every assumption about the ledger with facts.
   threat model covers upload, listener, API, and DB.
 
 ### Phase 10 — Documentation and release readiness
-- README: problem statement, three-way diagram (Mermaid), how to run, API overview, invariants table with
-  links to tests, evaluation and benchmark tables, design decisions with ADR links, limitations and v2 ideas.
+- README in the same register as the ledger's: problem statement, three-way diagram (Mermaid), quick start as a
+  real session, invariants table (mechanism + where + test), break-proof table, evaluation and benchmark tables,
+  what a green suite did not catch (if anything was found), decision records, **known limits**, deliberately
+  out of scope. It links to `ledger-payment-core` and explains internal vs external reconciliation.
 - ADRs: `0003-three-way-reconciliation`, `0004-incremental-matching-without-arbitrary-tie-breaks`,
   `0005-append-only-audit-enforced-in-database`.
 - `docs/runbook.md`: how an operator handles each break type.
@@ -586,8 +630,15 @@ Goal: replace every assumption about the ledger with facts.
 
 ## 15. Open questions (resolved during Phase 0 or by the owner)
 
-1. Exact ledger event topic(s) and payload shape.
-2. Which ledger field is the external reference a PSP would echo.
-3. Ledger money representation and debit/credit sign convention.
-4. Ledger's Spring Boot version, build tool, persistence style, base package.
-5. License (match the ledger's license unless the owner decides otherwise).
+Already answered by the ledger README (Phase 0 verifies against source, with file:line):
+Spring Boot 4, Maven, `JdbcClient` without JPA, package `com.baran.ledger`, `BIGINT` minor units,
+signed entry amounts, single currency TRY, topic `account.activity` keyed by account public id,
+one event per ledger entry, consumer dedupe via a `consumed_events`-style table.
+
+Still open:
+1. Exact event payload fields: does it carry transaction id, entry id, account id, amount, currency, `created_at`?
+2. Which field is the stable event id for dedupe.
+3. How a PSP clearing account is represented with the ledger's account types (ASSET/LIABILITY/…),
+   and whether Phase 8 generates ledger data through the ledger API or publishes schema-valid synthetic events.
+4. Kafka: join the ledger's broker or run a separate one locally (§5.1.1).
+5. License (match the ledger's unless the owner decides otherwise).
