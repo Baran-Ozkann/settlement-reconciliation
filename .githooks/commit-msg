@@ -1,0 +1,29 @@
+#!/bin/sh
+# Rejects AI attribution and enforces the project's commit subject style:
+# imperative sentence, capital first letter, no type prefix, no trailing
+# period, at least three words, max 72 characters.
+msg_file="$1"
+
+if grep -qiE 'co-authored-by:.*(claude|anthropic)|generated with.*claude|claude code|noreply@anthropic\.com|🤖' "$msg_file"; then
+  echo "commit-msg: AI attribution is not allowed in commit messages." >&2
+  exit 1
+fi
+
+subject=$(grep -v '^#' "$msg_file" | head -n 1)
+
+case "$subject" in
+  Merge\ *|Revert\ *) exit 0 ;;
+esac
+
+fail() { echo "commit-msg: $1" >&2; echo "  subject: $subject" >&2; exit 1; }
+
+printf '%s' "$subject" | grep -qE '^[A-Z]' || fail "subject must start with a capital letter."
+printf '%s' "$subject" | grep -qE '^[a-z]+(\([^)]*\))?!?: ' && fail "no type prefix (feat:, fix:, ...); write a plain imperative sentence."
+printf '%s' "$subject" | grep -qE '^[A-Za-z]+(\([^)]*\))?!?: ' && fail "no type prefix; write a plain imperative sentence."
+printf '%s' "$subject" | grep -qE '\.$' && fail "no trailing period."
+printf '%s' "$subject" | grep -qiE '^wip\b' && fail "no WIP commits."
+[ "${#subject}" -gt 72 ] && fail "subject is ${#subject} characters; max is 72."
+words=$(printf '%s' "$subject" | wc -w)
+[ "$words" -lt 3 ] && fail "subject too vague; say concretely what changed."
+
+exit 0
