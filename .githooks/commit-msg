@@ -4,7 +4,7 @@
 # period, at least three words, max 72 characters.
 msg_file="$1"
 
-if grep -qiE 'co-authored-by:.*(claude|anthropic)|generated with.*claude|claude code|noreply@anthropic\.com|🤖' "$msg_file"; then
+if grep -qiE 'co-authored-by:.*(claude|anthropic)|generated with.*claude|claude[ -]code|claude-session:|claude\.(ai|com)/|noreply@anthropic\.com|🤖' "$msg_file"; then
   echo "commit-msg: AI attribution is not allowed in commit messages." >&2
   exit 1
 fi
