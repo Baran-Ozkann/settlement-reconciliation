@@ -9,10 +9,11 @@
 - [x] Repository hygiene: `.gitignore` (build output, IDE, `.env`, `.phase-reports/`, owner-local
   material), `.editorconfig`. `.gitattributes` already existed and was left alone
 - [x] Read `..\ledger-payment-core` read-only: no build, no test run, no git command in it
+- [x] `docs/ledger-integration-notes.md`: stack, money, accounts, transactions, the full event
+  contract (topic, key, `event-id` header, payload, delivery semantics), what the event does **not**
+  carry, entry identity, images and ports, six TDD corrections, four risks, five open questions
 
 ## In progress
-
-- [ ] `docs/ledger-integration-notes.md` — every finding with `file:line` into the ledger
 - [ ] `contracts/ledger-events.schema.json`, `contracts/samples/`, `contracts/README.md`
 - [ ] `docs/adr/0001-separate-service-and-repository.md`
 - [ ] `docs/adr/0002-json-schema-contract-instead-of-schema-registry.md`
