@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.1 — aligned with the published `ledger-payment-core` README (stack, money, conventions)
+Version: 1.2 — the ledger now publishes `entry_id` and `created_at` (ledger commit `e3119e9`, merged `93eadc2`)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -73,9 +73,29 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-LED-2** Store only entries on ledger accounts mapped to a configured source; ignore others.
 - **FR-LED-3** Processing is idempotent: the same event delivered N times produces one row.
 - **FR-LED-4** Offsets are committed only after the database transaction commits (at-least-once + dedupe).
-- **FR-LED-5** Events that fail schema validation go to a dead-letter topic with error headers
-  (`x-error-code`, `x-error-message`, `x-original-topic`, `x-original-offset`) and do not block the partition.
-- **FR-LED-6** Events are validated against `contracts/ledger-events.schema.json`.
+- **FR-LED-5** A record that cannot be projected goes to a dead-letter topic with error headers
+  (`x-error-code`, `x-error-message`, `x-original-topic`, `x-original-offset`) and does not block the
+  partition. The error code names the cause, because the three below need different fixes:
+  | `x-error-code` | Cause |
+  |---|---|
+  | `SCHEMA_INVALID` | Fails `contracts/ledger-events.schema.json` |
+  | `CREATED_AT_NOT_A_DATE` | Matches the schema pattern but is not a real instant (e.g. `2026-02-30T…`) |
+  | `MISSING_EVENT_ID` | No `event-id` header; without it the record cannot be deduplicated |
+  | `DUPLICATE_ENTRY_ID` | A different `event-id` carrying an `entry_id` already projected (FR-LED-8) |
+- **FR-LED-6** Events are validated against `contracts/ledger-events.schema.json`. `entry_id` and
+  `created_at` are optional and paired: both present or both absent; either one alone, or either
+  present as `null`, is `SCHEMA_INVALID`.
+- **FR-LED-7** A five-field event (written before the ledger change, still on the topic) is valid and
+  is projected with `ledger_entry_id`, `created_at` and `value_date` left null. It is **never**
+  back-dated from the Kafka record timestamp, never enters a run's scope (FR-MAT-9), and never opens
+  a break. Its count is reported separately (FR-MAT-10, FR-API-4).
+- **FR-LED-8** The same `entry_id` arriving under a different `event-id` means the ledger published one
+  entry twice, which it must not do. The partial unique index on `ledger_entry_id` rejects it; the
+  record is logged at `ERROR` and dead-lettered as `DUPLICATE_ENTRY_ID`. It is never silently dropped.
+- **FR-LED-9** `tx_type` is validated as a non-empty string, not a closed enum: the ledger's
+  `valid_tx_type` CHECK already admits types its producer does not emit yet. A value this service does
+  not map is stored verbatim, projected like any other entry, logged at `WARN` once per distinct value
+  and counted in a metric tagged with it. No matching rule reads `tx_type`.
 
 ### 4.2 File ingestion (FR-ING)
 - **FR-ING-1** Accept file upload via `POST /api/v1/statements` (multipart) with fields
@@ -108,8 +128,13 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-MAT-6** Every match records rule id, rule version, run id, cardinality, and any amount difference.
 - **FR-MAT-7** An operator can reverse a match (`POST /api/v1/matches/{id}/reversal`, reason required).
   The match becomes `REVERSED` (never deleted) and its items return to the unmatched pool.
-- **FR-MAT-8** A run's configuration (tolerances, windows, grace periods, rule versions) is snapshotted
-  onto the run record.
+- **FR-MAT-8** A run's configuration (tolerances, windows, grace periods, rule versions, the value-date
+  zone) is snapshotted onto the run record.
+- **FR-MAT-9** A ledger entry with no `value_date` falls in no date window and is excluded from run
+  scope. Missing data is not a reconciliation discrepancy, so it must never produce a break.
+- **FR-MAT-10** Each run's `stats` records `ledger_entries_without_value_date` for its source, counted
+  at run time. It lives in the run record rather than only in the report, so a past run stays
+  reproducible after the number has moved on.
 
 ### 4.4 Breaks (FR-BRK)
 - **FR-BRK-1** Break types (§8.3) are a closed enum.
@@ -127,7 +152,9 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-API-2** Errors use RFC 9457 Problem Details; no internal details leak.
 - **FR-API-3** List endpoints are paginated (cursor or page+size, max size 500) and filterable.
 - **FR-API-4** `GET /api/v1/reports/summary?source=&valueDate=` returns counts and sums of matched,
-  pending, and broken items per side, and open breaks by type and age bucket.
+  pending, and broken items per side, open breaks by type and age bucket, and the count of ledger
+  entries excluded for having no value date (FR-MAT-9), read from the run's stats rather than
+  recomputed.
 - **FR-API-5** `GET /api/v1/breaks/export?…` returns CSV with formula-injection neutralization.
 
 ### 4.6 Non-functional (NFR)
@@ -172,7 +199,7 @@ calls the ledger's API. The only coupling is the event contract in `contracts/`.
 - Java 21, **Spring Boot 4** (same version as the ledger), Maven wrapper, `JdbcClient` with explicit SQL.
   **No JPA** (the ledger's `ci/check-rules.sh` forbids it; this repo adopts the same rule).
 - Base package `com.baran.recon`.
-- The ledger's local stack already uses 8080, 8081, 5433, 3000, 9090 and 3200. This service must not
+- The ledger's local stack already uses 8080, 8081, 5433, 9092, 4318, 3000, 9090 and 3200. This service must not
   collide: API `127.0.0.1:8090`, management `127.0.0.1:8091`, PostgreSQL `127.0.0.1:5434`.
   Kafka: Phase 0 determines whether to join the ledger's broker (for a live end-to-end demo) or run a
   separate broker for local development; tests always use Testcontainers.
@@ -245,16 +272,28 @@ The ledger stores money as `BIGINT` minor units (kuruş), chosen over `NUMERIC` 
   configurable so PSP/bank lines in another currency can be ingested and reported as `CURRENCY_MISMATCH`.
 - Sign convention (from the perspective of our settlement/clearing account):
   - Ledger: the ledger uses a signed `amount` per entry (ledger ADR-001). An entry on the mapped clearing
-    account is taken as-is: positive increases that account. Phase 0 confirms this against the event payload.
+    account is taken as-is: positive increases that account. Confirmed in Phase 0 against the payload:
+    `amount` is signed minor units, negative on the account that was debited.
   - PSP: `gross_amount` positive for payments, negative for refunds and chargebacks.
     `net_amount = gross_amount − fee_amount`. Fees are non-negative.
   - Bank: `amount` positive for credits to our account, negative for debits.
-- **Value date of a ledger entry:** the ledger records `created_at` (UTC instant), not a value date. The
-  projection derives `value_date = created_at` converted to `Europe/Istanbul`, then `toLocalDate()`. The zone
-  is configuration, snapshotted onto each run. Phase 0 confirms the event carries `created_at`.
+- **Value date of a ledger entry:** the ledger has no value-date column, so the projection derives it:
+  `Instant.parse(created_at).atZone(zone).toLocalDate()`, with `zone` = `Europe/Istanbul` by
+  configuration, snapshotted onto each run (FR-MAT-8). `created_at` is the entry's own column, written
+  by the database at insert and read back through `RETURNING`; it is **not** the Kafka record
+  timestamp, which is when the relay published and lands on the wrong side of a date boundary whenever
+  the relay is behind. Both entries of one transfer carry the same value, because the column defaults
+  to `now()` — the transaction's start. Wire format: UTC, exactly six fractional digits, e.g.
+  `2026-09-24T00:00:00.000000Z`. Fixed width, so the strings sort as the instants do.
+- **Entries with no `created_at`:** events published before ledger commit `e3119e9` carry five fields.
+  Nothing was backfilled, and they are still on the topic, so a consumer group reading from the start
+  sees them first. They are stored with a null `value_date` and handled by FR-LED-7 and FR-MAT-9.
+- **Entry identity:** `entry_id` — `ledger_entries.id` in the ledger, an int64 — identifies one ledger
+  entry. A transfer writes two entries and therefore publishes two events, and a reversal's events name
+  the reversal's own entries, never the original's. The `event-id` header identifies a *delivery* and
+  stays the deduplication key (FR-LED-3); the two do different jobs and neither replaces the other.
 - **Matching reference:** in this synthetic world the PSP echoes the **ledger transaction id** (UUID) as
-  `transaction_reference`. Phase 0 confirms the event carries the transaction id and records the decision
-  in ADR-0003.
+  `transaction_reference`; the event carries it as `transaction_id`. Recorded in ADR-0003.
 
 ---
 
@@ -395,7 +434,7 @@ Each invariant must be enforced by a mechanism **and** verified by at least one 
 
 | ID | Invariant | Primary mechanism |
 |---|---|---|
-| INV-1 | Completeness: after a run, every in-scope item is exactly one of MATCHED, PENDING, or BROKEN. | Run finalization check + property test |
+| INV-1 | Completeness: after a run, every in-scope item is exactly one of MATCHED, PENDING, or BROKEN. An entry with no value date is out of scope and is none of the three. | Run finalization check + property test |
 | INV-2 | Exclusivity: an item belongs to at most one ACTIVE match. | Partial unique index on `match_items(side, item_id) WHERE active` |
 | INV-3 | Ingestion idempotency: re-ingesting a file or replaying events creates zero new rows. | Unique constraints on hash, `(source, line_id)`, `event_id` |
 | INV-4 | Conservation: per side and run scope, Σ matched + Σ pending + Σ broken = Σ in scope, per currency. | Summary query + test |
@@ -427,8 +466,16 @@ containers across runs (`withReuse(false)`), for the reason recorded in the ledg
 
 ```
 sources_state         (source_code PK, last_run_id, updated_at)            -- operational state only
-ledger_entries        (id UUID PK, event_id UNIQUE, ledger_entry_id, account_id, source_code,
-                       transaction_id, amount BIGINT, currency CHAR(3), value_date, created_at, received_at)
+ledger_entries        (id UUID PK,
+                       event_id BIGINT NOT NULL UNIQUE,        -- the event-id header: dedupe key (INV-3)
+                       ledger_entry_id BIGINT NULL,            -- entry_id; null on five-field history
+                                                               -- partial UNIQUE WHERE ledger_entry_id IS NOT NULL (FR-LED-8)
+                       transaction_id UUID NOT NULL, account_id UUID NOT NULL, source_code NOT NULL,
+                       amount BIGINT NOT NULL, currency CHAR(3) NOT NULL,
+                       tx_type TEXT NOT NULL,                  -- no CHECK, by exception: see FR-LED-9
+                       created_at TIMESTAMPTZ NULL,            -- null on five-field history
+                       value_date DATE NULL,                   -- derived from created_at; null together with it
+                       received_at TIMESTAMPTZ NOT NULL)
 statement_files       (id UUID PK, source_code, statement_reference, sha256 CHAR(64) UNIQUE,
                        sanitized_filename, size_bytes, line_count, status, error_summary JSONB,
                        uploaded_by, received_at, UNIQUE(source_code, statement_reference))
@@ -451,7 +498,10 @@ break_events          (id BIGSERIAL PK, break_id FK, from_status, to_status, res
 ```
 
 `side` / `item_side` ∈ `LEDGER`, `PSP`, `BANK`, `BATCH`.
-All status/type columns have `CHECK` constraints listing allowed values.
+All status/type columns have `CHECK` constraints listing allowed values, with one deliberate
+exception: `ledger_entries.tx_type` is open (FR-LED-9), because the producer may add a type and a
+CHECK would reject real money movements. `created_at` and `value_date` are null together or not at
+all, enforced by a `CHECK`.
 
 ---
 
@@ -506,7 +556,7 @@ identifiers masked, no file contents.
 |---|---|---|
 | Unit | JUnit 5, AssertJ | Money, parsers (per line), rules, state machine |
 | Property | jqwik | INV-1, INV-4, INV-5, Money arithmetic |
-| Contract | JSON Schema validator | Ledger event samples from the ledger repo validate against `contracts/` |
+| Contract | `networknt` JSON Schema validator | Every `contracts/samples/valid-*.json` validates against `contracts/ledger-events.schema.json` and every `invalid-*.json` fails, on the keyword it was written to exercise |
 | Integration | Testcontainers (PostgreSQL, Kafka) | Projection idempotency, ingestion atomicity, append-only enforcement, API security |
 | Architecture | ArchUnit | Layering, no float/double in domain, no ledger writes |
 | End-to-end | Testcontainers + generator | Full three-way flow on a labeled dataset |
@@ -550,6 +600,9 @@ Goal: replace every assumption about the ledger with facts.
 - Build with wrapper, Spring Boot app, profiles (`local`, `test`), `.env.example`.
 - `docker-compose.yml`: PostgreSQL + Kafka, ports on `127.0.0.1`, named volumes, healthchecks.
 - Flyway baseline migration creating the schema and the two DB roles (migration role, app role).
+- A contract test that loads `contracts/ledger-events.schema.json` with the `networknt` JSON Schema
+  validator (draft 2020-12) and asserts every `samples/valid-*.json` validates and every
+  `samples/invalid-*.json` fails — this is the verification Phase 0 could not run.
 - ArchUnit rules from §5.2 and INV-8/INV-9 (ban `float`/`double` everywhere in `domain`/`application`,
   `BigDecimal` outside the parsing adapter).
 - `ci/check-rules.sh` modelled on the ledger's: fails on floating point in the money path, `TODO`, a JPA
@@ -571,7 +624,9 @@ Goal: replace every assumption about the ledger with facts.
 
 ### Phase 3 — Ledger event consumer
 - Listener, schema validation, account-to-source filter, idempotent insert, manual ack after commit, DLQ.
-- Exit: FR-LED-1…6 covered; tests for duplicate delivery, replay from offset 0 (NFR-REL-3), invalid event
+- Exit: FR-LED-1…9 covered; a five-field event projects with nulls and is never back-dated; a duplicate
+  `entry_id` under a new `event-id` is rejected, logged and dead-lettered; an unmapped `tx_type` is
+  projected and counted, not dead-lettered; each `x-error-code` in FR-LED-5 has a test; tests for duplicate delivery, replay from offset 0 (NFR-REL-3), invalid event
   → DLQ with headers and partition not blocked, crash-before-commit redelivery; contract test using
   `contracts/samples`; throughput measured (NFR-PERF-3).
 
@@ -628,17 +683,17 @@ Goal: replace every assumption about the ledger with facts.
 
 ---
 
-## 15. Open questions (resolved during Phase 0 or by the owner)
+## 15. Open questions
 
-Already answered by the ledger README (Phase 0 verifies against source, with file:line):
+Settled, with evidence in `docs/ledger-integration-notes.md`:
 Spring Boot 4, Maven, `JdbcClient` without JPA, package `com.baran.ledger`, `BIGINT` minor units,
-signed entry amounts, single currency TRY, topic `account.activity` keyed by account public id,
-one event per ledger entry, consumer dedupe via a `consumed_events`-style table.
+signed entry amounts, single currency TRY, topic `ledger.account-activity` keyed by account public id,
+one event per ledger entry, `event-id` header as the dedupe key, and — since ledger commit `e3119e9` —
+`entry_id` and `created_at` on the payload (OQ-1, OQ-2).
 
 Still open:
-1. Exact event payload fields: does it carry transaction id, entry id, account id, amount, currency, `created_at`?
-2. Which field is the stable event id for dedupe.
-3. How a PSP clearing account is represented with the ledger's account types (ASSET/LIABILITY/…),
-   and whether Phase 8 generates ledger data through the ledger API or publishes schema-valid synthetic events.
-4. Kafka: join the ledger's broker or run a separate one locally (§5.1.1).
-5. License (match the ledger's unless the owner decides otherwise).
+1. **OQ-3** How a PSP clearing account is represented with the ledger's account types
+   (ASSET/LIABILITY/…). Needed by Phase 2's source mapping.
+2. **OQ-4** Whether Phase 8 generates ledger data through the ledger's API or publishes
+   schema-valid synthetic events onto the topic.
+3. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Phase 10.
