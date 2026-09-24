@@ -73,6 +73,14 @@
             <version>3.0.7</version>
             <scope>test</scope>
         </dependency>
+        <!-- Layering, money and isolation rules as tests (TDD 5.2, INV-8, INV-9). Not managed by
+             Boot, so pinned here. -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>1.5.0</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
