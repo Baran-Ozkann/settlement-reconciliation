@@ -2,7 +2,7 @@
 
 **Current phase:** 0 — Discovery and contract extraction (complete)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
-**Last updated:** 2026-09-24
+**Last updated:** 2026-09-25
 
 ## Done in this phase
 
@@ -32,21 +32,42 @@ must not assume an answer.
 
 ## Decisions taken after the phase report
 
-- **OQ-1 and OQ-2 resolved by changing the ledger, not this service.** The owner adds `created_at`
-  and `entry_id` to the account activity event, in `..\ledger-payment-core`, himself. Both are
-  therefore **pending that ledger change**, not open. `contracts/ledger-events.schema.json` is deliberately
-  left alone: it describes what the ledger publishes today and is updated when the change lands.
-  What Phase 2 and Phase 3 should expect: `value_date` derives from `created_at` exactly as TDD §6
-  writes it, and `entry_id` becomes the projection's entry identity instead of the `event-id` header
-  or the `(transaction_id, account_id)` pair. Still unknown until the ledger commit exists: the wire
-  names, the type of `entry_id` (`BIGSERIAL` in the ledger's table, so a JSON integer is the
-  expectation), and the format of `created_at`. Until then the `ledger_entries` projection migration
-  cannot be written — see `docs/ledger-integration-notes.md` §6 "Incoming ledger change"
+- **OQ-1 and OQ-2 resolved by the ledger change.** The owner added `entry_id` and `created_at` to
+  the account activity event in `..\ledger-payment-core`: commit `e3119e9`, merged to its `main` as
+  `93eadc2`. `entry_id` is a JSON integer (`ledger_entries.id`); `created_at` is the entry's column,
+  UTC, always six fractional digits. Events written before that commit carry only five fields and
+  are still on the topic. What this service does, recorded in `docs/ledger-integration-notes.md` §6
+  "Ledger change landed":
+  - `value_date` derives from `created_at` in `Europe/Istanbul`, as TDD §6 writes it
+  - `entry_id` is the projection's entry identity (partial unique index on `ledger_entry_id`)
+  - the `event-id` header stays the deduplication key
+  - the same `entry_id` under a different `event-id` is a ledger fault: rejected by that index,
+    logged at `ERROR`, dead-lettered
+  - five-field history is stored with no value date, never back-dated from the record timestamp,
+    outside every run's scope, never a break, and counted separately in the summary report
 - **OQ-6 resolved — no npm registry, no `npx`.** Contract verification is a Maven test added in
   Phase 1 that runs the samples through `contracts/ledger-events.schema.json` with the `networknt`
   JSON Schema validator, as part of `mvnw.cmd verify`. `contracts/README.md` no longer documents a
   command to run by hand. Phase 0's own verification was done with `ajv-cli` before this rule was
   settled, and that result is recorded rather than repeated
+
+## Contract update after the ledger change (2026-09-25)
+
+- [x] `contracts/ledger-events.schema.json`: seven fields, five required. `entry_id` and
+  `created_at` optional but paired (`dependentRequired`); absent is valid, `null` is not.
+  `tx_type` is an open non-empty string instead of an enum
+- [x] Samples: 7 valid (including a five-field one and an unmapped `FEE`), 15 invalid. Every file
+  parses as JSON and was reviewed by hand against its expected result. **No schema validator has
+  run over them yet**: that waits for Phase 1's `networknt` Maven test
+- [x] `docs/adr/0002-…`: dated amendment reversing the closed `tx_type` enum; original text kept
+- [x] `docs/ledger-integration-notes.md`: new-field evidence cited at ledger `93eadc2`, §5.5 on
+  unmapped `tx_type` values, OQ-1 and OQ-2 resolved
+- [x] Proposed TDD v1.2 text for §6 and §10 in
+  `.phase-reports/phase-0-addendum-ledger-contract-report.md`. The TDD is still v1.1 until the
+  owner applies it
+
+Phase 2's `ledger_entries` migration is no longer blocked on the ledger. It follows TDD §10 once the
+owner has applied the v1.2 text.
 
 ## Next phase
 

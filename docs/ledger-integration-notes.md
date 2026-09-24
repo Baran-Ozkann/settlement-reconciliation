@@ -9,6 +9,13 @@ working tree rather than a commit sha. Every path is relative to `../ledger-paym
 ledger's own README disagrees with its code, the code is taken as the fact and the disagreement is
 recorded in [TDD corrections](#tdd-corrections).
 
+**Revision 2026-09-24, after the ledger change.** The Phase 0 citations match ledger commit `b32a5bf`,
+the tip of its `main` at the time. The ledger has since added `entry_id` and `created_at` to the
+event in commit `e3119e9`, merged to its `main` as `93eadc2`. Evidence for the change is cited
+**at `93eadc2`** and marked that way; it was read with `git show` and `git log` only. Nothing in the
+ledger was built, run or written. Line numbers not marked `@93eadc2` are still `b32a5bf`'s, and some
+of them have moved in the newer tree.
+
 ---
 
 ## 1. Build, stack and conventions
@@ -121,7 +128,7 @@ context, never as required.
 ### 5.3 Payload
 
 The payload is the Jackson serialization of `AccountActivityEvent`
-(`domain/AccountActivityEvent.java:12-17`) under a snake-case naming strategy
+(`domain/AccountActivityEvent.java:12-17`; seven components @93eadc2 `:24-32`) under a snake-case naming strategy
 (`application.yml:27-28`). The wire names are confirmed by SQL that reads the stored payload:
 `payload->>'transaction_id'` and `payload->>'amount'`
 (`src/test/java/com/baran/ledger/outbox/OutboxWriteTest.java:75`, `:78`).
@@ -133,6 +140,15 @@ The payload is the Jackson serialization of `AccountActivityEvent`
 | `amount` | integer | Signed minor units. Negative on the account debited, positive on the account credited. Never zero. Bounded to +/- 10 000 000 000 | `domain/AccountActivityEvent.java:10`, `:15`; `V2__ledger_core.sql:43-44`; `OutboxWriteTest.java:48-50` |
 | `currency` | string, three letters | The currency of the account posted to; `TRY` in every ledger instance today | `domain/AccountActivityEvent.java:16`, `store/EntryRepository.java:32-42`, `domain/Money.java:13` |
 | `tx_type` | string | `TRANSFER`, `FUNDING` or `REVERSAL` today — the enum's `name()`, which the naming strategy does not touch. The database admits more (§4), so the contract treats it as an open string (§5.5) | `domain/AccountActivityEvent.java:17`, `domain/TxType.java:7-11` |
+| `entry_id` | integer, int64; **absent** on events written before `e3119e9` | `ledger_entries.id` of the entry this event describes, read back from the insert with `RETURNING id`. A reversal's events name the reversal's own entries, never the original's. Boxed `Long` on the producer, so "absent" never reads as entry zero | @93eadc2: `domain/AccountActivityEvent.java:18-19`, `:30`; `store/EntryRepository.java:38-46`; `service/LedgerService.java:153-154`, `:226-233`, `:245-249`; test `OutboxWriteTest.reversalEventsNameTheReversalsEntries` |
+| `created_at` | string, `yyyy-MM-ddTHH:mm:ss.SSSSSSZ`; **absent** under the same condition | That entry's `created_at` column (`TIMESTAMPTZ DEFAULT now()`, so both entries of one transfer carry the same value), read back with `RETURNING created_at`. UTC, always six fractional digits, pinned by `@JsonFormat` because the default serializer drops trailing zeros | @93eadc2: `domain/AccountActivityEvent.java:20-22`, `:31-32`; `store/EntryRepository.java:42-45`; `V2__ledger_core.sql:42`; tests `OutboxWriteTest.eventNamesTheEntryItDescribes`, `createdAtAlwaysCarriesSixFractionalDigits` |
+
+The ledger's README now carries an "Event contract" section describing the same seven fields, and
+states that the contract only grows: fields are appended, never renamed, retyped or removed. The
+ledger enforces that shape on the delivered bytes, read as plain JSON rather than through its own
+record (@93eadc2 `OutboxRelayTest.deliveredPayloadKeepsTheContractShape`), and its own projection
+still applies a five-field event (@93eadc2
+`AccountActivityProjectionTest.eventWrittenBeforeTheEntryReferenceIsStillApplied`).
 
 **The byte form is not stable.** The payload is stored in a `JSONB` column (`V10__outbox.sql:15`) and
 read back with `payload::text` (`store/OutboxRepository.java:39`), so what reaches the broker is
@@ -180,55 +196,65 @@ the recorded decision in ADR-0002 and is amended there.
 
 ## 6. What the event does not carry
 
-Each of these is absent from `domain/AccountActivityEvent.java:12-17`, which is the whole payload
-**as the ledger publishes it today**. The first two are being addressed by the owner in the ledger
-repository; see "Incoming ledger change" below.
+As published since ledger commit `e3119e9`. Phase 0 found two more gaps, a timestamp and an entry
+id; both are now on the wire (§5.3), and what this service does with them is under "Ledger change
+landed" below.
 
-- **No timestamp.** No `created_at`, no `occurred_at`. `ledger_entries.created_at` and
-  `ledger_transactions.created_at` exist in the database (`V2__ledger_core.sql:42`, `:24`) and are
-  exposed by the HTTP API (`domain/LedgerEntry.java:14`), but neither is put on the wire.
-- **No ledger entry id.** See §7.
 - **No account type, no owner reference, no balance.**
 - **No description.** `ledger_transactions.description` (`V2__ledger_core.sql:23`) is not announced.
 - **No `aggregate_type` / `event_type` on the record**; they stay in the outbox row (§5.1).
 - **No schema version field.** There is no `version`, `schema` or `type` discriminator in the
-  payload, so a future change to this record is indistinguishable on the wire from the current one.
+  payload. A seven-field and a five-field event are told apart only by whether `entry_id` and
+  `created_at` are present.
+- **No timestamp or entry id on events written before `e3119e9`.** Nothing was backfilled
+  (ledger README, "Event contract", @93eadc2), so those events are still on the topic without them.
 
-The only timestamp a consumer can obtain from today's payload is the Kafka record timestamp, which is
-set when the relay publishes rather than when the ledger committed.
+### Ledger change landed
 
-### Incoming ledger change
+The owner added `entry_id` and `created_at` to the account activity event in `..\ledger-payment-core`
+(commit `e3119e9`, merge `93eadc2`). This repository did not touch the ledger. The contract in
+`contracts/` now describes seven fields, with the two new ones optional (§5.3, `contracts/README.md`).
 
-The owner has decided to add **`created_at`** and **`entry_id`** to the account activity event, and
-will make that change in `..\ledger-payment-core` himself. Nothing in this repository edits the
-ledger.
+What the reconciler does with them:
 
-Until those fields are published:
-
-- `contracts/ledger-events.schema.json` keeps describing what the ledger publishes **today**: five
-  fields, neither of the new two. It is updated when the ledger change lands, not before, so the
-  contract never claims something the producer does not send.
-- OQ-1 and OQ-2 below record the decision and what is still pending. Neither is open in the sense of
-  needing a choice; both are pending someone else's commit.
-- Phase 2 cannot write the `ledger_entries` projection migration until the shape of the new fields is
-  known — their names on the wire, the type of `entry_id`, and whether `created_at` is an ISO-8601
-  instant string. Phase 3's consumer has the same dependency.
+- **`value_date` derives from `created_at` in `Europe/Istanbul`.** `created_at` is parsed as an
+  `Instant`, converted with `atZone(Europe/Istanbul)`, and `toLocalDate()` is the value date. The
+  zone is a zone id, not a fixed `+03:00` offset, and is configuration snapshotted onto each run
+  (TDD §6). The Kafka record timestamp is never used: it is the relay's publish time (OQ-1, option A).
+- **`entry_id` is the projection's entry identity.** One ledger entry is one projected row, enforced
+  by a partial unique index on `ledger_entry_id` where it is not null (§7).
+- **The `event-id` header stays the deduplication key** (FR-LED-3, INV-3). The insert is
+  `ON CONFLICT (event_id) DO NOTHING`, so a redelivery is a no-op whatever its payload.
+- **The same `entry_id` under a different `event-id` is a ledger fault, not a duplicate.** It means
+  the ledger published one entry twice, which its outbox should make impossible. The `event-id`
+  dedupe lets it through, so the unique index on `ledger_entry_id` rejects it. The consumer logs it
+  at `ERROR` and dead-letters it (FR-LED-5). It is not swallowed: silently keeping the first row
+  would hide a real fault in the ledger.
+- **Five-field history is stored but never reconciled.** Such an entry has no `created_at`, so it
+  has no `value_date`, `created_at` or `ledger_entry_id` in the projection. It is never back-dated
+  from the Kafka record timestamp. An entry with no value date falls in no date window, so it is
+  outside every run's scope and never produces a break: missing data is not a reconciliation
+  discrepancy. The summary report shows how many such entries there are, separately from the run's
+  matched, pending and broken counts.
 
 ## 7. Entry identity
 
 One event is produced per ledger entry (`service/LedgerService.java:242-252`), and a transfer writes
-two entries (`:227-228`), so two events describe one transfer. What identifies a single entry is
-**not settled by the ledger's code**:
+two entries (`:227-228`), so two events describe one transfer.
 
-- `ledger_entries.id BIGSERIAL PRIMARY KEY` exists (`V2__ledger_core.sql:37`) but is never read back:
-  `EntryRepository.insert` returns `void` and uses no `RETURNING id`
-  (`store/EntryRepository.java:37-43`), so the id is not even known at the point the event is built
-  (`service/LedgerService.java:244-252`). It cannot be on the wire.
+**Since `e3119e9` the entry's identity is on the wire as `entry_id`**: `ledger_entries.id`, read back
+from the insert (@93eadc2 `store/EntryRepository.java:38-46`) and put on the event built beside it
+(@93eadc2 `service/LedgerService.java:245-249`). This is what the projection keys an entry on.
+
+The two candidates Phase 0 had to choose between, before the field existed, are both still wrong
+for this job, and the reasons are kept because they explain the rules in §6:
+
 - The `event-id` header is unique per event (`V10__outbox.sql:11`,
   `outbox/AccountActivityPublisher.java:38`) and is what the ledger's own consumer deduplicates on
   (`projection/AccountActivityProjection.java:54-57`). It identifies a **delivery**, not an entry: it
   is an outbox sequence value, unrelated to ledger state, and a rebuilt or re-seeded ledger produces
-  different ids for the same entries.
+  different ids for the same entries. That is why it stays the dedupe key, and also why a second
+  `event-id` for an `entry_id` already seen is treated as a ledger fault rather than a new entry.
 - `(transaction_id, account_id)` is unique per transaction *for the transaction types that exist
   today*, because a transfer's two accounts must differ (`service/LedgerService.java:208-210`) and a
   reversal flips the postings of such a transaction (`:140-158`). It is **not guaranteed by the
@@ -236,11 +262,9 @@ two entries (`:227-228`), so two events describe one transfer. What identifies a
   and the `valid_tx_type` CHECK already admits `FEE` and `ADJUSTMENT` (`V2__ledger_core.sql:25-26`),
   which a later ledger phase could write as several entries on one account within one transaction.
 
-So: today's ledger guarantees a stable identity for a *delivery* and no stable identity for an
-*entry*. That is what **OQ-2** was about, and the owner has answered it by deciding to publish
-`entry_id` from the ledger rather than have this service invent a key from what it can see. Until
-that change lands, this service has no entry identity to rely on: the projection's primary key, and
-therefore what INV-3 asserts, stays unwritten (TDD §10).
+Events written before `e3119e9` carry no `entry_id`. For them the only identity is the `event-id`,
+which is enough for deduplication. They take no part in reconciliation (§6), so no entry identity is
+needed for them.
 
 ## 8. Local stack: images and ports
 
@@ -307,8 +331,9 @@ with the proposed replacement text.
 > topic `account.activity` keyed by account public id
 
 The topic is **`ledger.account-activity`** (`config/EventTopics.java:12`). The ledger's own README
-carries the stale name in its architecture diagram (`README.md:48`), which is where the TDD's value
-came from. Keying by account public id is correct.
+carried the stale name in its architecture diagram (`README.md:48` at `b32a5bf`), which is where the
+TDD's value came from; the ledger has since corrected its README (commit `552547f`). Keying by
+account public id is correct.
 
 **Proposed text:** "topic `ledger.account-activity`, keyed by account public id".
 
@@ -318,28 +343,27 @@ came from. Keying by account public id is correct.
 > `value_date = created_at` converted to `Europe/Istanbul`, then `toLocalDate()`. [...] Phase 0
 > confirms the event carries `created_at`.
 
-It does not. The payload is five fields and none of them is a timestamp
-(`domain/AccountActivityEvent.java:12-17`). `created_at` exists on the entry row
-(`V2__ledger_core.sql:42`) and is exposed by the HTTP API, but is never announced.
+At Phase 0 it did not: the payload was five fields and none was a timestamp
+(`domain/AccountActivityEvent.java:12-17`). Since ledger commit `e3119e9` the event carries
+`created_at` (§5.3), but events written before it do not, and they are still on the topic.
 
-**Proposed text:** keep the derivation as written — `value_date` is `created_at` converted to
-`Europe/Istanbul`, then `toLocalDate()` — and change the last sentence, which claims Phase 0
-confirmed the field, to state that the ledger is being changed to publish `created_at` and that the
-derivation applies from that version of the event onward. The sentence "Phase 0 confirms the event
-carries `created_at`" is false as it stands and must not survive into v1.2.
+**Proposed text:** keep the derivation, and replace the last sentence. The sentence "Phase 0
+confirms the event carries `created_at`" was false when written and must not survive into v1.2. The
+exact v1.2 wording is in the report on this contract update, which the owner applies to the TDD.
 
 ### C-3 — Entry id in the projection (§10, line 430)
 
 > `ledger_entries (id UUID PK, event_id UNIQUE, ledger_entry_id, account_id, source_code, ...)`
 
-`ledger_entry_id` is not on the wire and cannot be (§7). Also `event_id` is a **signed 64-bit
-integer**, not a UUID (`V10__outbox.sql:11`), and it arrives as a header rather than as a payload
-field.
+`event_id` is a **signed 64-bit integer**, not a UUID (`V10__outbox.sql:11`), and it arrives as a
+header rather than as a payload field. `ledger_entry_id` was not on the wire at Phase 0; it now is,
+as `entry_id`, a JSON integer (§5.3), absent on older events.
 
-**Proposed text:** type `event_id` as `BIGINT NOT NULL UNIQUE` and state that it is read from the
-`event-id` Kafka header rather than from the payload. Keep `ledger_entry_id`, but say that it comes
-from the `entry_id` field the ledger is being changed to publish, and note that its wire type is not
-settled yet (OQ-2).
+**Proposed text:** `event_id BIGINT NOT NULL UNIQUE`, read from the `event-id` header;
+`ledger_entry_id BIGINT NULL` from the `entry_id` field, with a partial unique index where it is not
+null; `created_at` and `value_date` nullable for the same older events; and `tx_type TEXT NOT NULL`
+as an explicit exception to "all type columns have CHECKs" (§5.5). The exact v1.2 wording is in the
+same report.
 
 ### C-4 — Port collisions (§5.1.1)
 
@@ -400,22 +424,21 @@ Not a contradiction but a pin: the ledger is on **4.1.1** (`pom.xml:10`) with Ma
 
 ## Open questions
 
-Each of these is left unresolved on purpose. None is guessed at, and nothing downstream should assume
-an answer.
+OQ-1 and OQ-2 are resolved by the ledger change, with the commit as evidence. The others are left
+unresolved on purpose: none is guessed at, and nothing downstream should assume an answer.
 
-### OQ-1 — What is the `value_date` of a ledger entry? — RESOLVED, pending a ledger change
+### OQ-1 — What is the `value_date` of a ledger entry? — RESOLVED
 
-**Decision (owner):** the ledger will publish `created_at` on the account activity event. This is
-option C below. The owner makes that change in `..\ledger-payment-core`; this repository does not
-touch the ledger, and the contract here is not updated until the change lands.
+**Resolved by ledger commit `e3119e9`** (merged as `93eadc2`): the event carries `created_at`, the
+entry's own column, in UTC with six fractional digits (§5.3). This is option C below.
 
-Once it does, TDD §6 holds as written: `value_date` is `created_at` converted to `Europe/Istanbul`,
-then `toLocalDate()`, with the zone as configuration snapshotted onto each run. What Phase 2 still
-needs from the ledger change: the field's name on the wire and its format (an ISO-8601 instant is the
-assumption, not a fact).
+`value_date` is `created_at` converted to `Europe/Istanbul`, then `toLocalDate()`, with the zone as
+configuration snapshotted onto each run (TDD §6). Events written before `e3119e9` have no
+`created_at`; they get no value date and are never back-dated from the record timestamp (§6,
+"Ledger change landed").
 
-Until then the projection stores no value date, and the date-window part of Stage A cannot be built.
-The options that were weighed, kept because the reasoning explains why C was worth a ledger change:
+The options that were weighed are kept, because the reasoning explains why C was worth a ledger
+change:
 
 | Option | What it gives | What it costs |
 |---|---|---|
@@ -429,18 +452,16 @@ A was the only option available without changing the ledger or breaking a stated
 wrong at exactly the boundary that matters for a date-windowed reconciliation — which is what made
 the ledger change worth making instead.
 
-### OQ-2 — What identifies a single ledger entry? — RESOLVED, pending a ledger change
+### OQ-2 — What identifies a single ledger entry? — RESOLVED
 
-**Decision (owner):** the ledger will publish `entry_id` on the account activity event. The two
-alternatives — the `event-id` header as the projection's natural key, or the pair
-`(transaction_id, account_id)` — are both rejected: the first identifies a delivery rather than an
-entry and would change if the ledger's outbox were ever rebuilt, and the second is unique today only
-by accident of which transaction types exist (§7).
+**Resolved by ledger commit `e3119e9`** (merged as `93eadc2`): the event carries `entry_id`, the
+entry's `ledger_entries.id`, as a JSON integer (§5.3).
 
-What Phase 2 still needs from the ledger change: the field's wire type. `ledger_entries.id` is
-`BIGSERIAL` (`V2__ledger_core.sql:37`), so a JSON integer is the expectation, but the ledger may
-choose to expose something else. The projection's primary key and the unique constraint that carries
-INV-3 wait on it.
+`entry_id` is the projection's entry identity, carried by a partial unique index on
+`ledger_entry_id`. The `event-id` header stays the deduplication key. The two alternatives Phase 0
+weighed — the `event-id` header as the natural key, or the pair `(transaction_id, account_id)` —
+stay rejected for the reasons in §7: the first identifies a delivery rather than an entry, and the
+second is unique today only by accident of which transaction types exist.
 
 ### OQ-3 — How is a PSP clearing account represented?
 
