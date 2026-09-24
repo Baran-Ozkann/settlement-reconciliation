@@ -35,6 +35,14 @@ must not assume an answer.
 4. **OQ-4** Whether Phase 8 produces ledger data through the ledger API or as synthetic events
 5. **OQ-5** License: the ledger has none to match
 
+## Decisions taken after the phase report
+
+- **OQ-6 resolved — no npm registry, no `npx`.** Contract verification is a Maven test added in
+  Phase 1 that runs the samples through `contracts/ledger-events.schema.json` with the `networknt`
+  JSON Schema validator, as part of `mvnw.cmd verify`. `contracts/README.md` no longer documents a
+  command to run by hand. Phase 0's own verification was done with `ajv-cli` before this rule was
+  settled, and that result is recorded rather than repeated
+
 ## Next phase
 
 Phase 1 — project skeleton. It starts from an empty build: there is no `pom.xml`, no

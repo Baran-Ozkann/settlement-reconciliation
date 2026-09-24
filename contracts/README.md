@@ -75,27 +75,20 @@ their name. All values are synthetic — these ids belong to no ledger instance.
 | `invalid-currency-lowercase.json` | `try` is not an ISO 4217 code |
 | `invalid-tx-type-unknown.json` | `FEE` is contract drift: the ledger's schema admits it, its producer cannot emit it |
 
-## Verifying, with no global install
+## Verifying
 
-From the repository root, with Node available and network access for the first run
-(`npx` downloads into its own cache; nothing is installed globally and nothing is added to this
-repository):
+The samples are verified by a Maven test added in Phase 1: it loads
+`ledger-events.schema.json` with the `networknt` JSON Schema validator (a Java library, pinned to a
+version that implements draft 2020-12), asserts that every `samples/valid-*.json` validates and that
+every `samples/invalid-*.json` fails, and runs as part of `mvnw.cmd verify`. Adding a sample or
+changing a constraint is therefore checked by the build, with no separate tool and no network beyond
+Maven's own dependency resolution.
 
-```sh
-# valid samples: expected to pass, exits 0
-npx --yes ajv-cli@5.0.0 validate --spec=draft2020 \
-  -s contracts/ledger-events.schema.json \
-  -d "contracts/samples/valid-*.json"
+From Phase 3 the same schema is what the consumer validates each record against at runtime
+(FR-LED-6), so "the schema is right" and "the consumer enforces the schema" stay one fact rather than
+two.
 
-# invalid samples: expected to fail, exits 1 and prints the failing keyword for each
-npx --yes ajv-cli@5.0.0 validate --spec=draft2020 --errors=line \
-  -s contracts/ledger-events.schema.json \
-  -d "contracts/samples/invalid-*.json"
-```
-
-Read the exit codes, not just the text: the first command failing and the second one succeeding are
-both contract regressions.
-
-From Phase 3 this is no longer the check that matters. The consumer validates against this schema at
-runtime (FR-LED-6) and a contract test runs these same samples through it, so the command above is
-for working on the contract itself, not for CI.
+Until that test exists there is no command here to run. Phase 0's verification was done with
+`ajv-cli`, before the rule settling which tools may reach the network: 4 valid samples passed and all
+7 invalid samples failed, each on the keyword it was written to exercise. That result stands as a
+record of what was checked in Phase 0; it is not a procedure to repeat.
