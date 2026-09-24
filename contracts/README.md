@@ -32,8 +32,9 @@ different keys, and they may land on different partitions.
 - **Unique per event**, and ascending in publish order per producer.
 - **It is the deduplication key.** Delivery is at-least-once by design; the same `event-id` may
   arrive any number of times and must produce exactly one row (FR-LED-3, INV-3).
-- It identifies a *delivery*, not a ledger entry. What identifies an entry is an open question —
-  see OQ-2 in the integration notes.
+- It identifies a *delivery*, not a ledger entry. Entry identity is settled but not yet shipped: the
+  ledger is being changed to publish `entry_id` (OQ-2 in the integration notes). This document
+  describes what the ledger publishes today, so that field is not in the schema yet.
 
 `traceparent` (W3C trace context) is normally present, injected by the producer's observability
 instrumentation. Use it for correlation if it is there; never require it, and never fail a record for

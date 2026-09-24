@@ -26,17 +26,22 @@ No application code, build file or Docker file was written, which is this phase'
 Recorded in `docs/ledger-integration-notes.md` and in the report. None is resolved here, and Phase 1
 must not assume an answer.
 
-1. **OQ-1** `value_date` of a ledger entry: the event carries no `created_at`. Five options with
-   their costs are listed in the notes. Blocks the projection's value-date column, and with it the
-   date-window part of Stage A
-2. **OQ-2** Entry identity: the event carries no ledger entry id. Decides the projection's primary
-   key and what INV-3 asserts
-3. **OQ-3** PSP clearing account: which ledger account type represents it
-4. **OQ-4** Whether Phase 8 produces ledger data through the ledger API or as synthetic events
-5. **OQ-5** License: the ledger has none to match
+1. **OQ-3** PSP clearing account: which ledger account type represents it
+2. **OQ-4** Whether Phase 8 produces ledger data through the ledger API or as synthetic events
+3. **OQ-5** License: the ledger has none to match
 
 ## Decisions taken after the phase report
 
+- **OQ-1 and OQ-2 resolved by changing the ledger, not this service.** The owner adds `created_at`
+  and `entry_id` to the account activity event, in `..\ledger-payment-core`, himself. Both are
+  therefore **pending that ledger change**, not open. `contracts/ledger-events.schema.json` is deliberately
+  left alone: it describes what the ledger publishes today and is updated when the change lands.
+  What Phase 2 and Phase 3 should expect: `value_date` derives from `created_at` exactly as TDD §6
+  writes it, and `entry_id` becomes the projection's entry identity instead of the `event-id` header
+  or the `(transaction_id, account_id)` pair. Still unknown until the ledger commit exists: the wire
+  names, the type of `entry_id` (`BIGSERIAL` in the ledger's table, so a JSON integer is the
+  expectation), and the format of `created_at`. Until then the `ledger_entries` projection migration
+  cannot be written — see `docs/ledger-integration-notes.md` §6 "Incoming ledger change"
 - **OQ-6 resolved — no npm registry, no `npx`.** Contract verification is a Maven test added in
   Phase 1 that runs the samples through `contracts/ledger-events.schema.json` with the `networknt`
   JSON Schema validator, as part of `mvnw.cmd verify`. `contracts/README.md` no longer documents a

@@ -158,7 +158,9 @@ produces **two** records, on two different keys and possibly two different parti
 
 ## 6. What the event does not carry
 
-Each of these is absent from `domain/AccountActivityEvent.java:12-17`, which is the whole payload:
+Each of these is absent from `domain/AccountActivityEvent.java:12-17`, which is the whole payload
+**as the ledger publishes it today**. The first two are being addressed by the owner in the ledger
+repository; see "Incoming ledger change" below.
 
 - **No timestamp.** No `created_at`, no `occurred_at`. `ledger_entries.created_at` and
   `ledger_transactions.created_at` exist in the database (`V2__ledger_core.sql:42`, `:24`) and are
@@ -170,8 +172,25 @@ Each of these is absent from `domain/AccountActivityEvent.java:12-17`, which is 
 - **No schema version field.** There is no `version`, `schema` or `type` discriminator in the
   payload, so a future change to this record is indistinguishable on the wire from the current one.
 
-The only timestamp a consumer can obtain is the Kafka record timestamp, which is set when the relay
-publishes, not when the ledger committed. See open question **OQ-1**.
+The only timestamp a consumer can obtain from today's payload is the Kafka record timestamp, which is
+set when the relay publishes rather than when the ledger committed.
+
+### Incoming ledger change
+
+The owner has decided to add **`created_at`** and **`entry_id`** to the account activity event, and
+will make that change in `..\ledger-payment-core` himself. Nothing in this repository edits the
+ledger.
+
+Until those fields are published:
+
+- `contracts/ledger-events.schema.json` keeps describing what the ledger publishes **today**: five
+  fields, neither of the new two. It is updated when the ledger change lands, not before, so the
+  contract never claims something the producer does not send.
+- OQ-1 and OQ-2 below record the decision and what is still pending. Neither is open in the sense of
+  needing a choice; both are pending someone else's commit.
+- Phase 2 cannot write the `ledger_entries` projection migration until the shape of the new fields is
+  known — their names on the wire, the type of `entry_id`, and whether `created_at` is an ISO-8601
+  instant string. Phase 3's consumer has the same dependency.
 
 ## 7. Entry identity
 
@@ -195,9 +214,11 @@ two entries (`:227-228`), so two events describe one transfer. What identifies a
   and the `valid_tx_type` CHECK already admits `FEE` and `ADJUSTMENT` (`V2__ledger_core.sql:25-26`),
   which a later ledger phase could write as several entries on one account within one transaction.
 
-So: the ledger guarantees a stable identity for a *delivery* and no stable identity for an *entry*.
-This is **OQ-2**. It is left unresolved here because it decides the primary key of this service's
-`ledger_entries` projection (TDD §10) and therefore what INV-3 asserts.
+So: today's ledger guarantees a stable identity for a *delivery* and no stable identity for an
+*entry*. That is what **OQ-2** was about, and the owner has answered it by deciding to publish
+`entry_id` from the ledger rather than have this service invent a key from what it can see. Until
+that change lands, this service has no entry identity to rely on: the projection's primary key, and
+therefore what INV-3 asserts, stays unwritten (TDD §10).
 
 ## 8. Local stack: images and ports
 
@@ -279,9 +300,11 @@ It does not. The payload is five fields and none of them is a timestamp
 (`domain/AccountActivityEvent.java:12-17`). `created_at` exists on the entry row
 (`V2__ledger_core.sql:42`) and is exposed by the HTTP API, but is never announced.
 
-**Proposed text:** the paragraph must be replaced once **OQ-1** is answered; the options and their
-costs are listed there. Until then no `value_date` derivation is specified, and the Phase 2 and
-Phase 3 work that depends on it is blocked on that answer.
+**Proposed text:** keep the derivation as written — `value_date` is `created_at` converted to
+`Europe/Istanbul`, then `toLocalDate()` — and change the last sentence, which claims Phase 0
+confirmed the field, to state that the ledger is being changed to publish `created_at` and that the
+derivation applies from that version of the event onward. The sentence "Phase 0 confirms the event
+carries `created_at`" is false as it stands and must not survive into v1.2.
 
 ### C-3 — Entry id in the projection (§10, line 430)
 
@@ -291,9 +314,10 @@ Phase 3 work that depends on it is blocked on that answer.
 integer**, not a UUID (`V10__outbox.sql:11`), and it arrives as a header rather than as a payload
 field.
 
-**Proposed text:** drop `ledger_entry_id` from the table, type `event_id` as `BIGINT NOT NULL
-UNIQUE`, and state that it is read from the `event-id` Kafka header. Whether anything else becomes
-the entry's natural key is **OQ-2**.
+**Proposed text:** type `event_id` as `BIGINT NOT NULL UNIQUE` and state that it is read from the
+`event-id` Kafka header rather than from the payload. Keep `ledger_entry_id`, but say that it comes
+from the `entry_id` field the ledger is being changed to publish, and note that its wire type is not
+settled yet (OQ-2).
 
 ### C-4 — Port collisions (§5.1.1)
 
@@ -357,9 +381,19 @@ Not a contradiction but a pin: the ledger is on **4.1.1** (`pom.xml:10`) with Ma
 Each of these is left unresolved on purpose. None is guessed at, and nothing downstream should assume
 an answer.
 
-### OQ-1 — What is the `value_date` of a ledger entry?
+### OQ-1 — What is the `value_date` of a ledger entry? — RESOLVED, pending a ledger change
 
-TDD §6 derives it from `created_at`, which is not on the wire (C-2). The options, with their costs:
+**Decision (owner):** the ledger will publish `created_at` on the account activity event. This is
+option C below. The owner makes that change in `..\ledger-payment-core`; this repository does not
+touch the ledger, and the contract here is not updated until the change lands.
+
+Once it does, TDD §6 holds as written: `value_date` is `created_at` converted to `Europe/Istanbul`,
+then `toLocalDate()`, with the zone as configuration snapshotted onto each run. What Phase 2 still
+needs from the ledger change: the field's name on the wire and its format (an ISO-8601 instant is the
+assumption, not a fact).
+
+Until then the projection stores no value date, and the date-window part of Stage A cannot be built.
+The options that were weighed, kept because the reasoning explains why C was worth a ledger change:
 
 | Option | What it gives | What it costs |
 |---|---|---|
@@ -369,17 +403,22 @@ TDD §6 derives it from `created_at`, which is not on the wire (C-2). The option
 | **D. Read it from the ledger's HTTP API** (`GET /v1/transfers/{publicId}`) | Correct value, no ledger change | Forbidden by TDD §5.1 ("never calls the ledger's API") and by INV-9; reintroduces the coupling the architecture exists to avoid, and puts a synchronous dependency in the consumer path |
 | **E. Carry it as a Kafka header** instead of a payload field | Same as C | Same as C, with no advantage over it, and a header is easier to drop than a field |
 
-**Not resolved here.** A is the only option available without changing the ledger or breaking a
-stated rule, and it is wrong at exactly the boundary that matters for a date-windowed reconciliation.
-The owner decides.
+A was the only option available without changing the ledger or breaking a stated rule, and it is
+wrong at exactly the boundary that matters for a date-windowed reconciliation — which is what made
+the ledger change worth making instead.
 
-### OQ-2 — What identifies a single ledger entry?
+### OQ-2 — What identifies a single ledger entry? — RESOLVED, pending a ledger change
 
-See §7. The wire gives a stable *delivery* id (`event-id`) and no stable *entry* id. The candidates
-are: the `event-id` header as the projection's natural key; the pair `(transaction_id, account_id)`,
-which is unique today but is not enforced by the ledger's schema; or a ledger change that publishes
-`ledger_entries.id`. This decides the primary key and the unique constraint of the projection table
-(TDD §10) and what INV-3 actually asserts. **Not resolved here.**
+**Decision (owner):** the ledger will publish `entry_id` on the account activity event. The two
+alternatives — the `event-id` header as the projection's natural key, or the pair
+`(transaction_id, account_id)` — are both rejected: the first identifies a delivery rather than an
+entry and would change if the ledger's outbox were ever rebuilt, and the second is unique today only
+by accident of which transaction types exist (§7).
+
+What Phase 2 still needs from the ledger change: the field's wire type. `ledger_entries.id` is
+`BIGSERIAL` (`V2__ledger_core.sql:37`), so a JSON integer is the expectation, but the ledger may
+choose to expose something else. The projection's primary key and the unique constraint that carries
+INV-3 wait on it.
 
 ### OQ-3 — How is a PSP clearing account represented?
 
