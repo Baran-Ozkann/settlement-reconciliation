@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: settlement-reconciliation
+
+server:
+  # Loopback only. Nothing here is meant to be reached from another machine, and 8090 keeps clear
+  # of the ledger's 8080 so both services can run side by side on one host (TDD 5.1.1).
+  address: 127.0.0.1
+  port: 8090
+
+management:
+  server:
+    # Actuator on a connector of its own, also loopback only; 8091 keeps clear of the ledger's 8081.
+    address: 127.0.0.1
+    port: 8091
