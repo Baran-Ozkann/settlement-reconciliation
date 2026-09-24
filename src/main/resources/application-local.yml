@@ -1,0 +1,11 @@
+spring:
+  config:
+    # The same .env docker compose reads, so the credentials exist in one place. Optional only so a
+    # missing file surfaces as the unresolved placeholder it causes, which names the variable.
+    import: optional:file:.env[.properties]
+  datasource:
+    # 127.0.0.1, not localhost: the port is published on IPv4 loopback only, and on Windows
+    # localhost tries ::1 first and pays a connection timeout for it.
+    url: jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5434}/recon
+    username: recon_app
+    password: ${RECON_DB_APP_PASSWORD}
