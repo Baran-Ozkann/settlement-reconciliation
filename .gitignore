@@ -1,0 +1,44 @@
+# Local configuration and secrets
+.env
+.env.local
+
+# Phase reports: working notes for the owner, not part of the deliverable history
+.phase-reports/
+
+# Build output
+target/
+build/
+*.class
+*.jar
+*.war
+hs_err_pid*
+replay_pid*
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local runtime
+*.log
+
+# jqwik failure persistence
+.jqwik-database
+
+# Python bytecode from tooling scripts
+__pycache__/
+*.pyc
+
+# Agent tooling and reference material that belongs to the owner, not to the repository
+.claude/
+CLAUDE.md
+docs/reference-ledger-tdd.md
