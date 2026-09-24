@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** 0 — Discovery and contract extraction
+**Current phase:** 0 — Discovery and contract extraction (complete)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
 **Last updated:** 2026-09-24
 
@@ -12,28 +12,31 @@
 - [x] `docs/ledger-integration-notes.md`: stack, money, accounts, transactions, the full event
   contract (topic, key, `event-id` header, payload, delivery semantics), what the event does **not**
   carry, entry identity, images and ports, six TDD corrections, four risks, five open questions
-
 - [x] `contracts/ledger-events.schema.json` (draft 2020-12), 4 valid and 7 invalid samples, and
   `contracts/README.md` carrying the `event-id` header contract beside the payload schema. Both
   validation runs executed: valid pass (exit 0), invalid all fail (exit 1)
+- [x] `docs/adr/0001-separate-service-and-repository.md`
+- [x] `docs/adr/0002-json-schema-contract-instead-of-schema-registry.md`
+- [x] `.phase-reports/phase-0-report.md` (not committed; `.phase-reports/` is ignored)
 
-## In progress
-
-- [ ] `docs/adr/0001-separate-service-and-repository.md`
-- [ ] `docs/adr/0002-json-schema-contract-instead-of-schema-registry.md`
-- [ ] `.phase-reports/phase-0-report.md` (not committed; `.phase-reports/` is ignored)
+No application code, build file or Docker file was written, which is this phase's constraint.
 
 ## Open questions carried out of this phase
 
-Recorded in the notes and the report; none of them is resolved here.
+Recorded in `docs/ledger-integration-notes.md` and in the report. None is resolved here, and Phase 1
+must not assume an answer.
 
-1. `value_date` for a ledger entry: the event carries no `created_at`
-2. Entry identity: the event carries no ledger entry id
-3. PSP clearing account: which ledger account type represents it
-4. Whether Phase 8 produces ledger data through the ledger API or as synthetic events
-5. License
+1. **OQ-1** `value_date` of a ledger entry: the event carries no `created_at`. Five options with
+   their costs are listed in the notes. Blocks the projection's value-date column, and with it the
+   date-window part of Stage A
+2. **OQ-2** Entry identity: the event carries no ledger entry id. Decides the projection's primary
+   key and what INV-3 asserts
+3. **OQ-3** PSP clearing account: which ledger account type represents it
+4. **OQ-4** Whether Phase 8 produces ledger data through the ledger API or as synthetic events
+5. **OQ-5** License: the ledger has none to match
 
 ## Next phase
 
-Phase 1 — project skeleton. Nothing in this phase writes application code, build files or
-Docker files, so Phase 1 starts from an empty build.
+Phase 1 — project skeleton. It starts from an empty build: there is no `pom.xml`, no
+`docker-compose.yml` and no source tree yet, by design. Two Phase 0 findings feed it directly: the
+port map to avoid (notes section 8) and the broker recommendation (notes section 9).
