@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:baran:settlement-reconciliation:contracts:ledger-events:v1",
+  "title": "Ledger account activity event",
+  "description": "The value of one record on the ledger.account-activity topic: what one account saw happen in one ledger entry. Derived from com.baran.ledger.domain.AccountActivityEvent under a snake_case naming strategy. The event id lives in the event-id record header, not here; see contracts/README.md.",
+  "type": "object",
+  "required": [
+    "transaction_id",
+    "account_id",
+    "amount",
+    "currency",
+    "tx_type"
+  ],
+  "properties": {
+    "transaction_id": {
+      "$ref": "#/$defs/uuid",
+      "description": "public_id of the ledger transaction this entry belongs to. Two records of one transfer carry the same value; it is what a PSP settlement line echoes back."
+    },
+    "account_id": {
+      "$ref": "#/$defs/uuid",
+      "description": "public_id of the account posted to. Equals the record key, and is the only account attribute on the wire, so source mapping is by this value."
+    },
+    "amount": {
+      "type": "integer",
+      "minimum": -10000000000,
+      "maximum": 10000000000,
+      "not": {
+        "const": 0
+      },
+      "description": "Signed minor units (kurus). Negative on the account debited, positive on the account credited. The bounds mirror the amount_bounded CHECK and the exclusion of zero mirrors amount_nonzero."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 alphabetic code of the account posted to. Structural only: which codes this service accepts is configuration, not part of the wire contract. The ledger is single-currency and emits TRY."
+    },
+    "tx_type": {
+      "type": "string",
+      "enum": [
+        "TRANSFER",
+        "FUNDING",
+        "REVERSAL"
+      ],
+      "description": "The transaction type, as the producer's enum name. The ledger's CHECK constraint also admits FEE and ADJUSTMENT, but no code can write them today; an event carrying one is contract drift and belongs in the dead-letter topic."
+    }
+  },
+  "$comment": "Unknown properties are allowed on purpose: the payload carries no schema version, so an additive ledger change would otherwise fail every event at once and take the projection down. A missing or malformed known field still fails.",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "$comment": "A pattern rather than \"format\": \"uuid\", because format is an annotation in draft 2020-12 and only asserts when a validator is configured for it. The pattern fails the same input everywhere."
+    }
+  }
+}

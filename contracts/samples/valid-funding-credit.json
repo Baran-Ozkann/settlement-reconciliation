@@ -1,0 +1,7 @@
+{
+  "transaction_id": "c2e4a6b8-0d1f-4a3b-8c5d-6e7f8a9b0c1d",
+  "account_id": "5a7e1b90-4d62-4a3c-9e10-7f2b3c4d5e60",
+  "amount": 10000000000,
+  "currency": "TRY",
+  "tx_type": "FUNDING"
+}

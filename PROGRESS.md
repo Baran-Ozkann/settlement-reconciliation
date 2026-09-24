@@ -13,8 +13,12 @@
   contract (topic, key, `event-id` header, payload, delivery semantics), what the event does **not**
   carry, entry identity, images and ports, six TDD corrections, four risks, five open questions
 
+- [x] `contracts/ledger-events.schema.json` (draft 2020-12), 4 valid and 7 invalid samples, and
+  `contracts/README.md` carrying the `event-id` header contract beside the payload schema. Both
+  validation runs executed: valid pass (exit 0), invalid all fail (exit 1)
+
 ## In progress
-- [ ] `contracts/ledger-events.schema.json`, `contracts/samples/`, `contracts/README.md`
+
 - [ ] `docs/adr/0001-separate-service-and-repository.md`
 - [ ] `docs/adr/0002-json-schema-contract-instead-of-schema-registry.md`
 - [ ] `.phase-reports/phase-0-report.md` (not committed; `.phase-reports/` is ignored)

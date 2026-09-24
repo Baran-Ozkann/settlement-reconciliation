@@ -1,0 +1,7 @@
+{
+  "transaction_id": "7d9f1a3b-5c7e-4b2d-9a8c-1e3f5a7b9c0d",
+  "account_id": "9b2d5e77-1c3a-4f8e-8b6d-2e4a6c8e0a12",
+  "amount": -125000,
+  "currency": "TRY",
+  "tx_type": "REVERSAL"
+}
