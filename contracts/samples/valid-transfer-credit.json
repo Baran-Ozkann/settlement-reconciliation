@@ -3,5 +3,7 @@
   "account_id": "9b2d5e77-1c3a-4f8e-8b6d-2e4a6c8e0a12",
   "amount": 125000,
   "currency": "TRY",
-  "tx_type": "TRANSFER"
+  "tx_type": "TRANSFER",
+  "entry_id": 4102,
+  "created_at": "2026-09-24T08:15:42.318204Z"
 }

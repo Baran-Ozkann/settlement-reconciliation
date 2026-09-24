@@ -1,0 +1,7 @@
+{
+  "transaction_id": "e1a3c5e7-9b2d-4f6a-8c1e-3a5c7e9b1d2f",
+  "account_id": "5a7e1b90-4d62-4a3c-9e10-7f2b3c4d5e60",
+  "amount": -4500,
+  "currency": "TRY",
+  "tx_type": "TRANSFER"
+}

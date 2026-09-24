@@ -11,6 +11,14 @@
     "currency",
     "tx_type"
   ],
+  "dependentRequired": {
+    "entry_id": [
+      "created_at"
+    ],
+    "created_at": [
+      "entry_id"
+    ]
+  },
   "properties": {
     "transaction_id": {
       "$ref": "#/$defs/uuid",
@@ -38,9 +46,20 @@
       "type": "string",
       "minLength": 1,
       "description": "The transaction type, as the producer's enum name. The producer emits TRANSFER, FUNDING and REVERSAL today; the ledger's valid_tx_type CHECK also admits FEE and ADJUSTMENT, and the ledger README states the contract may add further types. Open on purpose: a closed enum would dead-letter every event of a new type, and those events still move money on accounts this service reconciles. A value this service does not know is recognised but unmapped, not invalid; see docs/ledger-integration-notes.md section 5.5."
+    },
+    "entry_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807,
+      "description": "id of the ledger_entries row this event describes, read back by the ledger's INSERT ... RETURNING. A reversal's events name the reversal's own entries, never the original's. This is the entry's identity in this service's projection; the event-id header stays the deduplication key. Optional, because events written before the field existed are still on the topic: absent is valid, present as null is not."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$",
+      "description": "That entry's created_at column, in UTC with exactly six fractional digits, for example 2026-09-24T00:00:00.000000Z. When the ledger wrote the entry, not when the relay published it. value_date derives from it in Europe/Istanbul. Optional under the same rule as entry_id: absent is valid, present as null is not."
     }
   },
-  "$comment": "Unknown properties are allowed on purpose: the payload carries no schema version, so an additive ledger change would otherwise fail every event at once and take the projection down. A missing or malformed known field still fails.",
+  "$comment": "Unknown properties are allowed on purpose: the payload carries no schema version, so an additive ledger change would otherwise fail every event at once and take the projection down. A missing required field or a malformed known field still fails. entry_id and created_at are optional but come as a pair (dependentRequired): the ledger writes both or neither, so an event with one of them is drift. The pattern on created_at is structural; that the value is a real instant is checked when the consumer parses it.",
   "$defs": {
     "uuid": {
       "type": "string",
