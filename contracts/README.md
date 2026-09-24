@@ -123,18 +123,28 @@ their name. All values are synthetic — these ids belong to no ledger instance.
 
 ## Verifying
 
-The samples are verified by a Maven test added in Phase 1: it loads
-`ledger-events.schema.json` with the `networknt` JSON Schema validator (a Java library, pinned to a
-version that implements draft 2020-12), asserts that every `samples/valid-*.json` validates and that
-every `samples/invalid-*.json` fails, and runs as part of `mvnw.cmd verify`. Adding a sample or
-changing a constraint is therefore checked by the build, with no separate tool and no network beyond
-Maven's own dependency resolution.
+```powershell
+.\mvnw.cmd -B verify "-Dtest=LedgerEventContractTest"
+```
+
+`src/test/java/com/baran/recon/contract/LedgerEventContractTest.java` loads
+`ledger-events.schema.json` with the `networknt` JSON Schema validator (3.0.7, draft 2020-12, remote
+fetching off), and checks four things:
+
+- the schema is itself valid against the draft 2020-12 meta-schema;
+- every `samples/valid-*.json` validates;
+- every `samples/invalid-*.json` fails with exactly one error, on the keyword and the field its name
+  gives, so a schema that rejected everything could not pass;
+- every sample on disk has an expectation in the test and every expectation has a sample, so a new
+  or renamed sample cannot drop out of the check unnoticed.
+
+It runs in every `mvnw.cmd verify`, so adding a sample or changing a constraint is checked by the
+build, with no separate tool and no network beyond Maven's own dependency resolution.
 
 From Phase 3 the same schema is what the consumer validates each record against at runtime
 (FR-LED-6), so "the schema is right" and "the consumer enforces the schema" stay one fact rather than
 two.
 
-Until that test exists there is no command here to run. Phase 0's verification was done with
-`ajv-cli`, before the rule settling which tools may reach the network: 4 valid samples passed and all
-7 invalid samples failed, each on the keyword it was written to exercise. That result stands as a
-record of what was checked in Phase 0; it is not a procedure to repeat.
+Phase 0's verification was done with `ajv-cli`, before the rule settling which tools may reach the
+network: 4 valid samples passed and all 7 invalid samples failed, each on the keyword it was written
+to exercise. The samples added after the ledger change were reviewed by hand until this test existed.

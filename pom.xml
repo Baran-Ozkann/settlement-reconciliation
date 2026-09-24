@@ -64,6 +64,15 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- The validator the contract test runs the samples through, and from Phase 3 the one the
+             consumer validates each record with (FR-LED-6), so both read the schema the same way.
+             Test scope until then. Not managed by Boot, so pinned here. -->
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>3.0.7</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
