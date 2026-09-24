@@ -79,3 +79,26 @@ It would make the two sides provably identical. It also inverts ADR-0001: this s
 build dependency on the ledger's artifact, and the ledger would owe us a release whenever it changed
 a field. A published contract that describes the wire is weaker than a shared type and is the point —
 it can be satisfied by a producer we do not control and do not compile against.
+
+## Amended 2026-09-24 — `tx_type` is an open string
+
+The third decision bullet above is reversed. It is kept as written because the reason it changed is
+the point of this record.
+
+**What changed.** `tx_type` is validated as a non-empty string instead of an enum of the three
+values the producer emits. A value this service does not know is valid, projected like any other
+entry, and reported as recognised but unmapped (`docs/ledger-integration-notes.md` §5.5).
+
+**Why.** "Dead-lettering it is the alarm" treated a new type as a malformed event. It is not: the
+ledger's `valid_tx_type` CHECK already admits `FEE` and `ADJUSTMENT`, and the ledger README now
+states that the contract allows further types. An event of a new type is a well-formed record of
+money that really moved, often on an account this service reconciles. Dead-lettering it would stop
+every such entry from being projected at once, and each would then surface as a break on the PSP
+or bank side whose cause is that this service refused its ledger half. That is the same failure the
+"unknown properties are allowed" bullet exists to prevent, arriving through a different field.
+
+**What the alarm becomes.** A `WARN` on the first sighting of each unknown value and a metric tagged
+with it. The drift is still visible; it no longer costs an outage.
+
+**What stays.** Everything else in this ADR. A `tx_type` that is not a string, or is empty, still
+fails validation and is dead-lettered.

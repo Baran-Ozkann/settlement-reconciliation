@@ -132,7 +132,7 @@ The payload is the Jackson serialization of `AccountActivityEvent`
 | `account_id` | string, UUID | `accounts.public_id` of the account posted to; equals the record key | `domain/AccountActivityEvent.java:14`, `service/LedgerService.java:246-249` |
 | `amount` | integer | Signed minor units. Negative on the account debited, positive on the account credited. Never zero. Bounded to +/- 10 000 000 000 | `domain/AccountActivityEvent.java:10`, `:15`; `V2__ledger_core.sql:43-44`; `OutboxWriteTest.java:48-50` |
 | `currency` | string, three letters | The currency of the account posted to; `TRY` in every ledger instance today | `domain/AccountActivityEvent.java:16`, `store/EntryRepository.java:32-42`, `domain/Money.java:13` |
-| `tx_type` | string enum | `TRANSFER`, `FUNDING` or `REVERSAL` — the enum's `name()`, which the naming strategy does not touch | `domain/AccountActivityEvent.java:17`, `domain/TxType.java:7-11` |
+| `tx_type` | string | `TRANSFER`, `FUNDING` or `REVERSAL` today — the enum's `name()`, which the naming strategy does not touch. The database admits more (§4), so the contract treats it as an open string (§5.5) | `domain/AccountActivityEvent.java:17`, `domain/TxType.java:7-11` |
 
 **The byte form is not stable.** The payload is stored in a `JSONB` column (`V10__outbox.sql:15`) and
 read back with `payload::text` (`store/OutboxRepository.java:39`), so what reaches the broker is
@@ -155,6 +155,28 @@ is the identity.
 
 Both of a transfer's entries are announced (`service/LedgerService.java:231-232`), so one transfer
 produces **two** records, on two different keys and possibly two different partitions.
+
+### 5.5 `tx_type` values this service does not know
+
+The producer's enum has three values (`domain/TxType.java:7-11`); the `valid_tx_type` CHECK admits
+five (`V2__ledger_core.sql:25-26`). The ledger can therefore start emitting `FEE` or `ADJUSTMENT` in
+a later phase without any change this service would see coming, and nothing prevents a sixth type.
+
+The schema validates `tx_type` as a non-empty string and nothing more. What the reconciler does with
+the value:
+
+- **Known values** (`TRANSFER`, `FUNDING`, `REVERSAL`) are mapped to their meaning in this service.
+- **Any other value is recognised but unmapped.** The event is schema-valid, so it is not
+  dead-lettered. If its account is mapped to a source (FR-LED-2) the entry is projected like any
+  other: the money moved on an account this service reconciles, and dropping the entry would turn a
+  real movement into a phantom break on the PSP or bank side. `tx_type` is stored verbatim and no
+  matching rule reads it, so an unknown type cannot change a match.
+- The unmapped value is made visible rather than silent: logged at `WARN` the first time each
+  distinct value is seen, and counted in a metric tagged with the value. That is the signal that
+  this repository should learn the new type, without an outage in the meantime.
+
+The previous behaviour — a closed enum, with an unknown type dead-lettered as contract drift — was
+the recorded decision in ADR-0002 and is amended there.
 
 ## 6. What the event does not carry
 
@@ -360,12 +382,12 @@ Not a contradiction but a pin: the ledger is on **4.1.1** (`pom.xml:10`) with Ma
 
 ## Risks
 
-- **R-1 — `tx_type` is narrower on the wire than in the database.** The schema in `contracts/` admits
-  the three values the producer can emit (`domain/TxType.java:7-11`). The `valid_tx_type` CHECK
-  already admits `FEE` and `ADJUSTMENT` (`V2__ledger_core.sql:25-26`). If a later ledger phase emits
-  one of those, every such event fails validation and goes to the DLQ (FR-LED-5). That is the
-  intended alarm rather than a silent loss, but it is an outage for that event type until this
-  repository's schema is updated.
+- **R-1 — `tx_type` is wider in the database than in the producer.** The producer emits three values
+  (`domain/TxType.java:7-11`); the `valid_tx_type` CHECK admits five (`V2__ledger_core.sql:25-26`).
+  Mitigated: the schema accepts any string and an unknown value is recognised but unmapped (§5.5),
+  so a new type is projected and reported rather than dead-lettered. What remains is that the
+  service does not know what a new type *means* until this repository is updated; the `WARN` and the
+  metric are how that gap is noticed.
 - **R-2 — No schema version on the wire.** The payload has no discriminator (§6), so a breaking
   ledger change is only detectable by validation failure.
 - **R-3 — Published outbox rows are deleted** (`store/OutboxRepository.java:85-101`). Kafka retention

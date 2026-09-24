@@ -53,6 +53,11 @@ Two deliberate choices:
 - **UUIDs are checked with `pattern`, not `format`.** In draft 2020-12 `format` is an annotation
   unless a validator is configured to assert it, so a `format`-only schema silently accepts
   `account-42` in some validators. The pattern fails it everywhere.
+- **`tx_type` is any non-empty string, not an enum.** The ledger's database admits more types than
+  its producer emits today, and its README says the list may grow. A closed enum would dead-letter
+  every event of a new type, although each one still moves money on an account this service
+  reconciles. A value this service does not know is valid and recognised but unmapped: see
+  `../docs/ledger-integration-notes.md` §5.5.
 
 Do not depend on the byte form: the ledger stores the payload as `JSONB` and hands the broker
 PostgreSQL's normalization of it, so key order and whitespace are not the producer's and not stable.
@@ -68,13 +73,14 @@ their name. All values are synthetic — these ids belong to no ledger instance.
 | `valid-transfer-credit.json` | the credit half of the same transaction id: positive amount |
 | `valid-funding-credit.json` | `FUNDING`, at the maximum permitted amount |
 | `valid-reversal-debit.json` | `REVERSAL`, the type a correction arrives as |
+| `valid-tx-type-unmapped-fee.json` | `FEE`: admitted by the ledger's CHECK, not emitted today. Valid, and recognised but unmapped |
 | `invalid-amount-zero.json` | zero is not a movement; the ledger forbids it at the table |
 | `invalid-amount-fractional.json` | minor units are integers; `1250.5` is not an amount |
 | `invalid-amount-above-maximum.json` | one over the ledger's per-entry bound |
 | `invalid-missing-transaction-id.json` | the field a PSP line is matched on, absent |
 | `invalid-account-id-not-a-uuid.json` | source mapping is by account id; a non-UUID cannot map |
 | `invalid-currency-lowercase.json` | `try` is not an ISO 4217 code |
-| `invalid-tx-type-unknown.json` | `FEE` is contract drift: the ledger's schema admits it, its producer cannot emit it |
+| `invalid-tx-type-not-a-string.json` | `tx_type` is open, but it is still a string |
 
 ## Verifying
 

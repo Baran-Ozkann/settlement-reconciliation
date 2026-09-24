@@ -36,12 +36,8 @@
     },
     "tx_type": {
       "type": "string",
-      "enum": [
-        "TRANSFER",
-        "FUNDING",
-        "REVERSAL"
-      ],
-      "description": "The transaction type, as the producer's enum name. The ledger's CHECK constraint also admits FEE and ADJUSTMENT, but no code can write them today; an event carrying one is contract drift and belongs in the dead-letter topic."
+      "minLength": 1,
+      "description": "The transaction type, as the producer's enum name. The producer emits TRANSFER, FUNDING and REVERSAL today; the ledger's valid_tx_type CHECK also admits FEE and ADJUSTMENT, and the ledger README states the contract may add further types. Open on purpose: a closed enum would dead-letter every event of a new type, and those events still move money on accounts this service reconciles. A value this service does not know is recognised but unmapped, not invalid; see docs/ledger-integration-notes.md section 5.5."
     }
   },
   "$comment": "Unknown properties are allowed on purpose: the payload carries no schema version, so an additive ledger change would otherwise fail every event at once and take the projection down. A missing or malformed known field still fails.",
