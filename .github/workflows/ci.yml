@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Read-only. Nothing in this workflow writes to the repository, and a compromised build step should
+# not be able to push with a broader default token.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          # The rule check reads commit messages. A shallow checkout hands it one commit, so a push
+          # of five would have four of them unread.
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Check project rules
+        run: bash ci/check-rules.sh
+
+      # Unit, contract, architecture and Testcontainers integration tests in one run. The runner's
+      # Docker daemon starts the PostgreSQL and Kafka containers; nothing here is mocked.
+      - name: Build and test
+        run: ./mvnw -B verify
