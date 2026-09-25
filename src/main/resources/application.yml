@@ -22,3 +22,10 @@ management:
     # Actuator on a connector of its own, also loopback only; 8091 keeps clear of the ledger's 8081.
     address: 127.0.0.1
     port: 8091
+  endpoints:
+    web:
+      exposure:
+        # These three and nothing else over HTTP (CLAUDE.md 3.2). env, configprops, heapdump and
+        # the rest read out configuration, credentials and memory, and a loopback address is not a
+        # reason to publish them.
+        include: health, info, prometheus
