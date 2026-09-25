@@ -1,8 +1,40 @@
 # Progress
 
-**Current phase:** 1 — Project skeleton (complete, pending the owner's review)
+**Current phase:** 2 — Domain model and persistence (complete, pending the owner's review)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
 **Last updated:** 2026-09-25
+
+## Phase 2 — done
+
+- [x] Domain (pure Java, no framework): `Money`/`CurrencyCode` (exact, overflow throws, jqwik),
+  `BusinessCalendar` (jqwik), items (`LedgerEntry`, `PspLine`, `BankLine`, `BatchKey` with a
+  name-based UUID), `Match` (rule fixes cardinality and confidence, canonical item order), the break
+  state machine (`Break`, `BreakAction`, `Transition`), `StatementFile`, `ReconciliationRun`
+- [x] Migrations V2-V4: every table of TDD 10, every constraint and index named, one rule per CHECK;
+  INV-2 and INV-7 partial unique indexes; append-only triggers (SQLSTATE RC001) on the event tables
+- [x] Migrations V5-V9: each table opened to `recon_app` with the repository that uses it, for the
+  verbs that repository issues; `breaks` UPDATE on three columns only; event tables SELECT/INSERT
+- [x] Repositories behind `application.port` interfaces (`LedgerEntryStore`, `StatementStore`,
+  `RunStore`, `MatchStore`, `BreakStore`), JDBC batches of 1,000 for lines
+- [x] Proofs: `DatabaseMechanism` lists every constraint, unique index and trigger; the catalog test
+  fails on one it lacks. `ApplicationRoleGrantsTest` pins exact grants; `WithheldPrivilege` proves
+  each refused verb; INV-6 is proven as two separate defences (42501, then RC001)
+- [x] `coverage.enforce=true`
+
+## Carried into later phases
+
+- **Phase 3 exit criterion (owner):** INV-9 Kafka rule. No producer can write to a ledger topic,
+  only the DLQ topic; enforced by a rule with a fixture that fails it, plus a break proof
+- `prometheus` is unauthenticated until Spring Security lands (TDD 11.1 wants a METRICS role)
+- UPDATE grants land with the code that issues them: `reconciliation_runs` and `sources_state`
+  (Phase 5 run orchestration), `matches.status` and `match_items.active` (Phase 7 reversal). Each
+  needs its `ApplicationRoleGrantsTest` line and, where a verb stays withheld, a `WithheldPrivilege`
+- A new constraint, index or trigger needs a `DatabaseMechanism` entry, or the catalog test fails
+- Phase 4 makes a file and its lines one transaction (FR-ING-6); `StatementStore` leaves that to
+  the caller, and turns a duplicate line into DUPLICATE_LINE handling (FR-ING-4)
+- Phase 5 fixes which configuration keys a run snapshots (`ReconciliationRun.configSnapshot`)
+
+# Phase 1 record
 
 ## Phase 1 — done
 
@@ -23,13 +55,6 @@
   the broken state can be built without editing a file (`*BreakProofTest`,
   `ContainersBindToLoopbackTest.aPortOffLoopbackIsReported`). Ryuk is recorded as unproven, guarded
   by a `require` rule in `ci/check-rules.sh`
-
-## Carried into later phases
-
-- **Phase 3 exit criterion (owner):** INV-9 Kafka rule. No producer can write to a ledger topic,
-  only the DLQ topic; enforced by a rule with a fixture that fails it, plus a break proof
-- `prometheus` is unauthenticated until Spring Security lands (TDD 11.1 wants a METRICS role)
-- `coverage.enforce` must be set to `true` in Phase 2
 
 # Phase 0 record
 
