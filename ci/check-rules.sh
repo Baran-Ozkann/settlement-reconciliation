@@ -64,6 +64,27 @@ deny_outside() {
   esac
 }
 
+# The opposite of deny: fails when grep does NOT find the pattern. For a guarantee that lives in one
+# line of configuration, where deleting the line is the violation.
+require() {
+  local desc="$1"; shift
+  local out status
+  out=$(grep -n "$@" 2>&1)
+  status=$?
+  case $status in
+    0)
+      : # present, clean
+      ;;
+    1)
+      echo "RULE VIOLATION: $desc"
+      violation=1
+      ;;
+    *)
+      guard_error "$desc" "$status" "$out"
+      ;;
+  esac
+}
+
 # The range the message check reads. On a branch, origin/main..HEAD is exactly what the branch adds.
 # On main once everything is pushed that range is empty, and a check against it would pass by
 # reading nothing, so fall back to the whole history of HEAD there.
@@ -138,14 +159,28 @@ deny "Testcontainers reuse switched on" \
 
 # Test containers publish on loopback only, and survive this rule even if the test that inspects
 # the bindings is deleted. A container built anywhere but the one factory skips its port binding;
-# a binding to any address but loopback, or host networking, publishes beyond this machine.
+# a binding to any address but loopback, or host networking, publishes beyond this machine. Any
+# literal 127.x.x.x address is loopback; the break proof in ContainersBindToLoopbackTest binds one
+# that is not 127.0.0.1, which is how it stays on this machine.
 deny "test container built outside LoopbackContainers" \
   -E 'new (PostgreSQLContainer|KafkaContainer|ConfluentKafkaContainer|GenericContainer)\b' \
   --include='*.java' --exclude='LoopbackContainers.java' src/test/java
 
 deny "test container port bound to an address other than loopback" \
-  -P 'Binding\.(bindPort|empty)\(|Binding\.bindIp(AndPort)?\((?!"127\.0\.0\.1"|LOOPBACK\b)|withNetworkMode\("host"\)' \
+  -P 'Binding\.(bindPort|empty)\(|Binding\.bindIp(AndPort)?\((?!"127(\.[0-9]{1,3}){3}"|LOOPBACK\b)|withNetworkMode\("host"\)' \
   --include='*.java' src/test/java
+
+# The factory's own half of the rule: its address is loopback and it applies that address.
+require "LoopbackContainers binds to 127.0.0.1" \
+  -E 'static final String LOOPBACK = "127\.0\.0\.1";' \
+  src/test/java/com/baran/recon/support/LoopbackContainers.java
+require "LoopbackContainers applies the loopback binding" \
+  -F 'Ports.Binding.bindIp(LOOPBACK)' \
+  src/test/java/com/baran/recon/support/LoopbackContainers.java
+
+# Ryuk publishes on every interface and cannot be told otherwise, so it stays off.
+require "Ryuk disabled for the test run" \
+  -F '<TESTCONTAINERS_RYUK_DISABLED>true</TESTCONTAINERS_RYUK_DISABLED>' pom.xml
 
 # CLAUDE.md 3.2: a published port without the 127.0.0.1 prefix is published on every interface.
 deny "docker compose port published beyond loopback" \

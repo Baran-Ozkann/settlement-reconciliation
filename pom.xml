@@ -68,6 +68,11 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- The validator the contract test runs the samples through, and from Phase 3 the one the
              consumer validates each record with (FR-LED-6), so both read the schema the same way.
              Test scope until then. Not managed by Boot, so pinned here. -->
@@ -92,6 +97,23 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <environmentVariables>
+                        <!-- Ryuk, the Testcontainers reaper, publishes its port on every interface and
+                             has no setting to bind it anywhere else, so it cannot coexist with the rule
+                             that test containers publish on loopback only. Without it, containers are
+                             removed by a JVM shutdown hook instead, and a JVM killed outright leaves
+                             them running: the README gives the cleanup command. -->
+                        <TESTCONTAINERS_RYUK_DISABLED>true</TESTCONTAINERS_RYUK_DISABLED>
+                        <!-- The address tests connect to. localhost resolves to ::1 first on Windows,
+                             where nothing listens, since every binding is IPv4 loopback. -->
+                        <TESTCONTAINERS_HOST_OVERRIDE>127.0.0.1</TESTCONTAINERS_HOST_OVERRIDE>
+                    </environmentVariables>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.jacoco</groupId>
