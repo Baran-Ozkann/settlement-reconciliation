@@ -1,6 +1,5 @@
 package com.baran.recon.adapters.out.persistence;
 
-import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -168,20 +167,7 @@ class DatabaseMechanismTest {
         }
     }
 
-    private static void inRolledBackTransaction(SqlWork work) throws SQLException {
-        try (Connection connection = database.connectAsSuperuser();
-             Statement jdbc = connection.createStatement()) {
-            connection.setAutoCommit(false);
-            try {
-                work.run(jdbc);
-            } finally {
-                connection.rollback();
-            }
-        }
-    }
-
-    @FunctionalInterface
-    private interface SqlWork {
-        void run(Statement jdbc) throws SQLException;
+    private static void inRolledBackTransaction(RolledBackTransaction.SqlWork work) throws SQLException {
+        RolledBackTransaction.run(database, work);
     }
 }
