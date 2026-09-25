@@ -78,6 +78,11 @@ public final class ReconPostgres implements AutoCloseable {
         return DriverManager.getConnection(jdbcUrl(), APP_ROLE, appPassword);
     }
 
+    /** The role that owns the schema and every table in it. */
+    public Connection connectAsMigrator() throws SQLException {
+        return DriverManager.getConnection(jdbcUrl(), MIGRATOR_ROLE, migratorPassword);
+    }
+
     /** The image's superuser: for a test that has to change what the roles may do. */
     public Connection connectAsSuperuser() throws SQLException {
         return DriverManager.getConnection(jdbcUrl(), container.getUsername(), container.getPassword());

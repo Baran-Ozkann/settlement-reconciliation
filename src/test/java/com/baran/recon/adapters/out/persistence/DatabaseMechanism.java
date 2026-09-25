@@ -5,6 +5,7 @@ import java.util.List;
 import static com.baran.recon.adapters.out.persistence.MechanismKind.CHECK;
 import static com.baran.recon.adapters.out.persistence.MechanismKind.FOREIGN_KEY;
 import static com.baran.recon.adapters.out.persistence.MechanismKind.PRIMARY_KEY;
+import static com.baran.recon.adapters.out.persistence.MechanismKind.TRIGGER;
 import static com.baran.recon.adapters.out.persistence.MechanismKind.UNIQUE;
 import static com.baran.recon.adapters.out.persistence.MechanismKind.UNIQUE_INDEX;
 import static com.baran.recon.adapters.out.persistence.Row.text;
@@ -22,6 +23,7 @@ import static com.baran.recon.adapters.out.persistence.Rows.RUN;
 import static com.baran.recon.adapters.out.persistence.Rows.SECOND_MATCH;
 import static com.baran.recon.adapters.out.persistence.Rows.SOURCE_STATE;
 import static com.baran.recon.adapters.out.persistence.Rows.STATEMENT_FILE;
+import static com.baran.recon.adapters.out.persistence.Rows.inserts;
 
 /**
  * Every constraint, unique index and trigger in the recon schema, each with the rows it needs to
@@ -236,7 +238,16 @@ enum DatabaseMechanism {
     BREAK_EVENTS_NOT_FROM_RESOLVED(CHECK, "break_events", "break_events_not_from_resolved",
             List.of(RUN, BREAK), BREAK_EVENT.with("from_status", text("RESOLVED"))),
     BREAK_EVENTS_OPENING_EVENT_OPENS(CHECK, "break_events", "break_events_opening_event_opens",
-            List.of(RUN, BREAK), BREAK_EVENT.with("to_status", text("INVESTIGATING")));
+            List.of(RUN, BREAK), BREAK_EVENT.with("to_status", text("INVESTIGATING"))),
+
+    MATCH_EVENTS_APPEND_ONLY(TRIGGER, "match_events", "match_events_append_only",
+            inserts(RUN, MATCH, MATCH_EVENT), "UPDATE recon.match_events SET reason = 'Rewritten' WHERE id = 1"),
+    MATCH_EVENTS_NO_TRUNCATE(TRIGGER, "match_events", "match_events_no_truncate",
+            inserts(RUN, MATCH, MATCH_EVENT), "TRUNCATE recon.match_events"),
+    BREAK_EVENTS_APPEND_ONLY(TRIGGER, "break_events", "break_events_append_only",
+            inserts(RUN, BREAK, BREAK_EVENT), "DELETE FROM recon.break_events WHERE id = 1"),
+    BREAK_EVENTS_NO_TRUNCATE(TRIGGER, "break_events", "break_events_no_truncate",
+            inserts(RUN, BREAK, BREAK_EVENT), "TRUNCATE recon.break_events");
 
     private final MechanismKind kind;
     private final String table;

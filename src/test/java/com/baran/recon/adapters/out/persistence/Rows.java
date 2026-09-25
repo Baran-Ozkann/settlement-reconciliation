@@ -1,5 +1,8 @@
 package com.baran.recon.adapters.out.persistence;
 
+import java.util.Arrays;
+import java.util.List;
+
 import static com.baran.recon.adapters.out.persistence.Row.text;
 
 /** A valid row of each table, with fixed ids, for the mechanism tests to vary one column at a time. */
@@ -140,5 +143,9 @@ final class Rows {
             .with("reason", text("Below the write-off threshold"));
 
     private Rows() {
+    }
+
+    static List<String> inserts(Row... rows) {
+        return Arrays.stream(rows).map(Row::insert).toList();
     }
 }
