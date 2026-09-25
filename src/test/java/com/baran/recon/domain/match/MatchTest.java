@@ -96,6 +96,16 @@ class MatchTest {
         assertThat(match.items()).containsExactly(LEDGER, PSP_1);
     }
 
+    @Test
+    @DisplayName("INV-5: the order items are listed in does not change the match")
+    void itemOrderIsCanonical() {
+        UUID id = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+
+        assertThat(Match.active(id, runId, RuleId.B1_BATCH_TOTAL, 1, NO_DIFFERENCE, AT, List.of(BANK, PSP_2, PSP_1)))
+                .isEqualTo(Match.active(id, runId, RuleId.B1_BATCH_TOTAL, 1, NO_DIFFERENCE, AT, List.of(PSP_1, BANK, PSP_2)));
+    }
+
     private static Match match(RuleId rule, List<MatchItem> items) {
         return Match.active(UUID.randomUUID(), UUID.randomUUID(), rule, 1, NO_DIFFERENCE, AT, items);
     }

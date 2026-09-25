@@ -1,6 +1,7 @@
 package com.baran.recon.domain.match;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +32,9 @@ public record Match(
         Instant createdAt,
         List<MatchItem> items) {
 
+    private static final Comparator<MatchItem> CANONICAL_ORDER =
+            Comparator.comparing(MatchItem::side).thenComparing(MatchItem::itemId);
+
     public Match {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(runId, "runId");
@@ -41,7 +45,9 @@ public record Match(
         if (ruleVersion < 1) {
             throw new InvalidMatchException("rule version starts at 1");
         }
-        items = List.copyOf(items);
+        // The order a caller lists items in means nothing, so a match keeps one canonical order and
+        // two matches of the same items are equal however they were listed or read back.
+        items = items.stream().sorted(CANONICAL_ORDER).toList();
         if (new HashSet<>(items).size() != items.size()) {
             throw new InvalidMatchException("an item appears twice in one match");
         }

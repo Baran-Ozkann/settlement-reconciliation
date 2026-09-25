@@ -4,6 +4,9 @@ import java.util.List;
 
 import static com.baran.recon.adapters.out.persistence.Rows.BANK_LINE;
 import static com.baran.recon.adapters.out.persistence.Rows.LEDGER_ENTRY;
+import static com.baran.recon.adapters.out.persistence.Rows.MATCH;
+import static com.baran.recon.adapters.out.persistence.Rows.MATCH_EVENT;
+import static com.baran.recon.adapters.out.persistence.Rows.MATCH_ITEM;
 import static com.baran.recon.adapters.out.persistence.Rows.PSP_LINE;
 import static com.baran.recon.adapters.out.persistence.Rows.RUN;
 import static com.baran.recon.adapters.out.persistence.Rows.STATEMENT_FILE;
@@ -52,7 +55,26 @@ enum WithheldPrivilege {
     // A run is never removed: its matches and breaks refer to it.
     RECONCILIATION_RUNS_DELETE(inserts(RUN),
             "DELETE FROM recon.reconciliation_runs WHERE source_code = 'PSP_ALPHA'",
-            "GRANT DELETE ON recon.reconciliation_runs TO recon_app", AfterGrant.SUCCEEDS);
+            "GRANT DELETE ON recon.reconciliation_runs TO recon_app", AfterGrant.SUCCEEDS),
+
+    // A reversed match is kept, never deleted (FR-MAT-7).
+    MATCHES_DELETE(inserts(RUN, MATCH),
+            "DELETE FROM recon.matches WHERE rule_id = 'A1_EXACT_REFERENCE'",
+            "GRANT DELETE ON recon.matches TO recon_app", AfterGrant.SUCCEEDS),
+    MATCH_ITEMS_DELETE(inserts(RUN, MATCH, MATCH_ITEM),
+            "DELETE FROM recon.match_items WHERE side = 'PSP'",
+            "GRANT DELETE ON recon.match_items TO recon_app", AfterGrant.SUCCEEDS),
+
+    // INV-6, the privilege half: with the privilege granted, the trigger still refuses.
+    MATCH_EVENTS_UPDATE(inserts(RUN, MATCH, MATCH_EVENT),
+            "UPDATE recon.match_events SET reason = 'Rewritten' WHERE event_type = 'CREATED'",
+            "GRANT UPDATE ON recon.match_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER),
+    MATCH_EVENTS_DELETE(inserts(RUN, MATCH, MATCH_EVENT),
+            "DELETE FROM recon.match_events WHERE event_type = 'CREATED'",
+            "GRANT DELETE ON recon.match_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER),
+    MATCH_EVENTS_TRUNCATE(inserts(RUN, MATCH, MATCH_EVENT),
+            "TRUNCATE recon.match_events",
+            "GRANT TRUNCATE ON recon.match_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER);
 
     enum AfterGrant {
         SUCCEEDS,

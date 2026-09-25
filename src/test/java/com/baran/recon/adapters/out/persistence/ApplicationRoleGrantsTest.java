@@ -31,7 +31,11 @@ class ApplicationRoleGrantsTest {
             "statement_files", Set.of("SELECT", "INSERT"),
             "psp_lines", Set.of("SELECT", "INSERT"),
             "bank_lines", Set.of("SELECT", "INSERT"),
-            "reconciliation_runs", Set.of("SELECT", "INSERT")));
+            "reconciliation_runs", Set.of("SELECT", "INSERT"),
+            "matches", Set.of("SELECT", "INSERT"),
+            "match_items", Set.of("SELECT", "INSERT"),
+            "match_events", Set.of("SELECT", "INSERT"),
+            "match_events_id_seq", Set.of("USAGE")));
 
     private static final String GRANTS = """
             SELECT c.relname, a.privilege_type
