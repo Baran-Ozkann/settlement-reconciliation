@@ -17,8 +17,11 @@ Invoke-RestMethod http://127.0.0.1:8091/actuator/health
 
 ```powershell
 .\mvnw.cmd verify                  # needs Docker running: integration tests use Testcontainers
-bash ci/check-rules.sh             # project rules the compiler and the tests do not see
+& "$env:ProgramFiles\Git\bin\bash.exe" ci/check-rules.sh   # rules the compiler and tests do not see
 ```
+
+The rule check is a bash script and runs under Git Bash. A bare `bash` in PowerShell can resolve to
+the WSL launcher instead, which fails without a Linux distribution installed.
 
 Test containers are removed when the test JVM exits. Ryuk, the Testcontainers reaper, is switched
 off because it publishes its port on every interface, so a JVM that is killed outright leaves its
