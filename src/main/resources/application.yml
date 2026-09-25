@@ -1,6 +1,15 @@
 spring:
   application:
     name: settlement-reconciliation
+  flyway:
+    # Flyway creates the schema on first run, as the role it connects with, so recon_migrator owns
+    # the schema and everything in it. Its history table lives there too.
+    schemas: recon
+    default-schema: recon
+    # Migrations need DDL and the application must not have it, so they run as recon_migrator on a
+    # connection of their own and the application's pool never holds those rights. The password is
+    # set per profile, like the datasource's.
+    user: recon_migrator
 
 server:
   # Loopback only. Nothing here is meant to be reached from another machine, and 8090 keeps clear

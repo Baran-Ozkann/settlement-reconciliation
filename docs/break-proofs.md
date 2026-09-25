@@ -29,6 +29,7 @@ proof runs on every build instead of once.
 | Mechanism | Broken state the test builds | Proof test | What it asserts |
 |---|---|---|---|
 | Test containers publish on 127.0.0.1 only (`LoopbackContainers`, checked by `ContainersBindToLoopbackTest.everyPublishedPortIsOnLoopback`) | a throwaway PostgreSQL container whose binding is overridden to `127.0.0.2`: loopback, so nothing leaves the machine, but not the address the factory chooses. Docker's default of every interface is not used, because publishing there is what CLAUDE.md 3.2 forbids | `ContainersBindToLoopbackTest.aPortOffLoopbackIsReported` | the same daemon-side check reports that container's port, on `127.0.0.2` |
+| `recon_app` cannot run DDL (bootstrap roles + `V1__baseline.sql`, checked by `ApplicationRoleCannotRunDdlTest`) | in a throwaway database, one transaction per statement: the privilege `ForbiddenDdl` names as withheld is granted (CREATE on `recon`, USAGE and CREATE on `public`, TEMPORARY or CREATE on the database, or ownership of the table or schema), then rolled back | `ApplicationRoleDdlBreakProofTest` | each of the 9 statements is refused with SQLSTATE 42501 before its grant and succeeds after it, so the absent grant is what refuses it |
 
 ### Unproven
 

@@ -9,3 +9,5 @@ spring:
     url: jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5434}/recon
     username: recon_app
     password: ${RECON_DB_APP_PASSWORD}
+  flyway:
+    password: ${RECON_DB_MIGRATOR_PASSWORD}

@@ -4,11 +4,12 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      # The image's superuser. Only the init script below uses it, to create the migration role and
-      # the database; neither Flyway nor the application ever connects as it.
+      # The image's superuser. Only the init script below uses it, to create the two roles and the
+      # database; neither Flyway nor the application ever connects as it.
       POSTGRES_USER: recon_bootstrap
       POSTGRES_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?set POSTGRES_BOOTSTRAP_PASSWORD in .env}
       RECON_DB_MIGRATOR_PASSWORD: ${RECON_DB_MIGRATOR_PASSWORD:?set RECON_DB_MIGRATOR_PASSWORD in .env}
+      RECON_DB_APP_PASSWORD: ${RECON_DB_APP_PASSWORD:?set RECON_DB_APP_PASSWORD in .env}
     # Loopback only, like every published port here: without the 127.0.0.1 prefix Docker publishes
     # on every interface. 5434 keeps clear of a native PostgreSQL on 5432 and the ledger's 5433.
     ports:

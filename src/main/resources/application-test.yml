@@ -1,0 +1,11 @@
+# Tests start their own PostgreSQL through Testcontainers and register its address and the
+# passwords generated for it at runtime (support/ReconPostgres), so this profile holds no
+# credentials and never reads .env.
+
+server:
+  # A test context never takes the fixed ports a locally running instance already holds.
+  port: 0
+
+management:
+  server:
+    port: 0
