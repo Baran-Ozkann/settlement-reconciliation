@@ -21,10 +21,9 @@
 
     <properties>
         <java.version>21</java.version>
-        <!-- NFR-TEST-1. The rules below are measured from Phase 1 and enforced from Phase 2 onward
-             (TDD 14): until the domain has code, a floor over empty packages says nothing. Phase 2
-             sets this to true. -->
-        <coverage.enforce>false</coverage.enforce>
+        <!-- NFR-TEST-1, enforced from Phase 2 onward (TDD 14): the build fails below the floors.
+             Phase 1 only measured, because a floor over empty packages says nothing. -->
+        <coverage.enforce>true</coverage.enforce>
     </properties>
 
     <dependencies>
