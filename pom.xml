@@ -45,10 +45,12 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Compile scope, not runtime: the persistence adapter reads the name of a violated
+             constraint from PSQLException to tell a ledger fault (FR-LED-8) from any other
+             failure. ArchUnit keeps the driver out of domain and application. -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
