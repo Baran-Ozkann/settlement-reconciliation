@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.2 — the ledger now publishes `entry_id` and `created_at` (ledger commit `e3119e9`, merged `93eadc2`)
+Version: 1.3 — break proofs are permanent tests where possible (§9.1); role creation moved to the bootstrap script (Phase 1)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -446,19 +446,36 @@ Each invariant must be enforced by a mechanism **and** verified by at least one 
 
 ---
 
-### 9.1 Break proof (adopted from the ledger)
+### 9.1 Break proof (adopted from the ledger, amended 2026-09-25)
 
-A green test proves nothing on its own. For every invariant and every database-level mechanism
-(constraint, partial unique index, trigger, grant, dedupe insert, advisory lock), the phase that
-introduces it must:
+A green test proves nothing on its own: an empty test is also green. Every invariant and every
+database-level mechanism (constraint, partial unique index, trigger, grant, dedupe insert, advisory
+lock, binding, exposure list) must be shown to be the thing that stops the failure.
 
-1. break the mechanism on purpose in a throwaway change that is **never committed**,
+**Preferred form — a permanent proof test.** Where the broken state can be built without editing a
+committed file, the proof is a test that builds it and asserts the check reports it. Examples of
+building it without an edit: a throwaway container configured differently, a privilege granted
+inside a transaction that is rolled back, a property overridden in the test's own application
+context. Such a proof runs on every build, so a later change that makes a check blind fails CI
+instead of going unnoticed, and nothing has to be weakened even briefly.
+
+**Fallback — a recorded one-off.** Where the broken state cannot be built that way, the phase that
+introduces the mechanism must:
+
+1. break it on purpose in a throwaway change that is **never committed**,
 2. run the test that should catch it and record the failing output,
-3. restore the mechanism and record the passing output,
-4. add a row to `docs/break-proofs.md`: mechanism broken → what the test reported.
+3. restore it and record the passing output.
 
-A mechanism without a recorded break proof is not considered done. Tests must also never reuse
-containers across runs (`withReuse(false)`), for the reason recorded in the ledger README.
+**Either way**, `docs/break-proofs.md` gets a row: the mechanism, how the broken state was produced,
+the proof test or command, and what it reported.
+
+**Unproven is a recorded state, not a silent gap.** A mechanism that can be broken neither way —
+because breaking it would itself violate a rule in `CLAUDE.md` — is listed under "Unproven" with the
+reason and with whatever guards it instead (typically a `require` rule in `ci/check-rules.sh`).
+A mechanism with neither a proof nor an Unproven entry is not done.
+
+Tests must never reuse containers across runs (`withReuse(false)`), for the reason recorded in the
+ledger README.
 
 ---
 
@@ -599,7 +616,13 @@ Goal: replace every assumption about the ledger with facts.
 ### Phase 1 — Project skeleton
 - Build with wrapper, Spring Boot app, profiles (`local`, `test`), `.env.example`.
 - `docker-compose.yml`: PostgreSQL + Kafka, ports on `127.0.0.1`, named volumes, healthchecks.
-- Flyway baseline migration creating the schema and the two DB roles (migration role, app role).
+- A bootstrap script (`ops/postgres/init/`) creates the migration role and the application role.
+  Roles are created here rather than in a migration because each needs a password, and a migration
+  could only receive one as a Flyway placeholder spliced into its SQL text — which Flyway prints in
+  full when a statement fails, putting the password in the logs. The script passes it as a `psql`
+  variable. A consequence worth keeping: the migration role therefore does not need `CREATEROLE`.
+- The Flyway baseline migration creates the schema and grants the application role CONNECT and
+  USAGE only — no CREATE anywhere, no ownership, so it cannot run DDL at all.
 - A contract test that loads `contracts/ledger-events.schema.json` with the `networknt` JSON Schema
   validator (draft 2020-12) and asserts every `samples/valid-*.json` validates and every
   `samples/invalid-*.json` fails — this is the verification Phase 0 could not run.
