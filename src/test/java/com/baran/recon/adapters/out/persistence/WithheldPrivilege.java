@@ -5,6 +5,7 @@ import java.util.List;
 import static com.baran.recon.adapters.out.persistence.Rows.BANK_LINE;
 import static com.baran.recon.adapters.out.persistence.Rows.LEDGER_ENTRY;
 import static com.baran.recon.adapters.out.persistence.Rows.PSP_LINE;
+import static com.baran.recon.adapters.out.persistence.Rows.RUN;
 import static com.baran.recon.adapters.out.persistence.Rows.STATEMENT_FILE;
 import static com.baran.recon.adapters.out.persistence.Rows.inserts;
 
@@ -46,7 +47,12 @@ enum WithheldPrivilege {
             "GRANT UPDATE ON recon.bank_lines TO recon_app", AfterGrant.SUCCEEDS),
     BANK_LINES_DELETE(inserts(STATEMENT_FILE, BANK_LINE),
             "DELETE FROM recon.bank_lines WHERE line_id = 'S-000001'",
-            "GRANT DELETE ON recon.bank_lines TO recon_app", AfterGrant.SUCCEEDS);
+            "GRANT DELETE ON recon.bank_lines TO recon_app", AfterGrant.SUCCEEDS),
+
+    // A run is never removed: its matches and breaks refer to it.
+    RECONCILIATION_RUNS_DELETE(inserts(RUN),
+            "DELETE FROM recon.reconciliation_runs WHERE source_code = 'PSP_ALPHA'",
+            "GRANT DELETE ON recon.reconciliation_runs TO recon_app", AfterGrant.SUCCEEDS);
 
     enum AfterGrant {
         SUCCEEDS,
