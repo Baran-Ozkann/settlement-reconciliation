@@ -82,6 +82,14 @@
             <version>3.0.7</version>
             <scope>test</scope>
         </dependency>
+        <!-- Property-based tests for money arithmetic and, from Phase 5, matching determinism
+             (CLAUDE.md 7.3). The version ledger-payment-core pins. Not managed by Boot. -->
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <version>1.9.3</version>
+            <scope>test</scope>
+        </dependency>
         <!-- Layering, money and isolation rules as tests (TDD 5.2, INV-8, INV-9). Not managed by
              Boot, so pinned here. -->
         <dependency>
