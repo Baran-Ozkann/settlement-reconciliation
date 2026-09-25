@@ -18,24 +18,31 @@ import com.baran.recon.support.ReconPostgres;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * recon_app holds exactly the privileges the application's code issues, table by table and verb by
- * verb, and nothing else: no column grants, no sequence grants beyond those an INSERT needs
+ * recon_app holds exactly the privileges the application's code issues, table by table, column by
+ * column and verb by verb, and nothing else: no sequence grants beyond those an INSERT needs
  * (CLAUDE.md 3.2). A table not listed here is closed to it. Each grant migration adds its line.
  */
 @DisplayName("Least privilege: recon_app holds exactly the verbs its repositories issue")
 class ApplicationRoleGrantsTest {
 
     /** Relation, and the privileges recon_app holds on it. */
-    private static final Map<String, Set<String>> EXPECTED = new TreeMap<>(Map.of(
-            "ledger_entries", Set.of("SELECT", "INSERT"),
-            "statement_files", Set.of("SELECT", "INSERT"),
-            "psp_lines", Set.of("SELECT", "INSERT"),
-            "bank_lines", Set.of("SELECT", "INSERT"),
-            "reconciliation_runs", Set.of("SELECT", "INSERT"),
-            "matches", Set.of("SELECT", "INSERT"),
-            "match_items", Set.of("SELECT", "INSERT"),
-            "match_events", Set.of("SELECT", "INSERT"),
-            "match_events_id_seq", Set.of("USAGE")));
+    private static final Map<String, Set<String>> EXPECTED = new TreeMap<>(Map.ofEntries(
+            Map.entry("ledger_entries", Set.of("SELECT", "INSERT")),
+            Map.entry("statement_files", Set.of("SELECT", "INSERT")),
+            Map.entry("psp_lines", Set.of("SELECT", "INSERT")),
+            Map.entry("bank_lines", Set.of("SELECT", "INSERT")),
+            Map.entry("reconciliation_runs", Set.of("SELECT", "INSERT")),
+            Map.entry("matches", Set.of("SELECT", "INSERT")),
+            Map.entry("match_items", Set.of("SELECT", "INSERT")),
+            Map.entry("match_events", Set.of("SELECT", "INSERT")),
+            Map.entry("match_events_id_seq", Set.of("USAGE")),
+            Map.entry("breaks", Set.of("SELECT", "INSERT")),
+            Map.entry("break_events", Set.of("SELECT", "INSERT")),
+            Map.entry("break_events_id_seq", Set.of("USAGE"))));
+
+    /** Column grants, as table.column:privilege. A break transition updates these three alone. */
+    private static final Set<String> EXPECTED_COLUMNS = new TreeSet<>(Set.of(
+            "breaks.status:UPDATE", "breaks.resolution_code:UPDATE", "breaks.resolved_at:UPDATE"));
 
     private static final String GRANTS = """
             SELECT c.relname, a.privilege_type
@@ -46,7 +53,7 @@ class ApplicationRoleGrantsTest {
             """;
 
     private static final String COLUMN_GRANTS = """
-            SELECT c.relname || '.' || att.attname
+            SELECT c.relname || '.' || att.attname || ':' || a.privilege_type
               FROM pg_attribute att
               JOIN pg_class c ON c.oid = att.attrelid
               JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -71,7 +78,7 @@ class ApplicationRoleGrantsTest {
     void grantsAreExactlyTheExpectedOnes() throws SQLException {
         RolledBackTransaction.run(database, jdbc -> {
             assertThat(grants(jdbc)).isEqualTo(EXPECTED);
-            assertThat(columnGrants(jdbc)).as("column-level grants").isEmpty();
+            assertThat(columnGrants(jdbc)).as("column-level grants").isEqualTo(EXPECTED_COLUMNS);
         });
     }
 
@@ -84,7 +91,7 @@ class ApplicationRoleGrantsTest {
             jdbc.execute("GRANT UPDATE (tx_type) ON recon.ledger_entries TO recon_app");
 
             assertThat(grants(jdbc).get("ledger_entries")).contains("UPDATE");
-            assertThat(columnGrants(jdbc)).containsExactly("ledger_entries.tx_type");
+            assertThat(columnGrants(jdbc)).contains("ledger_entries.tx_type:UPDATE");
         });
     }
 

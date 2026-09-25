@@ -3,6 +3,8 @@ package com.baran.recon.adapters.out.persistence;
 import java.util.List;
 
 import static com.baran.recon.adapters.out.persistence.Rows.BANK_LINE;
+import static com.baran.recon.adapters.out.persistence.Rows.BREAK;
+import static com.baran.recon.adapters.out.persistence.Rows.BREAK_EVENT;
 import static com.baran.recon.adapters.out.persistence.Rows.LEDGER_ENTRY;
 import static com.baran.recon.adapters.out.persistence.Rows.MATCH;
 import static com.baran.recon.adapters.out.persistence.Rows.MATCH_EVENT;
@@ -74,7 +76,29 @@ enum WithheldPrivilege {
             "GRANT DELETE ON recon.match_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER),
     MATCH_EVENTS_TRUNCATE(inserts(RUN, MATCH, MATCH_EVENT),
             "TRUNCATE recon.match_events",
-            "GRANT TRUNCATE ON recon.match_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER);
+            "GRANT TRUNCATE ON recon.match_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER),
+
+    // A break is never deleted, and a transition changes its status, code and time alone.
+    BREAKS_DELETE(inserts(RUN, BREAK),
+            "DELETE FROM recon.breaks WHERE break_type = 'AMOUNT_MISMATCH'",
+            "GRANT DELETE ON recon.breaks TO recon_app", AfterGrant.SUCCEEDS),
+    BREAKS_UPDATE_TYPE(inserts(RUN, BREAK),
+            "UPDATE recon.breaks SET break_type = 'MISSING_IN_PSP' WHERE status = 'OPEN'",
+            "GRANT UPDATE (break_type) ON recon.breaks TO recon_app", AfterGrant.SUCCEEDS),
+    BREAKS_UPDATE_ITEM(inserts(RUN, BREAK),
+            "UPDATE recon.breaks SET item_id = '1e000000-0000-4000-8000-000000000001' WHERE status = 'OPEN'",
+            "GRANT UPDATE (item_id) ON recon.breaks TO recon_app", AfterGrant.SUCCEEDS),
+
+    // INV-6, the privilege half: with the privilege granted, the trigger still refuses.
+    BREAK_EVENTS_UPDATE(inserts(RUN, BREAK, BREAK_EVENT),
+            "UPDATE recon.break_events SET reason = 'Rewritten' WHERE to_status = 'OPEN'",
+            "GRANT UPDATE ON recon.break_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER),
+    BREAK_EVENTS_DELETE(inserts(RUN, BREAK, BREAK_EVENT),
+            "DELETE FROM recon.break_events WHERE to_status = 'OPEN'",
+            "GRANT DELETE ON recon.break_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER),
+    BREAK_EVENTS_TRUNCATE(inserts(RUN, BREAK, BREAK_EVENT),
+            "TRUNCATE recon.break_events",
+            "GRANT TRUNCATE ON recon.break_events TO recon_app", AfterGrant.REFUSED_BY_TRIGGER);
 
     enum AfterGrant {
         SUCCEEDS,
