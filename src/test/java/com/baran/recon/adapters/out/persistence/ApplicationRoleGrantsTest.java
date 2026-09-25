@@ -27,7 +27,10 @@ class ApplicationRoleGrantsTest {
 
     /** Relation, and the privileges recon_app holds on it. */
     private static final Map<String, Set<String>> EXPECTED = new TreeMap<>(Map.of(
-            "ledger_entries", Set.of("SELECT", "INSERT")));
+            "ledger_entries", Set.of("SELECT", "INSERT"),
+            "statement_files", Set.of("SELECT", "INSERT"),
+            "psp_lines", Set.of("SELECT", "INSERT"),
+            "bank_lines", Set.of("SELECT", "INSERT")));
 
     private static final String GRANTS = """
             SELECT c.relname, a.privilege_type

@@ -2,7 +2,10 @@ package com.baran.recon.adapters.out.persistence;
 
 import java.util.List;
 
+import static com.baran.recon.adapters.out.persistence.Rows.BANK_LINE;
 import static com.baran.recon.adapters.out.persistence.Rows.LEDGER_ENTRY;
+import static com.baran.recon.adapters.out.persistence.Rows.PSP_LINE;
+import static com.baran.recon.adapters.out.persistence.Rows.STATEMENT_FILE;
 import static com.baran.recon.adapters.out.persistence.Rows.inserts;
 
 /**
@@ -23,7 +26,27 @@ enum WithheldPrivilege {
             "GRANT DELETE ON recon.ledger_entries TO recon_app", AfterGrant.SUCCEEDS),
     LEDGER_ENTRIES_TRUNCATE(inserts(LEDGER_ENTRY),
             "TRUNCATE recon.ledger_entries",
-            "GRANT TRUNCATE ON recon.ledger_entries TO recon_app", AfterGrant.SUCCEEDS);
+            "GRANT TRUNCATE ON recon.ledger_entries TO recon_app", AfterGrant.SUCCEEDS),
+
+    // A file is recorded once, in its final state, and a stored line is never changed or removed.
+    STATEMENT_FILES_UPDATE(inserts(STATEMENT_FILE),
+            "UPDATE recon.statement_files SET status = 'REJECTED', error_summary = '[]' WHERE line_count = 1",
+            "GRANT UPDATE ON recon.statement_files TO recon_app", AfterGrant.SUCCEEDS),
+    STATEMENT_FILES_DELETE(inserts(STATEMENT_FILE),
+            "DELETE FROM recon.statement_files WHERE line_count = 1",
+            "GRANT DELETE ON recon.statement_files TO recon_app", AfterGrant.SUCCEEDS),
+    PSP_LINES_UPDATE(inserts(STATEMENT_FILE, PSP_LINE),
+            "UPDATE recon.psp_lines SET batch_id = 'B-002' WHERE line_id = 'L-000001'",
+            "GRANT UPDATE ON recon.psp_lines TO recon_app", AfterGrant.SUCCEEDS),
+    PSP_LINES_DELETE(inserts(STATEMENT_FILE, PSP_LINE),
+            "DELETE FROM recon.psp_lines WHERE line_id = 'L-000001'",
+            "GRANT DELETE ON recon.psp_lines TO recon_app", AfterGrant.SUCCEEDS),
+    BANK_LINES_UPDATE(inserts(STATEMENT_FILE, BANK_LINE),
+            "UPDATE recon.bank_lines SET amount = 1 WHERE line_id = 'S-000001'",
+            "GRANT UPDATE ON recon.bank_lines TO recon_app", AfterGrant.SUCCEEDS),
+    BANK_LINES_DELETE(inserts(STATEMENT_FILE, BANK_LINE),
+            "DELETE FROM recon.bank_lines WHERE line_id = 'S-000001'",
+            "GRANT DELETE ON recon.bank_lines TO recon_app", AfterGrant.SUCCEEDS);
 
     enum AfterGrant {
         SUCCEEDS,
