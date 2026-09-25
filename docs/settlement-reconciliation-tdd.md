@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.3 — break proofs are permanent tests where possible (§9.1); role creation moved to the bootstrap script (Phase 1)
+Version: 1.4 — run statuses and matches.currency in §10; column-level UPDATE grants; optimistic concurrency on breaks (Phase 2 outcomes)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -156,6 +156,9 @@ IDs are stable. Tests and commit bodies reference them.
   entries excluded for having no value date (FR-MAT-9), read from the run's stats rather than
   recomputed.
 - **FR-API-5** `GET /api/v1/breaks/export?…` returns CSV with formula-injection neutralization.
+- **FR-API-6** A break transition whose break was changed by someone else since it was read returns
+  `409 Conflict` as Problem Details naming the break's current status, so the client can re-read and
+  decide. It is never retried automatically: the other actor's change may make this one wrong.
 
 ### 4.6 Non-functional (NFR)
 - **NFR-PERF-1** Ingest a 1,000,000-line PSP file with the JVM limited to `-Xmx512m`. Target: ≤ 60 s on
@@ -502,10 +505,13 @@ psp_lines             (id UUID PK, file_id FK, source_code, line_id, reference, 
 bank_lines            (id UUID PK, file_id FK, source_code, line_id, booking_date, value_date,
                        amount, currency, reference, extracted_batch_id, description,
                        UNIQUE(source_code, line_id))
-reconciliation_runs   (id UUID PK, source_code, value_date_from, value_date_to, status,
+reconciliation_runs   (id UUID PK, source_code, value_date_from, value_date_to,
+                       status,                                 -- RUNNING | COMPLETED | FAILED
                        config_snapshot JSONB, stats JSONB, started_at, finished_at, triggered_by)
 matches               (id UUID PK, run_id FK, rule_id, rule_version, cardinality, status,
-                       amount_difference BIGINT, low_confidence BOOL, created_at)
+                       amount_difference BIGINT, currency CHAR(3),  -- the difference is money, so it
+                                                                    -- carries its currency (TDD 6)
+                       low_confidence BOOL, created_at)
 match_items           (match_id FK, side, item_id, active BOOL, PRIMARY KEY(match_id, side, item_id))
 match_events          (id BIGSERIAL PK, match_id FK, event_type, actor, reason, occurred_at)   -- append-only
 breaks                (id UUID PK, break_type, item_side, item_id, related_items JSONB, status,
@@ -515,6 +521,16 @@ break_events          (id BIGSERIAL PK, break_id FK, from_status, to_status, res
 ```
 
 `side` / `item_side` ∈ `LEDGER`, `PSP`, `BANK`, `BATCH`.
+**Grants.** `recon_app` gets exactly the verbs the code issues, table by table. Where the code
+updates only some columns, the grant is column-level (`GRANT UPDATE (status, resolution_code,
+resolved_at) ON breaks`), never table-wide, so a bug or an injected statement cannot rewrite a column
+no code path changes. Each grant lands in the same phase as the code that uses it, and
+`ApplicationRoleGrantsTest` pins the full set exactly.
+
+**Concurrency on breaks.** A break transition updates the row only if its status is still the one
+that was read (`UPDATE … WHERE id = ? AND status = ?`). Zero rows updated means another actor changed
+it first: nothing is written, not even the event, and the caller gets a conflict (FR-API-6).
+
 All status/type columns have `CHECK` constraints listing allowed values, with one deliberate
 exception: `ledger_entries.tx_type` is open (FR-LED-9), because the producer may add a type and a
 CHECK would reject real money movements. `created_at` and `value_date` are null together or not at
@@ -678,7 +694,8 @@ Goal: replace every assumption about the ledger with facts.
 ### Phase 7 — Break management and API
 - Break transitions endpoint, resolution codes, reopen-as-new-break, auto-resolve `MATCHED_LATE`, match
   reversal (FR-MAT-7) with events, list/detail/export/summary endpoints, Problem Details, pagination.
-- Exit: FR-BRK-1…7, FR-API-1…5 covered; INV-6 replay test; export injection test; authorization tests for
+- Exit: FR-BRK-1…7, FR-API-1…6 covered; two concurrent transitions on one break produce exactly one
+  success and one 409, with one event written; INV-6 replay test; export injection test; authorization tests for
   every endpoint (VIEWER cannot mutate, unauthenticated gets 401).
 
 ### Phase 8 — Synthetic data generator and evaluation
