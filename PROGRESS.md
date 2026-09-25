@@ -1,10 +1,39 @@
 # Progress
 
-**Current phase:** 0 — Discovery and contract extraction (complete)
+**Current phase:** 1 — Project skeleton (complete, pending the owner's review)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
 **Last updated:** 2026-09-25
 
-## Done in this phase
+## Phase 1 — done
+
+- [x] Maven wrapper build on Spring Boot 4.1.1, profiles `local` and `test`, `.env.example`
+- [x] `docker-compose.yml`: PostgreSQL on `127.0.0.1:5434`, Kafka on `127.0.0.1:9094`, named
+  volumes, healthchecks. `ops/postgres/init/01-create-roles.sh` creates `recon_migrator` and
+  `recon_app` with passwords from `.env`, as psql variables
+- [x] `V1__baseline.sql`: Flyway (as `recon_migrator`) creates schema `recon`; `recon_app` gets
+  CONNECT and USAGE only. It cannot run DDL: `ApplicationRoleCannotRunDdlTest`
+- [x] Contract test over `contracts/samples` with the `networknt` validator
+- [x] ArchUnit rules (TDD 5.2, INV-8, the code half of INV-9) with fixture trees that break each
+- [x] `ci/check-rules.sh`, JaCoCo (measured; enforced from Phase 2 via `coverage.enforce`),
+  GitHub Actions
+- [x] Test containers on 127.0.0.1 only (`support/LoopbackContainers`), Ryuk disabled, never reused;
+  `support/ReconPostgres` bootstraps test databases with the real init script
+- [x] Actuator: `health`, `info`, `prometheus` only
+- [x] Break proofs in `docs/break-proofs.md`. From this phase on, a proof is a permanent test where
+  the broken state can be built without editing a file (`*BreakProofTest`,
+  `ContainersBindToLoopbackTest.aPortOffLoopbackIsReported`). Ryuk is recorded as unproven, guarded
+  by a `require` rule in `ci/check-rules.sh`
+
+## Carried into later phases
+
+- **Phase 3 exit criterion (owner):** INV-9 Kafka rule. No producer can write to a ledger topic,
+  only the DLQ topic; enforced by a rule with a fixture that fails it, plus a break proof
+- `prometheus` is unauthenticated until Spring Security lands (TDD 11.1 wants a METRICS role)
+- `coverage.enforce` must be set to `true` in Phase 2
+
+# Phase 0 record
+
+## Done in Phase 0
 
 - [x] Repository hygiene: `.gitignore` (build output, IDE, `.env`, `.phase-reports/`, owner-local
   material), `.editorconfig`. `.gitattributes` already existed and was left alone
@@ -71,6 +100,5 @@ owner has applied the v1.2 text.
 
 ## Next phase
 
-Phase 1 — project skeleton. It starts from an empty build: there is no `pom.xml`, no
-`docker-compose.yml` and no source tree yet, by design. Two Phase 0 findings feed it directly: the
-port map to avoid (notes section 8) and the broker recommendation (notes section 9).
+Phase 2 — domain model and persistence. Migrations continue from `V2`; each new table grants
+`recon_app` exactly the verbs the code issues, and audit tables SELECT and INSERT only (TDD 8.4).
