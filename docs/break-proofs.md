@@ -37,3 +37,21 @@ proof runs on every build instead of once.
 | Mechanism | Why there is no break proof | What guards it instead |
 |---|---|---|
 | Ryuk disabled (`TESTCONTAINERS_RYUK_DISABLED=true` in the surefire configuration) | Ryuk publishes its port on every interface and has no setting to change that. Starting it to show the check catches it would publish on `0.0.0.0`, which CLAUDE.md 3.2 forbids, and it is enabled per JVM, not per container, so a test cannot start it for itself alone. `ContainersBindToLoopbackTest` would report its port if it ever ran, but that has not been observed | `require "Ryuk disabled for the test run"` in `ci/check-rules.sh` fails the build when the line is missing from `pom.xml` |
+
+## Phase 2
+
+Database mechanisms are proven through one list. `DatabaseMechanism` (test sources) names every
+constraint, unique index and trigger in the `recon` schema, each with the rows it needs and a
+statement that violates it and nothing else. `DatabaseMechanismTest` runs each twice on a throwaway
+database, in a transaction that is rolled back: once to see the violation refused with that
+mechanism's SQLSTATE and name, once with only that mechanism removed to see the same statement go
+through. The second half is the break proof. It also shows the violation tests exactly one rule: a
+statement that broke two would still fail with one of them removed.
+
+A catalog test compares the list with `pg_constraint`, `pg_index` and `pg_trigger` in both
+directions. A mechanism added without an entry, and so without a proof, fails the build.
+
+| Mechanism | Broken state the test builds | Proof test | What it asserts |
+|---|---|---|---|
+| Every constraint and unique index of `ledger_entries`, `statement_files`, `psp_lines`, `bank_lines` (V2): 5, 11, 13 and 10 of them, each a `DatabaseMechanism` entry | that one mechanism dropped (`ALTER TABLE … DROP CONSTRAINT … CASCADE`, or `DROP INDEX` for a partial unique index) inside a rolled-back transaction | `DatabaseMechanismTest.withoutThisMechanismTheViolationGoesThrough` | the statement `violationIsRefusedByThisMechanism` saw refused with that constraint's name now succeeds |
+| The catalog test (`everyMechanismInTheSchemaIsListed`) | an unlisted CHECK, partial unique index and trigger added inside a rolled-back transaction | `DatabaseMechanismTest.anUnlistedMechanismIsReported` | the catalog query reports exactly those three as unlisted |

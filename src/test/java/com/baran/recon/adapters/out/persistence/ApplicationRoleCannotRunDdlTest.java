@@ -64,8 +64,11 @@ class ApplicationRoleCannotRunDdlTest {
     @Test
     @DisplayName("Flyway migrated the recon schema as recon_migrator, which owns it")
     void migrationsRanAsTheMigrator() {
-        assertThat(flyway.info().current()).isNotNull();
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+        assertThat(flyway.info().pending()).as("pending migrations").isEmpty();
+        assertThat(flyway.info().applied())
+                .as("applied migrations")
+                .anySatisfy(migration -> assertThat(migration.getVersion()).hasToString("1"))
+                .allSatisfy(migration -> assertThat(migration.getState().isFailed()).isFalse());
 
         JdbcClient jdbc = JdbcClient.create(dataSource);
         assertThat(jdbc.sql("SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'recon'")
