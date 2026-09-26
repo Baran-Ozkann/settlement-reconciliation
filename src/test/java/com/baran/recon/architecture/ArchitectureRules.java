@@ -51,6 +51,7 @@ final class ArchitectureRules {
                 controllersDoNotReachPersistence(),
                 noFloatingPointInDomainOrApplication(),
                 bigDecimalOnlyInTheFileAdapter(),
+                postgresDriverOnlyInPersistence(),
                 nothingDependsOnTheLedgersCode());
     }
 
@@ -103,6 +104,21 @@ final class ArchitectureRules {
                 .and().resideOutsideOfPackage(pkg("adapters.in.file.."))
                 .should().dependOnClassesThat().belongToAnyOf(java.math.BigDecimal.class)
                 .because("BigDecimal never leaves the file-parsing adapter (INV-8, TDD 6)")
+                .allowEmptyShould(true);
+    }
+
+    /**
+     * The driver is on the compile classpath because the persistence adapter reads the name of a
+     * violated constraint from PSQLException (FR-LED-8). That reason is the persistence adapter's
+     * alone: anywhere else the driver's types would tie code to PostgreSQL that has no business
+     * knowing which database it runs on. Domain and application are already held to java.* and
+     * themselves; this also covers the other adapters and config.
+     */
+    ArchRule postgresDriverOnlyInPersistence() {
+        return noClasses().that().resideInAPackage(pkg(".."))
+                .and().resideOutsideOfPackage(pkg("adapters.out.persistence.."))
+                .should().dependOnClassesThat().resideInAPackage("org.postgresql..")
+                .because("only the persistence adapter may know the database driver")
                 .allowEmptyShould(true);
     }
 

@@ -48,12 +48,14 @@ class ArchitectureRulesCatchViolationsTest {
                 violation("boxedfloat", ArchitectureRules::noFloatingPointInDomainOrApplication, "Rate"),
                 violation("doublecall", ArchitectureRules::noFloatingPointInDomainOrApplication, "Halver"),
                 violation("bigdecimal", ArchitectureRules::bigDecimalOnlyInTheFileAdapter, "DecimalStore"),
+                violation("postgreskafka", ArchitectureRules::postgresDriverOnlyInPersistence, "DriverAwareListener"),
+                violation("postgresconfig", ArchitectureRules::postgresDriverOnlyInPersistence, "DriverDataSource"),
                 violation("ledgercode", ArchitectureRules::nothingDependsOnTheLedgersCode, "Mirror"));
     }
 
     /**
      * The clean tree has a class in every layer, including BigDecimal in the file adapter and
-     * JdbcClient in persistence, so each rule has something to check and something it must allow.
+     * JdbcClient and the PostgreSQL driver in persistence, so each rule has something to check and something it must allow.
      * Empty selections are refused here, unlike in the application run: a rule whose selection
      * matched nothing in a tree that fills every layer would be checking nothing anywhere.
      */
