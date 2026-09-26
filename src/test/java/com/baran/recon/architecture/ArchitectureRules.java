@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaField;
@@ -12,6 +13,9 @@ import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
+import org.springframework.kafka.core.KafkaOperations;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
@@ -33,6 +37,17 @@ final class ArchitectureRules {
     private static final Set<String> FLOATING_POINT =
             Set.of("double", "float", Double.class.getName(), Float.class.getName());
 
+    /**
+     * Everything that can put a record on a topic: the client's producer package, Spring's template
+     * and producer factory, and the recoverer that publishes through a template.
+     */
+    private static final DescribedPredicate<JavaClass> KAFKA_PRODUCER_API =
+            JavaClass.Predicates.resideInAPackage("org.apache.kafka.clients.producer..")
+                    .or(JavaClass.Predicates.assignableTo(KafkaOperations.class))
+                    .or(JavaClass.Predicates.assignableTo(ProducerFactory.class))
+                    .or(JavaClass.Predicates.assignableTo(DeadLetterPublishingRecoverer.class))
+                    .as("Kafka's producer API");
+
     private final String root;
 
     private ArchitectureRules(String root) {
@@ -52,6 +67,7 @@ final class ArchitectureRules {
                 noFloatingPointInDomainOrApplication(),
                 bigDecimalOnlyInTheFileAdapter(),
                 postgresDriverOnlyInPersistence(),
+                kafkaProducersOnlyInTheKafkaAdapter(),
                 nothingDependsOnTheLedgersCode());
     }
 
@@ -119,6 +135,19 @@ final class ArchitectureRules {
                 .and().resideOutsideOfPackage(pkg("adapters.out.persistence.."))
                 .should().dependOnClassesThat().resideInAPackage("org.postgresql..")
                 .because("only the persistence adapter may know the database driver")
+                .allowEmptyShould(true);
+    }
+
+    /**
+     * INV-9, the compile-time half: the only code that can write to Kafka is the Kafka adapter,
+     * whose one producer writes the dead-letter topic. The run-time half, a producer post-processor
+     * that refuses every other topic, covers what a type check cannot see: which topic a send names.
+     */
+    ArchRule kafkaProducersOnlyInTheKafkaAdapter() {
+        return noClasses().that().resideInAPackage(pkg(".."))
+                .and().resideOutsideOfPackage(pkg("adapters.in.kafka.."))
+                .should().dependOnClassesThat(KAFKA_PRODUCER_API)
+                .because("only the Kafka adapter writes to Kafka, and only its dead-letter topic (INV-9)")
                 .allowEmptyShould(true);
     }
 
