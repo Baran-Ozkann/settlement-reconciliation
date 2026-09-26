@@ -34,12 +34,17 @@
 
 - **TDD text (owner):** FR-LED-5 renames `MISSING_EVENT_ID` to `INVALID_EVENT_ID`; FR-LED-5's header
   list gains `x-original-partition`
-- The acknowledge call's position in `LedgerEventListener.onBatch` is **Unproven** in
-  `docs/break-proofs.md`: under `AckMode.MANUAL` moving it first is invisible to the suite.
-  `containerCommitsOnlyAfterTheListener` pins `MANUAL` and auto-commit off instead
+- FR-LED-4 rests on three mechanisms, each with a permanent break proof: the projection failure
+  propagates out of the listener (`SwallowedFailureBreakProofTest`), the error handler retries
+  without limit (`OffsetCommitBreakProofTest`), and the listener acknowledges only after the commit,
+  which matters when the container stops mid-outage (`EarlyAcknowledgeBreakProofTest`).
+  `containerCommitsOnlyAfterTheListener` pins `AckMode.MANUAL` and auto-commit off; changing either
+  reopens the gap. A change to the listener must keep all three
 - Dead letters are at-least-once: a retried batch or a replay from offset 0 writes them again
 - A test context that starts the listener (`ReconKafka.registerListening`) must be `@DirtiesContext`:
   every listening context joins the group `settlement-reconciliation` and takes partitions
+- `support/ReconKafka` creates `ledger.account-activity` with 3 partitions when the shared broker
+  starts; a test must not rely on Kafka's auto-creation, which makes one partition
 - Phase 9: `recon_ledger_events_total{result}` (TDD 12) and a correlation id per consumed record
   (MDC) are not built yet
 - Phase 4 can read `SupportedCurrencies` for `UNSUPPORTED_CURRENCY`
