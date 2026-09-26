@@ -29,3 +29,8 @@ management:
         # the rest read out configuration, credentials and memory, and a loopback address is not a
         # reason to publish them.
         include: health, info, prometheus
+
+recon:
+  # TDD 8.1. Ledger entries are stored only for accounts listed here (FR-LED-2). Empty until OQ-3
+  # settles which ledger account a PSP clears through; no such account exists in any ledger yet.
+  sources: []
