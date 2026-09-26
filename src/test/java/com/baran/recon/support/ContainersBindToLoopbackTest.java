@@ -16,6 +16,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.kafka.KafkaContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,15 +42,19 @@ class ContainersBindToLoopbackTest {
     private static final String OTHER_LOOPBACK_ADDRESS = "127.0.0.2";
 
     private static PostgreSQLContainer<?> postgres;
+    private static KafkaContainer kafka;
 
     @BeforeAll
-    static void startContainer() {
+    static void startContainers() {
         postgres = LoopbackContainers.postgres();
         postgres.start();
+        kafka = LoopbackContainers.kafka();
+        kafka.start();
     }
 
     @AfterAll
-    static void stopContainer() {
+    static void stopContainers() {
+        kafka.stop();
         postgres.stop();
     }
 
@@ -60,6 +65,22 @@ class ContainersBindToLoopbackTest {
 
         assertThat(published).as("published ports of this session's containers").isNotEmpty();
         assertThat(offLoopback(published)).as("ports published off 127.0.0.1").isEmpty();
+    }
+
+    /**
+     * The session-wide check above would pass on PostgreSQL's ports alone. This shows the broker is
+     * among the containers it read, so a Kafka built some other way could not slip past it unseen.
+     */
+    @Test
+    @DisplayName("the Kafka container is one of those inspected, and publishes on 127.0.0.1")
+    void kafkaIsInspectedAndOnLoopback() {
+        List<ContainerPort> kafkaPorts = publishedPorts(sessionContainers().stream()
+                .filter(container -> container.getId().equals(kafka.getContainerId()))
+                .toList());
+
+        assertThat(kafkaPorts).as("the broker's published ports").isNotEmpty();
+        assertThat(kafkaPorts).extracting(ContainerPort::getIp).containsOnly(LoopbackContainers.LOOPBACK);
+        assertThat(kafka.getBootstrapServers()).startsWith(LoopbackContainers.LOOPBACK + ":");
     }
 
     /**
@@ -94,9 +115,10 @@ class ContainersBindToLoopbackTest {
     }
 
     @Test
-    @DisplayName("TDD 9.1: the container is not marked for reuse")
-    void containerIsNotReused() {
+    @DisplayName("TDD 9.1: no container is marked for reuse")
+    void containersAreNotReused() {
         assertThat(postgres.isShouldBeReused()).isFalse();
+        assertThat(kafka.isShouldBeReused()).isFalse();
     }
 
     private static List<ContainerPort> publishedPorts(List<Container> containers) {

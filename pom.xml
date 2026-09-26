@@ -74,6 +74,13 @@
             <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- A real broker for the ledger event consumer's tests, built only through
+             support/LoopbackContainers like PostgreSQL. No embedded substitute (CLAUDE.md 7.3). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- The validator the contract test runs the samples through, and from Phase 3 the one the
              consumer validates each record with (FR-LED-6), so both read the schema the same way.
              Test scope until then. Not managed by Boot, so pinned here. -->

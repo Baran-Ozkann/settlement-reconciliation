@@ -8,6 +8,7 @@ import com.github.dockerjava.api.model.PortBinding;
 import com.github.dockerjava.api.model.Ports;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.kafka.KafkaContainer;
 
 /**
  * The only place test containers are built. Every one publishes its ports on IPv4 loopback alone:
@@ -24,11 +25,23 @@ public final class LoopbackContainers {
 
     private static final String POSTGRES_IMAGE = "postgres:16-alpine";
 
+    /** The image the ledger's own broker and tests run, so both services meet one Kafka version. */
+    private static final String KAFKA_IMAGE = "apache/kafka:4.3.1";
+
     private LoopbackContainers() {
     }
 
     public static PostgreSQLContainer<?> postgres() {
         return onLoopback(new PostgreSQLContainer<>(POSTGRES_IMAGE)).withReuse(false);
+    }
+
+    /**
+     * The broker advertises the address the tests connect to, which TESTCONTAINERS_HOST_OVERRIDE
+     * sets to 127.0.0.1 in the surefire configuration, so clients reach it through the loopback
+     * binding below and never through another interface.
+     */
+    public static KafkaContainer kafka() {
+        return onLoopback(new KafkaContainer(KAFKA_IMAGE)).withReuse(false);
     }
 
     /**
