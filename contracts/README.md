@@ -141,9 +141,24 @@ fetching off), and checks four things:
 It runs in every `mvnw.cmd verify`, so adding a sample or changing a constraint is checked by the
 build, with no separate tool and no network beyond Maven's own dependency resolution.
 
-From Phase 3 the same schema is what the consumer validates each record against at runtime
-(FR-LED-6), so "the schema is right" and "the consumer enforces the schema" stay one fact rather than
-two.
+The same schema is what the consumer validates each record against at runtime (FR-LED-6), so "the
+schema is right" and "the consumer enforces the schema" stay one fact rather than two. The build
+copies this file onto the classpath rather than keeping a second copy, and
+`LedgerRecordParserTest` checks the classpath copy is byte for byte this one and runs every sample
+through the consumer's own parser as well.
+
+What the consumer checks beyond the schema, and the `x-error-code` each failure is dead-lettered
+with (FR-LED-5):
+
+| Check | Code |
+|---|---|
+| Exactly one `event-id` header, a positive decimal int64 in UTF-8. The message says whether it was absent, repeated or malformed | `INVALID_EVENT_ID` |
+| A value is present, is strict UTF-8, and is one JSON document with no duplicate keys | `SCHEMA_INVALID` |
+| `currency` is a real ISO 4217 code with minor units (`ABC` fits the pattern and is not) | `SCHEMA_INVALID` |
+| `created_at` names a real instant: no 30 February, no hour 24, no second 60 | `CREATED_AT_NOT_A_DATE` |
+
+A currency that is real ISO 4217 but outside the configured supported set passes the contract: it is
+money that moved on a mapped account, as with an unmapped `tx_type`.
 
 Phase 0's verification was done with `ajv-cli`, before the rule settling which tools may reach the
 network: 4 valid samples passed and all 7 invalid samples failed, each on the keyword it was written

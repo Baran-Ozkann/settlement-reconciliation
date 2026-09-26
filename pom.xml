@@ -51,6 +51,24 @@
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
         </dependency>
+        <!-- The ledger's events arrive on Kafka (FR-LED-1). The same two artifacts the ledger uses. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-kafka</artifactId>
+        </dependency>
+        <!-- The validator the consumer checks each record with (FR-LED-6), and the one the contract
+             test runs the samples through, so "the schema is right" and "the consumer enforces the
+             schema" are one fact. Built on Jackson 3, like the application. Not managed by Boot, so
+             pinned here. -->
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>3.0.7</version>
+        </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -81,15 +99,6 @@
             <artifactId>testcontainers-kafka</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- The validator the contract test runs the samples through, and from Phase 3 the one the
-             consumer validates each record with (FR-LED-6), so both read the schema the same way.
-             Test scope until then. Not managed by Boot, so pinned here. -->
-        <dependency>
-            <groupId>com.networknt</groupId>
-            <artifactId>json-schema-validator</artifactId>
-            <version>3.0.7</version>
-            <scope>test</scope>
-        </dependency>
         <!-- Property-based tests for money arithmetic and, from Phase 5, matching determinism
              (CLAUDE.md 7.3). The version ledger-payment-core pins. Not managed by Boot. -->
         <dependency>
@@ -113,6 +122,32 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- The consumer validates against the committed contracts/ledger-events.schema.json, copied
+                 onto the classpath at build time rather than kept as a second copy that could drift. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>copy-event-contract</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/contracts</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>contracts</directory>
+                                    <includes>
+                                        <include>ledger-events.schema.json</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
