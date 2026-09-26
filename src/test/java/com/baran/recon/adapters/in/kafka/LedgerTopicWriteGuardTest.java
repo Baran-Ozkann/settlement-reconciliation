@@ -61,7 +61,6 @@ class LedgerTopicWriteGuardTest {
     @Test
     @DisplayName("INV-9: the application's KafkaTemplate refuses a send to ledger.account-activity, and nothing lands")
     void templateRefusesTheLedgerTopic() {
-        ReconKafka.createTopic(LedgerTopics.ACCOUNT_ACTIVITY, ReconKafka.LEDGER_TOPIC_PARTITIONS);
         long before = recordsOnLedgerTopic(ReconKafka.bootstrapServers());
 
         assertThatThrownBy(() -> template.send(LedgerTopics.ACCOUNT_ACTIVITY, "key", new byte[] {1}))

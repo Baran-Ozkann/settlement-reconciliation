@@ -83,7 +83,6 @@ class OffsetCommitBreakProofTest {
     @Test
     @DisplayName("break proof: with bounded retries, the offset is committed while the store fails and nothing is stored")
     void withBoundedRetriesTheRecordIsLost() throws Exception {
-        ReconKafka.createTopic(LedgerTopics.ACCOUNT_ACTIVITY, ReconKafka.LEDGER_TOPIC_PARTITIONS);
         FailingLedgerEntryStore failing = FailingLedgerEntryStore.of(store);
         failing.failUntilReleased();
         try {

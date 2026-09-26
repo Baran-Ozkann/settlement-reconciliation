@@ -97,7 +97,6 @@ class LedgerEventConsumerTest {
 
     @BeforeAll
     static void playTheLedger() {
-        ReconKafka.createTopic(LedgerTopics.ACCOUNT_ACTIVITY, ReconKafka.LEDGER_TOPIC_PARTITIONS);
         ledger = ReconKafka.ledgerProducer();
         deadLetterReader = ReconKafka.reader(LedgerTopics.DEAD_LETTER);
     }
@@ -123,6 +122,16 @@ class LedgerEventConsumerTest {
     /** The application's store, wrapped by {@link FailingLedgerEntryStore.Injection}. */
     @Autowired
     private LedgerEntryStore store;
+
+    @Test
+    @DisplayName("the test broker's ledger topic has the ledger's three partitions, whichever test started it")
+    void ledgerTopicHasTheLedgersPartitions() throws Exception {
+        try (Admin admin = ReconKafka.admin()) {
+            assertThat(admin.describeTopics(List.of(LedgerTopics.ACCOUNT_ACTIVITY)).allTopicNames()
+                    .get(10, TimeUnit.SECONDS).get(LedgerTopics.ACCOUNT_ACTIVITY).partitions())
+                    .hasSize(ReconKafka.LEDGER_TOPIC_PARTITIONS);
+        }
+    }
 
     @Test
     @DisplayName("FR-LED-1, FR-LED-2: an event on a mapped account is stored; one on any other account is not")

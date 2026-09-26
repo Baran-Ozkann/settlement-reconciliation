@@ -88,7 +88,6 @@ class LedgerProjectionThroughputTest {
     @Test
     @DisplayName("NFR-PERF-3: a backlog of 200,000 mapped events is projected at 5,000 events/s or more")
     void drainsABacklogAtTheTargetRate() throws Exception {
-        ReconKafka.createTopic(LedgerTopics.ACCOUNT_ACTIVITY, ReconKafka.LEDGER_TOPIC_PARTITIONS);
         MessageListenerContainer container = listeners.getListenerContainer(LedgerEventListener.LISTENER_ID);
         assertThat(container.isRunning()).as("stopped until the backlog is published").isFalse();
         int rowsBefore = rows();

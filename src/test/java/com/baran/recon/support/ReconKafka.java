@@ -30,13 +30,15 @@ import org.testcontainers.kafka.KafkaContainer;
 /**
  * A broker for the application contexts under test, shared per test JVM like {@link ReconPostgres}
  * and started on first use by {@link #register}. It also plays the ledger's part: it creates the
- * ledger's topic the way the ledger does, and gives tests a producer to publish on it and a
- * consumer to read what this service wrote.
+ * ledger's topic the way the ledger does, as soon as the broker starts, and gives tests a producer
+ * to publish on it and a consumer to read what this service wrote.
  */
 public final class ReconKafka {
 
     /** As the ledger creates it (docs/ledger-integration-notes.md 5.1). */
     public static final int LEDGER_TOPIC_PARTITIONS = 3;
+
+    private static final String LEDGER_TOPIC = "ledger.account-activity";
 
     private static final KafkaContainer SHARED = LoopbackContainers.kafka();
     private static final Duration AWAIT = Duration.ofSeconds(60);
@@ -131,9 +133,16 @@ public final class ReconKafka {
         return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
     }
 
+    /**
+     * Starts the broker and creates the ledger's topic on it at once, with the ledger's partitions.
+     * The broker and the consumer both create an unknown topic on first use, with one partition, so
+     * a listener that subscribed before a test created the topic would leave every later test a
+     * one-partition topic.
+     */
     private static synchronized void start() {
         if (!SHARED.isRunning()) {
             SHARED.start();
+            createTopic(LEDGER_TOPIC, LEDGER_TOPIC_PARTITIONS);
         }
     }
 }
