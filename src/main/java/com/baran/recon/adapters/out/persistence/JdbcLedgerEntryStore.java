@@ -3,14 +3,20 @@ package com.baran.recon.adapters.out.persistence;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.core.namedparam.SqlParameterSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import com.baran.recon.application.port.DuplicateLedgerEntryException;
+import com.baran.recon.application.port.LedgerEntryBatchConflictException;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.domain.item.LedgerEntry;
 import com.baran.recon.domain.item.SourceCode;
@@ -50,39 +56,70 @@ class JdbcLedgerEntryStore implements LedgerEntryStore {
             """;
 
     private final JdbcClient jdbc;
+    private final NamedParameterJdbcTemplate batch;
 
-    JdbcLedgerEntryStore(JdbcClient jdbc) {
+    JdbcLedgerEntryStore(JdbcClient jdbc, NamedParameterJdbcTemplate batch) {
         this.jdbc = jdbc;
+        this.batch = batch;
     }
 
     @Override
     public boolean storeIfAbsent(LedgerEntry entry) {
         try {
-            return jdbc.sql(INSERT)
-                    .param("id", entry.id())
-                    .param("eventId", entry.eventId())
-                    .param("ledgerEntryId", entry.ledgerEntryId().orElse(null), Types.BIGINT)
-                    .param("transactionId", entry.transactionId())
-                    .param("accountId", entry.accountId())
-                    .param("sourceCode", entry.source().value())
-                    .param("amount", entry.amount().minorUnits())
-                    .param("currency", entry.amount().currency().code())
-                    .param("txType", entry.txType())
-                    .param("createdAt", timestampOrNull(entry.createdAt()), Types.TIMESTAMP_WITH_TIMEZONE)
-                    .param("valueDate", entry.valueDate().orElse(null), Types.DATE)
-                    .param("receivedAt", timestamp(entry.receivedAt()))
-                    .update() == 1;
+            return jdbc.sql(INSERT).paramSource(parameters(entry)).update() == 1;
         } catch (DuplicateKeyException duplicate) {
-            if (PostgresErrors.violatedConstraint(duplicate).filter(ENTRY_ID_INDEX::equals).isPresent()) {
+            if (violatesEntryIdIndex(duplicate)) {
                 throw new DuplicateLedgerEntryException(entry.ledgerEntryId().orElseThrow(), duplicate);
             }
             throw duplicate;
         }
     }
 
+    /**
+     * One JDBC batch. Each statement reports 1 or 0 rows, so a skipped redelivery is told apart from
+     * a stored entry for each entry, as {@link #storeIfAbsent} does for one.
+     */
+    @Override
+    public List<Boolean> storeAllIfAbsent(List<LedgerEntry> entries) {
+        if (entries.isEmpty()) {
+            return List.of();
+        }
+        int[] counts;
+        try {
+            counts = batch.batchUpdate(INSERT,
+                    entries.stream().map(JdbcLedgerEntryStore::parameters).toArray(SqlParameterSource[]::new));
+        } catch (DuplicateKeyException duplicate) {
+            if (violatesEntryIdIndex(duplicate)) {
+                throw new LedgerEntryBatchConflictException(duplicate);
+            }
+            throw duplicate;
+        }
+        return Arrays.stream(counts).mapToObj(count -> count == 1).toList();
+    }
+
     @Override
     public Optional<LedgerEntry> findById(UUID id) {
         return jdbc.sql(SELECT_BY_ID).param("id", id).query(JdbcLedgerEntryStore::map).optional();
+    }
+
+    private static boolean violatesEntryIdIndex(DuplicateKeyException duplicate) {
+        return PostgresErrors.violatedConstraint(duplicate).filter(ENTRY_ID_INDEX::equals).isPresent();
+    }
+
+    private static SqlParameterSource parameters(LedgerEntry entry) {
+        return new MapSqlParameterSource()
+                .addValue("id", entry.id())
+                .addValue("eventId", entry.eventId())
+                .addValue("ledgerEntryId", entry.ledgerEntryId().orElse(null), Types.BIGINT)
+                .addValue("transactionId", entry.transactionId())
+                .addValue("accountId", entry.accountId())
+                .addValue("sourceCode", entry.source().value())
+                .addValue("amount", entry.amount().minorUnits())
+                .addValue("currency", entry.amount().currency().code())
+                .addValue("txType", entry.txType())
+                .addValue("createdAt", timestampOrNull(entry.createdAt()), Types.TIMESTAMP_WITH_TIMEZONE)
+                .addValue("valueDate", entry.valueDate().orElse(null), Types.DATE)
+                .addValue("receivedAt", timestamp(entry.receivedAt()));
     }
 
     private static LedgerEntry map(ResultSet row, int rowNumber) throws SQLException {

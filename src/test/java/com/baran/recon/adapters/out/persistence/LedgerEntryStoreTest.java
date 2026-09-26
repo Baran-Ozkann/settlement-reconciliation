@@ -3,9 +3,11 @@ package com.baran.recon.adapters.out.persistence;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,8 +17,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baran.recon.application.port.DuplicateLedgerEntryException;
+import com.baran.recon.application.port.LedgerEntryBatchConflictException;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.domain.item.LedgerEntry;
 import com.baran.recon.domain.item.SourceCode;
@@ -52,6 +57,9 @@ class LedgerEntryStoreTest {
 
     @Autowired
     private JdbcClient jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactions;
 
     @Test
     @DisplayName("a seven-field entry is stored and read back unchanged, microseconds included")
@@ -112,6 +120,85 @@ class LedgerEntryStoreTest {
 
         assertThat(store.storeIfAbsent(entry)).isTrue();
         assertThat(store.findById(entry.id())).map(LedgerEntry::txType).contains("FEE");
+    }
+
+    @Test
+    @DisplayName("INV-3: a batch stores every new entry and reports each one as stored")
+    void batchStoresEveryNewEntry() {
+        List<LedgerEntry> entries = List.of(
+                dated(IDS.incrementAndGet(), IDS.incrementAndGet(), "TRANSFER"),
+                dated(IDS.incrementAndGet(), IDS.incrementAndGet(), "FUNDING"),
+                undated(IDS.incrementAndGet()));
+
+        assertThat(inTransaction(() -> store.storeAllIfAbsent(entries))).containsExactly(true, true, true);
+        assertThat(entries).allSatisfy(entry -> assertThat(store.findById(entry.id())).contains(entry));
+    }
+
+    @Test
+    @DisplayName("FR-LED-3, INV-3: in a batch, an event already stored and an event repeated are each kept once")
+    void batchSkipsRedeliveries() {
+        LedgerEntry earlier = dated(IDS.incrementAndGet(), IDS.incrementAndGet(), "TRANSFER");
+        store.storeIfAbsent(earlier);
+        LedgerEntry redeliveredEarlier = redelivery(earlier);
+        LedgerEntry fresh = dated(IDS.incrementAndGet(), IDS.incrementAndGet(), "TRANSFER");
+        LedgerEntry freshAgain = redelivery(fresh);
+
+        List<Boolean> stored = inTransaction(
+                () -> store.storeAllIfAbsent(List.of(redeliveredEarlier, fresh, freshAgain)));
+
+        assertThat(stored).containsExactly(false, true, false);
+        assertThat(rowsWithEventId(earlier.eventId())).isEqualTo(1);
+        assertThat(rowsWithEventId(fresh.eventId())).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("FR-LED-8: a batch carrying an entry id another event carried is refused whole")
+    void batchWithAProjectedEntryIdIsRefused() {
+        long entryId = IDS.incrementAndGet();
+        store.storeIfAbsent(dated(IDS.incrementAndGet(), entryId, "TRANSFER"));
+        LedgerEntry innocent = dated(IDS.incrementAndGet(), IDS.incrementAndGet(), "TRANSFER");
+        LedgerEntry sameEntryNewEvent = dated(IDS.incrementAndGet(), entryId, "TRANSFER");
+
+        assertThatThrownBy(() -> inTransaction(() -> store.storeAllIfAbsent(List.of(innocent, sameEntryNewEvent))))
+                .isInstanceOf(LedgerEntryBatchConflictException.class);
+        assertThat(store.findById(innocent.id())).as("rolled back with the batch").isEmpty();
+        assertThat(store.findById(sameEntryNewEvent.id())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("FR-LED-8: two new events in one batch carrying one entry id are refused")
+    void batchCarryingOneEntryTwiceIsRefused() {
+        long entryId = IDS.incrementAndGet();
+        List<LedgerEntry> entries = List.of(
+                dated(IDS.incrementAndGet(), entryId, "TRANSFER"),
+                dated(IDS.incrementAndGet(), entryId, "TRANSFER"));
+
+        assertThatThrownBy(() -> inTransaction(() -> store.storeAllIfAbsent(entries)))
+                .isInstanceOf(LedgerEntryBatchConflictException.class);
+        assertThat(entries).allSatisfy(entry -> assertThat(store.findById(entry.id())).isEmpty());
+    }
+
+    @Test
+    @DisplayName("an empty batch stores nothing and asks the database nothing")
+    void emptyBatch() {
+        assertThat(store.storeAllIfAbsent(List.of())).isEmpty();
+    }
+
+    /** The caller's side of the batch contract: a failed batch takes its transaction with it. */
+    private <T> T inTransaction(Supplier<T> work) {
+        return new TransactionTemplate(transactions).execute(status -> work.get());
+    }
+
+    private static LedgerEntry redelivery(LedgerEntry original) {
+        return new LedgerEntry(UUID.randomUUID(), original.eventId(), original.ledgerEntryId(),
+                original.transactionId(), original.accountId(), original.source(), original.amount(),
+                original.txType(), original.createdAt(), original.valueDate(), RECEIVED.plusSeconds(60));
+    }
+
+    private static LedgerEntry undated(long eventId) {
+        return new LedgerEntry(UUID.randomUUID(), eventId, Optional.empty(), UUID.randomUUID(), UUID.randomUUID(),
+                SourceCode.of("PSP_ALPHA"), Money.of(-4_000, CurrencyCode.of("TRY")), "TRANSFER",
+                Optional.empty(), Optional.empty(), RECEIVED);
     }
 
     private int rowsWithEventId(long eventId) {
