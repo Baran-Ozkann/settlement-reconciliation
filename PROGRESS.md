@@ -1,8 +1,52 @@
 # Progress
 
-**Current phase:** 2 — Domain model and persistence (complete, pending the owner's review)
+**Current phase:** 3 — Ledger event consumer (complete, pending the owner's review)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
-**Last updated:** 2026-09-25
+**Last updated:** 2026-09-26
+
+## Phase 3 — done
+
+- [x] `LoopbackContainers.kafka()` (`apache/kafka:4.3.1`), seen by `ContainersBindToLoopbackTest`;
+  `support/ReconKafka` shares one broker per JVM and plays the ledger's relay
+- [x] ArchUnit: `org.postgresql` only in `adapters.out.persistence`; Kafka's producer API only in
+  `adapters.in.kafka` (INV-9, compile-time half). Both with fixtures that fail them
+- [x] INV-9 run-time half: `DeadLetterOnlyProducer` wraps every producer of the application's factory
+  and refuses any topic but `recon.ledger-account-activity.dlq`. Break proof:
+  `LedgerTopicWriteGuardTest.withoutTheGuardTheSendLands`
+- [x] `recon.sources` (code, type, ledger-accounts only), `recon.value-date-zone`,
+  `recon.supported-currencies`; a contradictory configuration stops startup
+- [x] `ProjectLedgerEvents`: one transaction per polled batch behind a `Transactions` port; FR-LED-8
+  rolls the batch back and redoes it one entry per transaction. `LedgerEntryStore.storeAllIfAbsent`
+- [x] `LedgerRecordParser`: strict UTF-8, duplicate keys refused, the committed schema (copied onto the
+  classpath by the build, pinned byte for byte). Codes `SCHEMA_INVALID`, `CREATED_AT_NOT_A_DATE`,
+  `INVALID_EVENT_ID` (absent / repeated / malformed named in the message), `DUPLICATE_ENTRY_ID`
+- [x] `DeadLetterPublisher`: original key, value, headers kept; `x-error-code`, `x-error-message`,
+  `x-original-topic`, `x-original-partition`, `x-original-offset` added; send awaited
+- [x] `LedgerEventListener`: batch, `AckMode.MANUAL`, project → dead-letter → acknowledge.
+  Infrastructure failures retried without limit (0.5 s doubling to 30 s), ERROR on every attempt
+  with the backoff state, exception class names only
+- [x] FR-LED-9 and TDD 6: an unmapped `tx_type` or an ISO currency outside the supported set is
+  projected, WARNed once per value, counted (`recon_ledger_unmapped_tx_type_total{tx_type}`,
+  `recon_ledger_unsupported_currency_total{currency}`); `ABC` stays `SCHEMA_INVALID`
+- [x] NFR-PERF-3 measured under `-Pperf`: 6,291-6,561 events/s over three runs (target 5,000)
+
+## Carried into later phases
+
+- **TDD text (owner):** FR-LED-5 renames `MISSING_EVENT_ID` to `INVALID_EVENT_ID`; FR-LED-5's header
+  list gains `x-original-partition`
+- The acknowledge call's position in `LedgerEventListener.onBatch` is **Unproven** in
+  `docs/break-proofs.md`: under `AckMode.MANUAL` moving it first is invisible to the suite.
+  `containerCommitsOnlyAfterTheListener` pins `MANUAL` and auto-commit off instead
+- Dead letters are at-least-once: a retried batch or a replay from offset 0 writes them again
+- A test context that starts the listener (`ReconKafka.registerListening`) must be `@DirtiesContext`:
+  every listening context joins the group `settlement-reconciliation` and takes partitions
+- Phase 9: `recon_ledger_events_total{result}` (TDD 12) and a correlation id per consumed record
+  (MDC) are not built yet
+- Phase 4 can read `SupportedCurrencies` for `UNSUPPORTED_CURRENCY`
+- A Kafka test container once exited with code 126 at startup and did not recur in the following
+  runs; if it comes back, look at the image's start-script handoff before anything else
+
+# Phase 2 record
 
 ## Phase 2 — done
 
@@ -21,10 +65,9 @@
   each refused verb; INV-6 is proven as two separate defences (42501, then RC001)
 - [x] `coverage.enforce=true`
 
-## Carried into later phases
+## Carried out of Phase 2
 
-- **Phase 3 exit criterion (owner):** INV-9 Kafka rule. No producer can write to a ledger topic,
-  only the DLQ topic; enforced by a rule with a fixture that fails it, plus a break proof
+- **Phase 3 exit criterion (owner):** INV-9 Kafka rule — done in Phase 3
 - `prometheus` is unauthenticated until Spring Security lands (TDD 11.1 wants a METRICS role)
 - UPDATE grants land with the code that issues them: `reconciliation_runs` and `sources_state`
   (Phase 5 run orchestration), `matches.status` and `match_items.active` (Phase 7 reversal). Each
