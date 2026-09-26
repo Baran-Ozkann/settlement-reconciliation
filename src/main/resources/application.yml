@@ -10,6 +10,18 @@ spring:
     # connection of their own and the application's pool never holds those rights. The password is
     # set per profile, like the datasource's.
     user: recon_migrator
+  kafka:
+    producer:
+      # The only producer here writes the dead-letter topic, a record at a time, and the consumer
+      # waits for each write before it commits its offset. acks=all with idempotence means an
+      # acknowledged dead letter is on every in-sync replica and a producer retry is not a second copy.
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Bytes, so a dead letter carries the original value exactly as it arrived, even when it is not
+      # valid UTF-8, which is one reason a record is dead-lettered.
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      properties:
+        enable.idempotence: true
 
 server:
   # Loopback only. Nothing here is meant to be reached from another machine, and 8090 keeps clear

@@ -11,3 +11,6 @@ spring:
     password: ${RECON_DB_APP_PASSWORD}
   flyway:
     password: ${RECON_DB_MIGRATOR_PASSWORD}
+  kafka:
+    # This repository's own broker from docker compose, on loopback; 9094 keeps clear of the ledger's.
+    bootstrap-servers: 127.0.0.1:${KAFKA_PORT:9094}

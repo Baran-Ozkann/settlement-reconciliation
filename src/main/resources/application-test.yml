@@ -2,6 +2,16 @@
 # passwords generated for it at runtime (support/ReconPostgres), so this profile holds no
 # credentials and never reads .env.
 
+spring:
+  kafka:
+    # Most test contexts have no broker. Without these the admin client would try to create the
+    # dead-letter topic at startup, and the listener to poll, against an address where nothing
+    # listens. Tests that start a broker (support/ReconKafka) switch both back on.
+    admin:
+      auto-create: false
+    listener:
+      auto-startup: false
+
 server:
   # A test context never takes the fixed ports a locally running instance already holds.
   port: 0

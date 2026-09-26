@@ -99,6 +99,12 @@
             <artifactId>testcontainers-kafka</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Bounded waits for asynchronous outcomes, never a sleep (CLAUDE.md 7.3). Managed by Boot. -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Property-based tests for money arithmetic and, from Phase 5, matching determinism
              (CLAUDE.md 7.3). The version ledger-payment-core pins. Not managed by Boot. -->
         <dependency>
