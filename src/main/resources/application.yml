@@ -31,6 +31,9 @@ management:
         include: health, info, prometheus
 
 recon:
+  # TDD 6: a ledger entry's value date is the date its created_at falls on in this zone. Snapshotted
+  # onto each run from Phase 5 (FR-MAT-8).
+  value-date-zone: Europe/Istanbul
   # TDD 8.1. Ledger entries are stored only for accounts listed here (FR-LED-2). Empty until OQ-3
   # settles which ledger account a PSP clears through; no such account exists in any ledger yet.
   sources: []
