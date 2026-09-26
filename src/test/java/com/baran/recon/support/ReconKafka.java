@@ -44,11 +44,24 @@ public final class ReconKafka {
     private ReconKafka() {
     }
 
-    /** For {@code @DynamicPropertySource}: the shared broker, with topic creation and listeners on. */
+    /**
+     * For {@code @DynamicPropertySource}: the shared broker, with topic creation on and the listener
+     * still off. A context that consumes uses {@link #registerListening} instead.
+     */
     public static void register(DynamicPropertyRegistry registry) {
         start();
         registry.add("spring.kafka.bootstrap-servers", SHARED::getBootstrapServers);
         registry.add("spring.kafka.admin.auto-create", () -> "true");
+    }
+
+    /**
+     * As {@link #register}, with the ledger listener started. Every listening context joins the same
+     * consumer group and would take a share of the ledger topic's partitions, so a class that uses
+     * this must close its context when it ends ({@code @DirtiesContext}), and only one such context
+     * may be open at a time.
+     */
+    public static void registerListening(DynamicPropertyRegistry registry) {
+        register(registry);
         registry.add("spring.kafka.listener.auto-startup", () -> "true");
     }
 

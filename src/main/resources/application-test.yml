@@ -6,7 +6,8 @@ spring:
   kafka:
     # Most test contexts have no broker. Without these the admin client would try to create the
     # dead-letter topic at startup, and the listener to poll, against an address where nothing
-    # listens. Tests that start a broker (support/ReconKafka) switch both back on.
+    # listens. support/ReconKafka switches topic creation back on for a context with a broker, and
+    # the listener only for a context that consumes.
     admin:
       auto-create: false
     listener:

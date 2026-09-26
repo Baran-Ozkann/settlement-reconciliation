@@ -11,6 +11,19 @@ spring:
     # set per profile, like the datasource's.
     user: recon_migrator
   kafka:
+    consumer:
+      # The projection is derived from the topic, so a new consumer group reads it from the start;
+      # replaying it is harmless because the insert skips a known event id (NFR-REL-3).
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Bytes: the parser decodes strict UTF-8 itself, and a dead letter keeps the bytes that arrived.
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    listener:
+      # A polled batch is projected in one transaction, then acknowledged once, and the offset is
+      # committed only after that acknowledgement (FR-LED-4).
+      type: batch
+      ack-mode: manual
     producer:
       # The only producer here writes the dead-letter topic, a record at a time, and the consumer
       # waits for each write before it commits its offset. acks=all with idempotence means an
