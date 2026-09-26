@@ -59,6 +59,9 @@ recon:
   # TDD 6: a ledger entry's value date is the date its created_at falls on in this zone. Snapshotted
   # onto each run from Phase 5 (FR-MAT-8).
   value-date-zone: Europe/Istanbul
+  # TDD 6: TRY alone, matching the ledger. A ledger entry in another real ISO 4217 currency is still
+  # projected, warned about and counted: it is money that moved on a mapped account.
+  supported-currencies: [ TRY ]
   # TDD 8.1. Ledger entries are stored only for accounts listed here (FR-LED-2). Empty until OQ-3
   # settles which ledger account a PSP clears through; no such account exists in any ledger yet.
   sources: []

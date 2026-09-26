@@ -75,7 +75,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DirtiesContext
 @ExtendWith(OutputCaptureExtension.class)
 @Import(FailingLedgerEntryStore.Injection.class)
-@DisplayName("FR-LED-1..8: the ledger event consumer")
+@DisplayName("FR-LED-1..9: the ledger event consumer")
 class LedgerEventConsumerTest {
 
     static final String CLEARING_ACCOUNT = "00000000-0000-4000-8000-00000000c1ea";
@@ -202,6 +202,42 @@ class LedgerEventConsumerTest {
         awaitCommitted(sent);
         assertThat(unmappedTxTypeCount("ADJUSTMENT") - countBefore).isEqualTo(2);
         assertThat(output.getOut().split("WARN .*with tx_type ADJUSTMENT,", -1)).as("one WARN").hasSize(2);
+    }
+
+    @Test
+    @DisplayName("FR-LED-5: a currency in the contract's shape that is no ISO 4217 code (ABC) is dead-lettered as SCHEMA_INVALID")
+    void nonIsoCurrencyIsDeadLettered() {
+        long eventId = IDS.incrementAndGet();
+
+        RecordMetadata invalid = publish(CLEARING, eventId, event(CLEARING, IDS.incrementAndGet(), "ABC"));
+        long sentinel = publishSentinel(CLEARING);
+
+        assertDeadLetter(awaitDeadLetter(invalid), invalid, "SCHEMA_INVALID",
+                "currency is not an ISO 4217 code with minor units");
+        awaitStored(sentinel);
+        assertThat(row(eventId)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("TDD 6: a real ISO 4217 currency outside the supported set (USD) is projected, warned about once and counted")
+    void unsupportedIsoCurrencyIsProjected(CapturedOutput output) {
+        double countBefore = unsupportedCurrencyCount("USD");
+        long first = IDS.incrementAndGet();
+        long second = IDS.incrementAndGet();
+
+        publish(CLEARING, first, event(CLEARING, IDS.incrementAndGet(), "USD"));
+        publish(CLEARING, second, event(CLEARING, IDS.incrementAndGet(), "USD"));
+
+        awaitStored(second);
+        assertThat(row(first).get()).containsEntry("currency", "USD");
+        assertThat(row(second).get()).containsEntry("currency", "USD");
+        assertThat(unsupportedCurrencyCount("USD") - countBefore).isEqualTo(2);
+        assertThat(output.getOut().split("WARN .*ledger entry in USD,", -1)).as("one WARN").hasSize(2);
+    }
+
+    private double unsupportedCurrencyCount(String currency) {
+        Counter counter = meters.find(UnfamiliarValueReporter.UNSUPPORTED_CURRENCY).tag("currency", currency).counter();
+        return counter == null ? 0 : counter.count();
     }
 
     private double unmappedTxTypeCount(String txType) {
@@ -498,10 +534,18 @@ class LedgerEventConsumerTest {
     }
 
     private static byte[] event(UUID account, long entryId, String createdAt, String txType) {
+        return event(account, entryId, createdAt, txType, "TRY");
+    }
+
+    private static byte[] event(UUID account, long entryId, String currency) {
+        return event(account, entryId, "2026-09-24T08:15:42.318204Z", "TRANSFER", currency);
+    }
+
+    private static byte[] event(UUID account, long entryId, String createdAt, String txType, String currency) {
         return """
-                {"transaction_id":"%s","account_id":"%s","amount":125000,"currency":"TRY","tx_type":"%s",
+                {"transaction_id":"%s","account_id":"%s","amount":125000,"currency":"%s","tx_type":"%s",
                  "entry_id":%d,"created_at":"%s"}"""
-                .formatted(UUID.randomUUID(), account, txType, entryId, createdAt)
+                .formatted(UUID.randomUUID(), account, currency, txType, entryId, createdAt)
                 .getBytes(StandardCharsets.UTF_8);
     }
 }
