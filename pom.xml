@@ -159,6 +159,9 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
+                    <!-- Performance measurements (TDD 13) run only under -Pperf: they take minutes and
+                         measure the machine as much as the code, so they are not part of every build. -->
+                    <excludedGroups>perf</excludedGroups>
                     <environmentVariables>
                         <!-- Ryuk, the Testcontainers reaper, publishes its port on every interface and
                              has no setting to bind it anywhere else, so it cannot coexist with the rule
@@ -229,4 +232,28 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- NFR-PERF-*: .\mvnw.cmd -B test -Pperf runs the measurements and nothing else. Coverage is not
+             measured there: a run of one class is below every floor by construction, and the default
+             build, which runs everything else, still enforces them. -->
+        <profile>
+            <id>perf</id>
+            <properties>
+                <jacoco.skip>true</jacoco.skip>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>perf</groups>
+                            <excludedGroups combine.self="override"/>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
