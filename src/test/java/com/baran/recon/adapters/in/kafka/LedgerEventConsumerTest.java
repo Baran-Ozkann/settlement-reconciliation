@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -115,6 +117,9 @@ class LedgerEventConsumerTest {
     @Autowired
     private KafkaProperties kafkaProperties;
 
+    @Autowired
+    private MeterRegistry meters;
+
     /** The application's store, wrapped by {@link FailingLedgerEntryStore.Injection}. */
     @Autowired
     private LedgerEntryStore store;
@@ -181,16 +186,27 @@ class LedgerEventConsumerTest {
     }
 
     @Test
-    @DisplayName("FR-LED-9: an event with a tx_type this service does not map is projected, not dead-lettered")
-    void unmappedTxTypeIsProjected() {
-        long eventId = IDS.incrementAndGet();
+    @DisplayName("FR-LED-9: an unmapped tx_type is projected, not dead-lettered, warned about once and counted per entry")
+    void unmappedTxTypeIsProjected(CapturedOutput output) {
+        double countBefore = unmappedTxTypeCount("ADJUSTMENT");
+        long first = IDS.incrementAndGet();
+        long second = IDS.incrementAndGet();
 
-        RecordMetadata sent = publish(CLEARING, eventId,
+        publish(CLEARING, first, event(CLEARING, IDS.incrementAndGet(), "2026-09-24T08:15:42.318204Z", "ADJUSTMENT"));
+        RecordMetadata sent = publish(CLEARING, second,
                 event(CLEARING, IDS.incrementAndGet(), "2026-09-24T08:15:42.318204Z", "ADJUSTMENT"));
 
-        awaitStored(eventId);
-        assertThat(row(eventId).get()).containsEntry("tx_type", "ADJUSTMENT");
+        awaitStored(second);
+        assertThat(row(first).get()).containsEntry("tx_type", "ADJUSTMENT");
+        assertThat(row(second).get()).containsEntry("tx_type", "ADJUSTMENT");
         awaitCommitted(sent);
+        assertThat(unmappedTxTypeCount("ADJUSTMENT") - countBefore).isEqualTo(2);
+        assertThat(output.getOut().split("WARN .*with tx_type ADJUSTMENT,", -1)).as("one WARN").hasSize(2);
+    }
+
+    private double unmappedTxTypeCount(String txType) {
+        Counter counter = meters.find(UnfamiliarValueReporter.UNMAPPED_TX_TYPE).tag("tx_type", txType).counter();
+        return counter == null ? 0 : counter.count();
     }
 
     @Test

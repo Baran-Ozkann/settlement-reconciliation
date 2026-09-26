@@ -40,11 +40,14 @@ class LedgerEventListener {
     private final LedgerRecordParser parser;
     private final ProjectLedgerEvents projection;
     private final DeadLetterPublisher deadLetters;
+    private final UnfamiliarValueReporter unfamiliar;
 
-    LedgerEventListener(LedgerRecordParser parser, ProjectLedgerEvents projection, DeadLetterPublisher deadLetters) {
+    LedgerEventListener(LedgerRecordParser parser, ProjectLedgerEvents projection, DeadLetterPublisher deadLetters,
+                        UnfamiliarValueReporter unfamiliar) {
         this.parser = parser;
         this.projection = projection;
         this.deadLetters = deadLetters;
+        this.unfamiliar = unfamiliar;
     }
 
     @KafkaListener(id = LISTENER_ID, groupId = CONSUMER_GROUP, topics = LedgerTopics.ACCOUNT_ACTIVITY, batch = "true")
@@ -72,8 +75,12 @@ class LedgerEventListener {
             deadLetter(rejectedRecords.get(i), rejections.get(i).reason(), rejections.get(i).message());
         }
         for (int i = 0; i < outcomes.size(); i++) {
-            if (outcomes.get(i) == ProjectionOutcome.DUPLICATE_ENTRY_ID) {
-                duplicateEntry(acceptedRecords.get(i), events.get(i));
+            switch (outcomes.get(i)) {
+                case STORED -> unfamiliar.projected(events.get(i));
+                case DUPLICATE_ENTRY_ID -> duplicateEntry(acceptedRecords.get(i), events.get(i));
+                case DUPLICATE_EVENT, UNMAPPED_ACCOUNT -> {
+                    // Nothing new was stored, so there is nothing to report or dead-letter.
+                }
             }
         }
         acknowledgment.acknowledge();
