@@ -1,18 +1,8 @@
 package com.baran.recon.adapters.in.kafka;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
-import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.header.internals.RecordHeader;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -82,44 +72,19 @@ class OffsetCommitBreakProofTest {
 
     @Test
     @DisplayName("break proof: with bounded retries, the offset is committed while the store fails and nothing is stored")
-    void withBoundedRetriesTheRecordIsLost() throws Exception {
+    void withBoundedRetriesTheRecordIsLost() {
         FailingLedgerEntryStore failing = FailingLedgerEntryStore.of(store);
         failing.failUntilReleased();
         try {
-            RecordMetadata sent = publish();
-            TopicPartition partition = new TopicPartition(sent.topic(), sent.partition());
+            RecordMetadata sent = LedgerRelay.publish(CLEARING_ACCOUNT, EVENT_ID, ENTRY_ID);
 
-            Awaitility.await().atMost(AWAIT).until(() -> committedOffset(partition) > sent.offset());
+            Awaitility.await().atMost(AWAIT).until(() -> LedgerRelay.committedOffset(sent) > sent.offset());
 
             assertThat(failing.failures()).as("every attempt failed").isEqualTo(BoundedRetries.ATTEMPTS);
-            assertThat(rowsWithEventId()).as("nothing stored behind the committed offset").isZero();
+            assertThat(LedgerRelay.rowsWithEventId(jdbc, EVENT_ID)).as("nothing stored behind the committed offset")
+                    .isZero();
         } finally {
             failing.release();
-        }
-    }
-
-    private int rowsWithEventId() {
-        return jdbc.sql("SELECT count(*) FROM ledger_entries WHERE event_id = :eventId")
-                .param("eventId", EVENT_ID).query(Integer.class).single();
-    }
-
-    private static long committedOffset(TopicPartition partition) throws Exception {
-        try (Admin admin = ReconKafka.admin()) {
-            OffsetAndMetadata committed = admin.listConsumerGroupOffsets(LedgerEventListener.CONSUMER_GROUP)
-                    .partitionsToOffsetAndMetadata().get(10, TimeUnit.SECONDS).get(partition);
-            return committed == null ? -1 : committed.offset();
-        }
-    }
-
-    private static RecordMetadata publish() throws Exception {
-        byte[] value = """
-                {"transaction_id":"%s","account_id":"%s","amount":125000,"currency":"TRY","tx_type":"TRANSFER",
-                 "entry_id":%d,"created_at":"2026-09-24T08:15:42.318204Z"}"""
-                .formatted(UUID.randomUUID(), CLEARING_ACCOUNT, ENTRY_ID).getBytes(StandardCharsets.UTF_8);
-        try (KafkaProducer<String, byte[]> ledger = ReconKafka.ledgerProducer()) {
-            return ledger.send(new ProducerRecord<>(LedgerTopics.ACCOUNT_ACTIVITY, null, CLEARING_ACCOUNT, value,
-                    List.of(new RecordHeader("event-id", Long.toString(EVENT_ID).getBytes(StandardCharsets.UTF_8)))))
-                    .get(30, TimeUnit.SECONDS);
         }
     }
 
