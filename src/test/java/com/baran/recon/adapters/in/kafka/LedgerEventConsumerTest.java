@@ -359,10 +359,12 @@ class LedgerEventConsumerTest {
     }
 
     /**
-     * Under MANUAL, acknowledged offsets are committed after the listener returns, and not at all
-     * for a batch that threw. MANUAL_IMMEDIATE would commit at the acknowledge call, and auto-commit
-     * on the consumer's own schedule: either would make the order of the listener's code the only
-     * thing between an early commit and a lost record.
+     * The settings the FR-LED-4 break proofs depend on, pinned. Under MANUAL a batch's offsets are
+     * committed when the listener returns normally, after the error handler has handled what it
+     * threw, or - for offsets already acknowledged - when the container stops. MANUAL_IMMEDIATE
+     * would commit at the acknowledge call itself, and auto-commit on the consumer's own schedule
+     * (Spring Kafka refuses auto-commit with MANUAL at startup, but not with a non-manual ack mode).
+     * Either would bring back the lost record the break proofs build, with no test code changed.
      */
     @Test
     @DisplayName("FR-LED-4: the container commits only acknowledged offsets, after the listener returns, never on its own")
@@ -409,6 +411,42 @@ class LedgerEventConsumerTest {
                         + "<- org\\.springframework\\.dao\\.TransientDataAccessResourceException; "
                         + "retrying in PT1S, failing for PT0\\.\\d+S so far")
                 .doesNotContain(FailingLedgerEntryStore.FAILURE);
+    }
+
+    /**
+     * A container that stops commits the offsets its listener has acknowledged so far. The listener
+     * acknowledges only after the projection has committed, so stopping it while the store fails -
+     * a shutdown during a database outage - commits nothing for the failing batch, and the record
+     * is delivered again after a restart. {@code EarlyAcknowledgeBreakProofTest} is the same stop
+     * with the acknowledgement moved first.
+     */
+    @Test
+    @DisplayName("FR-LED-4: a consumer stopped while the store fails commits no offset; restarted, it stores the record once")
+    void stopDuringAnOutageCommitsNothing() {
+        long eventId = IDS.incrementAndGet();
+        FailingLedgerEntryStore failing = FailingLedgerEntryStore.of(store);
+        MessageListenerContainer container = listeners.getListenerContainer(LedgerEventListener.LISTENER_ID);
+        failing.failUntilReleased();
+        RecordMetadata sent;
+        try {
+            sent = publish(CLEARING, eventId, event(CLEARING, IDS.incrementAndGet()));
+            Awaitility.await().atMost(AWAIT).until(() -> failing.failures() >= 1);
+
+            container.stop();
+
+            assertThat(container.isRunning()).isFalse();
+            assertThat(LedgerRelay.committedOffset(sent)).as("offset after the stop").isLessThanOrEqualTo(sent.offset());
+            assertThat(row(eventId)).isEmpty();
+        } finally {
+            failing.release();
+            if (!container.isRunning()) {
+                container.start();
+            }
+        }
+
+        awaitStored(eventId);
+        awaitCommitted(sent);
+        assertThat(rowsWithEventId(eventId)).isEqualTo(1);
     }
 
     /**
