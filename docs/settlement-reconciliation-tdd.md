@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.4 — run statuses and matches.currency in §10; column-level UPDATE grants; optimistic concurrency on breaks (Phase 2 outcomes)
+Version: 1.5 — DLQ headers and INVALID_EVENT_ID, supported currencies, two consumer metrics (Phase 3 outcomes)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -74,13 +74,14 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-LED-3** Processing is idempotent: the same event delivered N times produces one row.
 - **FR-LED-4** Offsets are committed only after the database transaction commits (at-least-once + dedupe).
 - **FR-LED-5** A record that cannot be projected goes to a dead-letter topic with error headers
-  (`x-error-code`, `x-error-message`, `x-original-topic`, `x-original-offset`) and does not block the
+  (`x-error-code`, `x-error-message`, `x-original-topic`, `x-original-partition`, `x-original-offset`;
+  an offset alone does not identify a record on a multi-partition topic) and does not block the
   partition. The error code names the cause, because the three below need different fixes:
   | `x-error-code` | Cause |
   |---|---|
   | `SCHEMA_INVALID` | Fails `contracts/ledger-events.schema.json` |
   | `CREATED_AT_NOT_A_DATE` | Matches the schema pattern but is not a real instant (e.g. `2026-02-30T…`) |
-  | `MISSING_EVENT_ID` | No `event-id` header; without it the record cannot be deduplicated |
+  | `INVALID_EVENT_ID` | The `event-id` header is absent, repeated, or not a positive decimal int64; the message says which. Without a valid one the record cannot be deduplicated |
   | `DUPLICATE_ENTRY_ID` | A different `event-id` carrying an `entry_id` already projected (FR-LED-8) |
 - **FR-LED-6** Events are validated against `contracts/ledger-events.schema.json`. `entry_id` and
   `created_at` are optional and paired: both present or both absent; either one alone, or either
@@ -323,7 +324,7 @@ line_id,transaction_reference,batch_id,transaction_date,value_date,type,gross_am
 | gross_amount | decimal | PAYMENT > 0; REFUND/CHARGEBACK < 0 |
 | fee_amount | decimal | ≥ 0 |
 | net_amount | decimal | must equal gross − fee exactly |
-| currency | ISO 4217 | supported set: TRY by default (configurable) |
+| currency | ISO 4217 | must be a real ISO 4217 code (`INVALID_CURRENCY` otherwise). A valid code outside `supported-currencies` is ingested, not rejected: matching surfaces it |
 
 ### 7.2 Bank statement CSV v1
 
@@ -345,7 +346,12 @@ line_id,booking_date,value_date,amount,currency,reference,description
 ### 7.3 Validation error codes
 `HEADER_MISMATCH`, `LINE_TOO_LONG`, `INVALID_ENCODING`, `COLUMN_COUNT`, `REQUIRED_MISSING`,
 `INVALID_FORMAT`, `INVALID_DATE`, `INVALID_AMOUNT`, `SCALE_EXCEEDS_CURRENCY`, `SIGN_TYPE_MISMATCH`,
-`NET_AMOUNT_MISMATCH`, `UNSUPPORTED_CURRENCY`, `DATE_ORDER`, `DUPLICATE_LINE_IN_FILE`.
+`NET_AMOUNT_MISMATCH`, `INVALID_CURRENCY`, `DATE_ORDER`, `DUPLICATE_LINE_IN_FILE`.
+
+`INVALID_CURRENCY` means not an ISO 4217 code at all (e.g. `ABC`). A real code that is not in
+`supported-currencies` is **not** a validation error, by the same reasoning as FR-LED-9 and §6: the
+line records money that really moved, so it is ingested and matching reports it (`CURRENCY_MISMATCH`
+where it meets a ledger entry, otherwise the usual missing-side break).
 
 ---
 
@@ -367,6 +373,10 @@ recon:
       type: BANK_STATEMENT
       batch-id-pattern: "BATCH[-_]?([A-Za-z0-9_-]{1,64})"
       grace-days-batch-unpaid: 2       # business days before MISSING_SETTLEMENT
+  # ISO 4217 codes accepted as supported. A ledger entry in another ISO currency is still projected,
+  # WARNed once per code and counted (money that really moved); a non-ISO code is SCHEMA_INVALID.
+  # A non-ISO entry or an empty list stops startup.
+  supported-currencies: [ TRY ]
   business-calendar:
     weekend: [ SATURDAY, SUNDAY ]
     holidays: [ ]                      # ISO dates, configurable
@@ -571,6 +581,11 @@ all, enforced by a `CHECK`.
 
 Metrics (Micrometer, Prometheus):
 - `recon_ledger_events_total{result=stored|duplicate|skipped|dlq}`
+- `recon_ledger_unmapped_tx_type_total{tx_type}` and `recon_ledger_unsupported_currency_total{currency}`
+  (FR-LED-9, §6). Kept separate from `events_total`: they describe a *stored* record, not the
+  outcome of consuming one, and one record can be both. Tag values are the code itself when it
+  matches `[A-Z][A-Z0-9_]{0,31}`, otherwise `other`, so hostile input can neither forge a log line
+  nor create unbounded series.
 - `recon_statement_lines_ingested_total{source, format}`
 - `recon_statement_files_total{source, status}`
 - `recon_run_duration_seconds{source, stage}` (histogram)
@@ -670,11 +685,17 @@ Goal: replace every assumption about the ledger with facts.
   `contracts/samples`; throughput measured (NFR-PERF-3).
 
 ### Phase 4 — Statement ingestion
-- Upload endpoint (auth stubbed or real per Phase 1 security baseline), temp-file streaming with SHA-256,
+- Security baseline, real and not stubbed, because this is the first HTTP endpoint: Spring Security
+  with HTTP Basic, users and bcrypt hashes from environment variables, roles `VIEWER` and `OPERATOR`
+  (§11.1); unauthenticated requests get 401, a VIEWER uploading gets 403. Phase 9 hardens it.
+- Upload endpoint, temp-file streaming with SHA-256 (temp files in a configured directory, deleted on
+  success and on every failure path),
   parsers for both formats behind a `StatementParser` port, validation codes (§7.3), atomic insert,
   rejection summary, duplicate handling (FR-ING-3/4), filename sanitization, limits.
 - Exit: FR-ING-1…9 covered; tests for every validation code, atomicity under injected failure mid-file,
   duplicate file, duplicate `statementReference`, duplicate line across files, BOM, CRLF, oversize file,
+  a rejected file re-uploaded successfully (partial unique index), no temp file left after any outcome,
+  401 and 403 on the upload endpoint,
   oversize line, non-UTF-8 bytes; streaming verified with a 1,000,000-line generated file under `-Xmx512m`
   (performance profile, not default CI).
 
