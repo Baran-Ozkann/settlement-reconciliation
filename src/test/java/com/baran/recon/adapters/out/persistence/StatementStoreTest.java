@@ -28,7 +28,9 @@ import com.baran.recon.domain.item.PspLineType;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.money.CurrencyCode;
 import com.baran.recon.domain.money.Money;
+import com.baran.recon.domain.statement.DuplicateLine;
 import com.baran.recon.domain.statement.LineError;
+import com.baran.recon.domain.statement.LineSummary;
 import com.baran.recon.domain.statement.StatementFile;
 import com.baran.recon.domain.statement.StatementFileStatus;
 import com.baran.recon.domain.statement.ValidationCode;
@@ -95,7 +97,40 @@ class StatementStoreTest {
 
         store.storeFile(file);
 
-        assertThat(store.findFile(file.id())).map(StatementFile::errors).contains(errors);
+        assertThat(store.findFile(file.id())).contains(file);
+    }
+
+    @Test
+    @DisplayName("FR-ING-4, FR-ING-7: a summary with a header error, or with counts, errors and duplicates, reads back unchanged")
+    void summariesRoundTrip() {
+        StatementFile header = new StatementFile(UUID.randomUUID(), SourceCode.of("PSP_SUMMARY"), "STMT-H-" + UUID.randomUUID(),
+                sha(), "header.csv", 12, StatementFileStatus.REJECTED,
+                LineSummary.headerRejected(new LineError(1, ValidationCode.HEADER_MISMATCH)), "operator-001", RECEIVED);
+        StatementFile ingested = new StatementFile(UUID.randomUUID(), SourceCode.of("PSP_SUMMARY"), "STMT-I-" + UUID.randomUUID(),
+                sha(), "ingested.csv", 4096, StatementFileStatus.INGESTED,
+                new LineSummary(Optional.empty(), 10, 1, List.of(new LineError(4, ValidationCode.DATE_ORDER)), 2,
+                        List.of(new DuplicateLine(5, UUID.randomUUID(), true), new DuplicateLine(9, UUID.randomUUID(), false))),
+                "operator-001", RECEIVED);
+
+        store.storeFile(header);
+        store.storeFile(ingested);
+
+        assertThat(store.findFile(header.id())).contains(header);
+        assertThat(store.findFile(ingested.id())).contains(ingested);
+        assertThat(jdbc.sql("SELECT error_summary IS NULL FROM statement_files WHERE id = :id").param("id", header.id())
+                .query(Boolean.class).single()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a file with every line stored has no summary at all")
+    void cleanFileHasNoSummary() {
+        StatementFile clean = file(SourceCode.of("PSP_CLEAN"), StatementFileStatus.INGESTED, List.of());
+
+        store.storeFile(clean);
+
+        assertThat(jdbc.sql("SELECT error_summary IS NULL FROM statement_files WHERE id = :id").param("id", clean.id())
+                .query(Boolean.class).single()).isTrue();
+        assertThat(store.findFile(clean.id())).contains(clean);
     }
 
     @Test
@@ -209,11 +244,15 @@ class StatementStoreTest {
         assertThat(store.findPspLine(orphan.id())).isEmpty();
     }
 
+    /** A file of ten data lines, with the given ones invalid. */
     private static StatementFile file(SourceCode source, StatementFileStatus status, List<LineError> errors) {
         UUID id = UUID.randomUUID();
-        String sha256 = HexFormat.of().formatHex(id.toString().getBytes()).substring(0, 64);
-        return new StatementFile(id, source, "STMT-" + id, sha256, "statement-2026-09-24.csv", 2048, 2,
-                status, errors, "operator-001", RECEIVED);
+        return new StatementFile(id, source, "STMT-" + id, sha(), "statement-2026-09-24.csv", 2048, status,
+                new LineSummary(Optional.empty(), 10, errors.size(), errors, 0, List.of()), "operator-001", RECEIVED);
+    }
+
+    private static String sha() {
+        return HexFormat.of().formatHex(UUID.randomUUID().toString().getBytes()).substring(0, 64);
     }
 
     private static PspLine pspLine(StatementFile file, String lineId, Optional<String> reference) {

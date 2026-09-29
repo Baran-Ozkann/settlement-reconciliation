@@ -16,7 +16,6 @@ import java.util.function.Function;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.SqlArrayValue;
 import org.springframework.stereotype.Repository;
-import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 import com.baran.recon.application.port.StatementStore;
@@ -25,7 +24,9 @@ import com.baran.recon.domain.item.PspLine;
 import com.baran.recon.domain.item.PspLineType;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.money.CurrencyCode;
+import com.baran.recon.domain.statement.DuplicateLine;
 import com.baran.recon.domain.statement.LineError;
+import com.baran.recon.domain.statement.LineSummary;
 import com.baran.recon.domain.statement.StatementFile;
 import com.baran.recon.domain.statement.StatementFileStatus;
 import com.baran.recon.domain.statement.ValidationCode;
@@ -95,8 +96,6 @@ class JdbcStatementStore implements StatementStore {
                 ON stored.source_code = wanted.source_code AND stored.line_id = wanted.line_id
             """;
 
-    private static final TypeReference<List<ErrorJson>> ERROR_LIST = new TypeReference<>() {
-    };
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
@@ -121,9 +120,9 @@ class JdbcStatementStore implements StatementStore {
                 .param("sha256", file.sha256())
                 .param("sanitizedFilename", file.sanitizedFilename())
                 .param("sizeBytes", file.sizeBytes())
-                .param("lineCount", file.lineCount())
+                .param("lineCount", file.lines().lineCount())
                 .param("status", file.status().name())
-                .param("errorSummary", errorSummary(file.errors()), Types.VARCHAR)
+                .param("errorSummary", errorSummary(file.lines()), Types.VARCHAR)
                 .param("uploadedBy", file.uploadedBy())
                 .param("receivedAt", timestamp(file.receivedAt()))
                 .update();
@@ -246,18 +245,28 @@ class JdbcStatementStore implements StatementStore {
         return source + '\n' + lineId;
     }
 
-    /** NULL when there is nothing to report, so an error summary is either absent or non-empty. */
-    private String errorSummary(List<LineError> errors) {
-        if (errors.isEmpty()) {
+    /**
+     * NULL when every line was stored, so a summary is either absent or reports something. Line
+     * numbers, codes and break ids only: never a line's content (FR-ING-7).
+     */
+    private String errorSummary(LineSummary lines) {
+        if (lines.allErrors().isEmpty() && lines.duplicateLineCount() == 0) {
             return null;
         }
-        return json.writeValueAsString(errors.stream().map(ErrorJson::of).toList());
+        return json.writeValueAsString(new SummaryJson(
+                lines.headerError().map(ErrorJson::of).orElse(null),
+                lines.invalidLineCount(),
+                lines.errors().stream().map(ErrorJson::of).toList(),
+                lines.duplicateLineCount(),
+                lines.duplicates().stream().map(DuplicateJson::of).toList()));
     }
 
     private StatementFile mapFile(ResultSet row, int rowNumber) throws SQLException {
-        String summary = row.getString("error_summary");
-        List<LineError> errors = summary == null ? List.of()
-                : json.readValue(summary, ERROR_LIST).stream().map(ErrorJson::toLineError).toList();
+        long lineCount = row.getLong("line_count");
+        String stored = row.getString("error_summary");
+        LineSummary lines = stored == null
+                ? new LineSummary(Optional.empty(), lineCount, 0, List.of(), 0, List.of())
+                : json.readValue(stored, SummaryJson.class).toLineSummary(lineCount);
         return new StatementFile(
                 uuid(row, "id"),
                 SourceCode.of(row.getString("source_code")),
@@ -265,9 +274,8 @@ class JdbcStatementStore implements StatementStore {
                 row.getString("sha256"),
                 row.getString("sanitized_filename"),
                 row.getLong("size_bytes"),
-                row.getLong("line_count"),
                 StatementFileStatus.valueOf(row.getString("status")),
-                errors,
+                lines,
                 row.getString("uploaded_by"),
                 instant(row, "received_at"));
     }
@@ -306,6 +314,17 @@ class JdbcStatementStore implements StatementStore {
     private record StoredLine(UUID id, UUID fileId, String key) {
     }
 
+    /** The stored form of a file's summary; the line count lives in its own column. */
+    private record SummaryJson(ErrorJson headerError, long invalidLines, List<ErrorJson> errors, long duplicateLines,
+                               List<DuplicateJson> duplicates) {
+
+        LineSummary toLineSummary(long lineCount) {
+            return new LineSummary(Optional.ofNullable(headerError).map(ErrorJson::toLineError), lineCount, invalidLines,
+                    errors.stream().map(ErrorJson::toLineError).toList(), duplicateLines,
+                    duplicates.stream().map(DuplicateJson::toDuplicateLine).toList());
+        }
+    }
+
     /** The stored form of one line error: its number and code, never the line's content. */
     private record ErrorJson(long line, String code) {
 
@@ -315,6 +334,17 @@ class JdbcStatementStore implements StatementStore {
 
         LineError toLineError() {
             return new LineError(line, ValidationCode.valueOf(code));
+        }
+    }
+
+    private record DuplicateJson(long line, UUID breakId, boolean breakOpened) {
+
+        static DuplicateJson of(DuplicateLine duplicate) {
+            return new DuplicateJson(duplicate.lineNumber(), duplicate.breakId(), duplicate.breakOpened());
+        }
+
+        DuplicateLine toDuplicateLine() {
+            return new DuplicateLine(line, breakId, breakOpened);
         }
     }
 }
