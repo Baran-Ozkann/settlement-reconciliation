@@ -47,6 +47,15 @@ class JdbcBreakStore implements BreakStore {
                     :openedRunId, :previousBreakId, :openedAt, :resolvedAt)
             """;
 
+    private static final String INSERT_BREAK_UNLESS_UNRESOLVED = INSERT_BREAK
+            + "ON CONFLICT (item_side, item_id) WHERE status <> 'RESOLVED' DO NOTHING\n";
+
+    private static final String SELECT_UNRESOLVED = """
+            SELECT id FROM breaks WHERE item_side = :itemSide AND item_id = :itemId AND status <> 'RESOLVED'
+            """;
+
+    private static final int MAX_OPEN_ATTEMPTS = 3;
+
     /**
      * Only the three columns a transition changes, which are also the only ones recon_app may
      * update. The status guard makes a concurrent change fail instead of being overwritten.
@@ -93,19 +102,7 @@ class JdbcBreakStore implements BreakStore {
     public void open(Transition opened) {
         Break created = opened.result();
         try {
-            jdbc.sql(INSERT_BREAK)
-                    .param("id", created.id())
-                    .param("breakType", created.type().name())
-                    .param("itemSide", created.item().side().name())
-                    .param("itemId", created.item().id())
-                    .param("relatedItems", json.writeValueAsString(created.relatedItems().stream().map(ItemJson::of).toList()))
-                    .param("status", created.status().name())
-                    .param("resolutionCode", created.resolutionCode().map(Enum::name).orElse(null), Types.VARCHAR)
-                    .param("openedRunId", created.openedRunId().orElse(null), Types.OTHER)
-                    .param("previousBreakId", created.previousBreakId().orElse(null), Types.OTHER)
-                    .param("openedAt", timestamp(created.openedAt()))
-                    .param("resolvedAt", timestampOrNull(created.resolvedAt()), Types.TIMESTAMP_WITH_TIMEZONE)
-                    .update();
+            insertBreak(INSERT_BREAK, created);
         } catch (DuplicateKeyException duplicate) {
             if (PostgresErrors.violatedConstraint(duplicate).filter(UNRESOLVED_PER_ITEM_INDEX::equals).isPresent()) {
                 throw new ItemAlreadyHasOpenBreakException(created.item(), duplicate);
@@ -113,6 +110,47 @@ class JdbcBreakStore implements BreakStore {
             throw duplicate;
         }
         appendEvent(opened.event());
+    }
+
+    /**
+     * ON CONFLICT names INV-7's partial index by its columns and predicate, so a skip happens for
+     * that rule alone; any other violation still fails. The unresolved break that caused the skip is
+     * then read back. If it was resolved in between, the insert is simply tried again.
+     */
+    @Override
+    @Transactional
+    public Opening openUnlessUnresolved(Transition opened) {
+        Break created = opened.result();
+        for (int attempt = 0; attempt < MAX_OPEN_ATTEMPTS; attempt++) {
+            if (insertBreak(INSERT_BREAK_UNLESS_UNRESOLVED, created) == 1) {
+                appendEvent(opened.event());
+                return new Opening(created.id(), true);
+            }
+            Optional<UUID> unresolved = jdbc.sql(SELECT_UNRESOLVED)
+                    .param("itemSide", created.item().side().name())
+                    .param("itemId", created.item().id())
+                    .query(UUID.class).optional();
+            if (unresolved.isPresent()) {
+                return new Opening(unresolved.get(), false);
+            }
+        }
+        throw new IllegalStateException("the item's unresolved break kept changing while a break was opened for it");
+    }
+
+    private int insertBreak(String sql, Break created) {
+        return jdbc.sql(sql)
+                .param("id", created.id())
+                .param("breakType", created.type().name())
+                .param("itemSide", created.item().side().name())
+                .param("itemId", created.item().id())
+                .param("relatedItems", json.writeValueAsString(created.relatedItems().stream().map(ItemJson::of).toList()))
+                .param("status", created.status().name())
+                .param("resolutionCode", created.resolutionCode().map(Enum::name).orElse(null), Types.VARCHAR)
+                .param("openedRunId", created.openedRunId().orElse(null), Types.OTHER)
+                .param("previousBreakId", created.previousBreakId().orElse(null), Types.OTHER)
+                .param("openedAt", timestamp(created.openedAt()))
+                .param("resolvedAt", timestampOrNull(created.resolvedAt()), Types.TIMESTAMP_WITH_TIMEZONE)
+                .update();
     }
 
     @Override

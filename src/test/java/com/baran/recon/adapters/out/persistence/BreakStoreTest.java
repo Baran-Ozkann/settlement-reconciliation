@@ -17,6 +17,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baran.recon.application.port.BreakStore;
 import com.baran.recon.application.port.ItemAlreadyHasOpenBreakException;
@@ -64,6 +66,9 @@ class BreakStoreTest {
 
     @Autowired
     private JdbcClient jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private UUID runId;
 
@@ -117,6 +122,51 @@ class BreakStoreTest {
                 .satisfies(e -> assertThat(((ItemAlreadyHasOpenBreakException) e).item()).isEqualTo(item));
         assertThat(breaks.findById(second.result().id())).isEmpty();
         assertThat(breaks.eventsOf(second.result().id())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("INV-7: openUnlessUnresolved opens a break for an item that has none, with its event")
+    void openUnlessUnresolvedOpens() {
+        Transition opened = open(item(ItemSide.PSP));
+
+        assertThat(breaks.openUnlessUnresolved(opened)).isEqualTo(new BreakStore.Opening(opened.result().id(), true));
+        assertThat(breaks.findById(opened.result().id())).contains(opened.result());
+        assertThat(breaks.eventsOf(opened.result().id())).containsExactly(opened.event());
+    }
+
+    @Test
+    @DisplayName("INV-7: openUnlessUnresolved names the item's unresolved break, writes nothing, and the transaction carries on")
+    void openUnlessUnresolvedNamesTheExistingBreak() {
+        ItemRef item = item(ItemSide.BANK);
+        Transition first = open(item);
+        breaks.open(first);
+        Transition second = open(item);
+        Transition third = open(item(ItemSide.BANK));
+
+        BreakStore.Opening[] outcomes = new BreakStore.Opening[2];
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            outcomes[0] = breaks.openUnlessUnresolved(second);
+            outcomes[1] = breaks.openUnlessUnresolved(third);
+        });
+
+        assertThat(outcomes[0]).isEqualTo(new BreakStore.Opening(first.result().id(), false));
+        assertThat(outcomes[1]).isEqualTo(new BreakStore.Opening(third.result().id(), true));
+        assertThat(breaks.findById(second.result().id())).isEmpty();
+        assertThat(breaks.eventsOf(second.result().id())).isEmpty();
+        assertThat(breaks.findById(third.result().id())).contains(third.result());
+    }
+
+    @Test
+    @DisplayName("INV-7: once the item's break is resolved, openUnlessUnresolved opens a new one")
+    void openUnlessUnresolvedAfterResolution() {
+        ItemRef item = item(ItemSide.PSP);
+        Transition first = open(item);
+        breaks.open(first);
+        breaks.apply(first.result().resolve(ResolutionCode.FALSE_POSITIVE, "Not a discrepancy", OPERATOR,
+                OPENED.plusSeconds(30)));
+        Transition second = open(item);
+
+        assertThat(breaks.openUnlessUnresolved(second)).isEqualTo(new BreakStore.Opening(second.result().id(), true));
     }
 
     @Test
