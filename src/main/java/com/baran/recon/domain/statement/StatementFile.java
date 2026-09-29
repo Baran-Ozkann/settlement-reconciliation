@@ -27,7 +27,6 @@ public record StatementFile(
         Instant receivedAt) {
 
     private static final Pattern SHA256 = Pattern.compile("[0-9a-f]{64}");
-    private static final Pattern SANITIZED_FILENAME = Pattern.compile("[A-Za-z0-9._-]{1,100}");
     private static final int MAX_UPLOADER_LENGTH = 100;
 
     public StatementFile {
@@ -41,7 +40,7 @@ public record StatementFile(
         if (sha256 == null || !SHA256.matcher(sha256).matches()) {
             throw new InvalidStatementFileException("sha256 is 64 lower-case hex digits");
         }
-        if (sanitizedFilename == null || !SANITIZED_FILENAME.matcher(sanitizedFilename).matches()) {
+        if (sanitizedFilename == null || !SanitizedFilename.isSanitized(sanitizedFilename)) {
             throw new InvalidStatementFileException("the file name is stored only in sanitized form");
         }
         if (sizeBytes < 0 || lineCount < 0) {
