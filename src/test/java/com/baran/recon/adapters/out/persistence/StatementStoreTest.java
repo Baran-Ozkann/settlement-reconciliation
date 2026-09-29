@@ -7,14 +7,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.LongStream;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -23,6 +21,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baran.recon.application.port.StatementStore;
+import com.baran.recon.application.port.StatementStore.LineConflict;
 import com.baran.recon.domain.item.BankLine;
 import com.baran.recon.domain.item.PspLine;
 import com.baran.recon.domain.item.PspLineType;
@@ -72,17 +71,19 @@ class StatementStoreTest {
         StatementFile file = file(SourceCode.of("PSP_ROUND_TRIP"), StatementFileStatus.INGESTED, List.of());
         PspLine withReference = pspLine(file, "L-1", Optional.of("5f0c7a1e-0000-4000-8000-000000000001"));
         PspLine withoutReference = pspLine(file, "L-2", Optional.empty());
-        BankLine bankLine = new BankLine(UUID.randomUUID(), file.id(), SourceCode.of("BANK_ROUND_TRIP"), "S-1", DAY, DAY,
-                Money.of(24_500, TRY), Optional.of("BATCH-B-001"), Optional.of("B-001"), Optional.empty());
+        BankLine bankLine = bankLine(file, SourceCode.of("BANK_ROUND_TRIP"), "S-1", Optional.of("B-001"));
+        BankLine bare = new BankLine(UUID.randomUUID(), file.id(), SourceCode.of("BANK_ROUND_TRIP"), "S-2", DAY,
+                DAY.plusDays(1), Money.of(-1, TRY), Optional.empty(), Optional.empty(), Optional.empty());
 
         store.storeFile(file);
-        assertThat(store.storePspLines(Stream.of(withReference, withoutReference))).isEqualTo(2);
-        assertThat(store.storeBankLines(Stream.of(bankLine))).isEqualTo(1);
+        assertThat(store.storePspLinesIfAbsent(List.of(withReference, withoutReference))).isEmpty();
+        assertThat(store.storeBankLinesIfAbsent(List.of(bankLine, bare))).isEmpty();
 
         assertThat(store.findFile(file.id())).contains(file);
         assertThat(store.findPspLine(withReference.id())).contains(withReference);
         assertThat(store.findPspLine(withoutReference.id())).contains(withoutReference);
         assertThat(store.findBankLine(bankLine.id())).contains(bankLine);
+        assertThat(store.findBankLine(bare.id())).contains(bare);
     }
 
     @Test
@@ -105,26 +106,84 @@ class StatementStoreTest {
         long lines = 2L * JdbcStatementStore.BATCH_SIZE + 1;
         store.storeFile(file);
 
-        long stored = store.storePspLines(LongStream.rangeClosed(1, lines)
-                .mapToObj(n -> pspLine(file, "L-" + n, Optional.empty())));
+        List<LineConflict> conflicts = store.storePspLinesIfAbsent(LongStream.rangeClosed(1, lines)
+                .mapToObj(n -> pspLine(file, "L-" + n, Optional.empty())).toList());
 
-        assertThat(stored).isEqualTo(lines);
+        assertThat(conflicts).isEmpty();
         assertThat(jdbc.sql("SELECT count(*) FROM psp_lines WHERE file_id = :fileId").param("fileId", file.id())
                 .query(Long.class).single()).isEqualTo(lines);
     }
 
     @Test
-    @DisplayName("FR-ING-4: a line id already stored for the source is refused, even from another file")
-    void duplicateLineAcrossFilesIsRefused() {
+    @DisplayName("FR-ING-4, INV-3: a line id the source already stored from another file is skipped and reported")
+    void lineStoredFromAnotherFileIsReported() {
         SourceCode source = SourceCode.of("PSP_DUPLICATE");
         StatementFile first = file(source, StatementFileStatus.INGESTED, List.of());
         StatementFile second = file(source, StatementFileStatus.INGESTED, List.of());
         store.storeFile(first);
         store.storeFile(second);
-        store.storePspLines(Stream.of(pspLine(first, "L-1", Optional.empty())));
+        PspLine original = pspLine(first, "L-1", Optional.empty());
+        store.storePspLinesIfAbsent(List.of(original));
+        PspLine repeated = pspLine(second, "L-1", Optional.empty());
+        PspLine fresh = pspLine(second, "L-2", Optional.empty());
 
-        assertThatThrownBy(() -> store.storePspLines(Stream.of(pspLine(second, "L-1", Optional.empty()))))
-                .isInstanceOf(DuplicateKeyException.class);
+        List<LineConflict> conflicts = store.storePspLinesIfAbsent(List.of(repeated, fresh));
+
+        assertThat(conflicts).containsExactly(new LineConflict(repeated.id(), original.id(), first.id()));
+        assertThat(store.findPspLine(repeated.id())).isEmpty();
+        assertThat(store.findPspLine(fresh.id())).contains(fresh);
+        assertThat(store.findPspLine(original.id())).contains(original);
+    }
+
+    @Test
+    @DisplayName("FR-ING-4: the same line id twice in one batch stores the first and reports the second against it")
+    void repeatWithinOneBatchIsReportedAgainstTheFirst() {
+        SourceCode source = SourceCode.of("PSP_IN_BATCH");
+        StatementFile file = file(source, StatementFileStatus.INGESTED, List.of());
+        store.storeFile(file);
+        PspLine first = pspLine(file, "L-1", Optional.empty());
+        PspLine again = pspLine(file, "L-1", Optional.of("another-reference"));
+
+        List<LineConflict> conflicts = store.storePspLinesIfAbsent(List.of(first, again));
+
+        assertThat(conflicts).containsExactly(new LineConflict(again.id(), first.id(), file.id()));
+        assertThat(store.findPspLine(first.id())).contains(first);
+    }
+
+    @Test
+    @DisplayName("FR-ING-4: a bank line id repeated across files is reported the same way; another source may reuse it")
+    void bankLineConflicts() {
+        SourceCode source = SourceCode.of("BANK_DUPLICATE");
+        StatementFile first = file(source, StatementFileStatus.INGESTED, List.of());
+        StatementFile second = file(source, StatementFileStatus.INGESTED, List.of());
+        store.storeFile(first);
+        store.storeFile(second);
+        BankLine original = bankLine(first, source, "S-1", Optional.empty());
+        store.storeBankLinesIfAbsent(List.of(original));
+        BankLine repeated = bankLine(second, source, "S-1", Optional.empty());
+        BankLine otherSource = bankLine(second, SourceCode.of("BANK_OTHER"), "S-1", Optional.empty());
+
+        assertThat(store.storeBankLinesIfAbsent(List.of(repeated, otherSource)))
+                .containsExactly(new LineConflict(repeated.id(), original.id(), first.id()));
+        assertThat(store.findBankLine(otherSource.id())).contains(otherSource);
+    }
+
+    @Test
+    @DisplayName("FR-ING-3: ingested files are found by hash and by source and reference; rejected ones never")
+    void ingestedFilesAreFoundRejectedAreNot() {
+        StatementFile ingested = file(SourceCode.of("PSP_LOOKUP"), StatementFileStatus.INGESTED, List.of());
+        StatementFile rejected = file(SourceCode.of("PSP_LOOKUP"), StatementFileStatus.REJECTED,
+                List.of(new LineError(2, ValidationCode.INVALID_DATE)));
+        store.storeFile(ingested);
+        store.storeFile(rejected);
+
+        assertThat(store.findIngestedFileBySha256(ingested.sha256())).contains(ingested.id());
+        assertThat(store.findIngestedFileBySha256(rejected.sha256())).isEmpty();
+        assertThat(store.findIngestedFileByReference(ingested.source(), ingested.statementReference()))
+                .contains(ingested.id());
+        assertThat(store.findIngestedFileByReference(rejected.source(), rejected.statementReference())).isEmpty();
+        assertThat(store.findIngestedFileByReference(SourceCode.of("PSP_ELSEWHERE"), ingested.statementReference()))
+                .isEmpty();
     }
 
     @Test
@@ -138,12 +197,12 @@ class StatementStoreTest {
 
         transaction.executeWithoutResult(status -> {
             store.checkLineFilesAtCommit();
-            store.storePspLines(Stream.of(line));
+            store.storePspLinesIfAbsent(List.of(line));
             store.storeFile(file);
         });
         assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
             store.checkLineFilesAtCommit();
-            store.storePspLines(Stream.of(orphan));
+            store.storePspLinesIfAbsent(List.of(orphan));
         })).isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("psp_lines_file_fk");
 
         assertThat(store.findPspLine(line.id())).contains(line);
@@ -160,5 +219,10 @@ class StatementStoreTest {
     private static PspLine pspLine(StatementFile file, String lineId, Optional<String> reference) {
         return new PspLine(UUID.randomUUID(), file.id(), file.source(), lineId, reference, "B-001",
                 PspLineType.PAYMENT, DAY, DAY, Money.of(12_500, TRY), Money.of(250, TRY), Money.of(12_250, TRY));
+    }
+
+    private static BankLine bankLine(StatementFile file, SourceCode source, String lineId, Optional<String> batchId) {
+        return new BankLine(UUID.randomUUID(), file.id(), source, lineId, DAY, DAY, Money.of(24_500, TRY),
+                batchId.map(id -> "BATCH-" + id), batchId, Optional.of("Settlement Test Merchant 001"));
     }
 }
