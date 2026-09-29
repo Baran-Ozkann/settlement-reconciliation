@@ -52,7 +52,9 @@ class ArchitectureRulesCatchViolationsTest {
                 violation("postgresconfig", ArchitectureRules::postgresDriverOnlyInPersistence, "DriverDataSource"),
                 violation("ledgerproducer", ArchitectureRules::kafkaProducersOnlyInTheKafkaAdapter, "EntryEcho"),
                 violation("rawproducer", ArchitectureRules::kafkaProducersOnlyInTheKafkaAdapter, "LedgerWriter"),
-                violation("ledgercode", ArchitectureRules::nothingDependsOnTheLedgersCode, "Mirror"));
+                violation("ledgercode", ArchitectureRules::nothingDependsOnTheLedgersCode, "Mirror"),
+                violation("filenamepath", ArchitectureRules::noFilesystemWhereTheUploadIsHandled, "UploadStore"),
+                violation("usecasefile", ArchitectureRules::noFilesystemWhereTheUploadIsHandled, "SpoolUpload"));
     }
 
     /**

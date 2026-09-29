@@ -48,6 +48,14 @@ final class ArchitectureRules {
                     .or(JavaClass.Predicates.assignableTo(DeadLetterPublishingRecoverer.class))
                     .as("Kafka's producer API");
 
+    /** Everything that names or opens a file: java.nio.file and the java.io classes built on a path. */
+    private static final DescribedPredicate<JavaClass> FILESYSTEM_API =
+            JavaClass.Predicates.resideInAPackage("java.nio.file..")
+                    .or(JavaClass.Predicates.belongToAnyOf(java.io.File.class, java.io.FileInputStream.class,
+                            java.io.FileOutputStream.class, java.io.FileReader.class, java.io.FileWriter.class,
+                            java.io.RandomAccessFile.class))
+                    .as("the filesystem API");
+
     private final String root;
 
     private ArchitectureRules(String root) {
@@ -68,7 +76,22 @@ final class ArchitectureRules {
                 bigDecimalOnlyInTheFileAdapter(),
                 postgresDriverOnlyInPersistence(),
                 kafkaProducersOnlyInTheKafkaAdapter(),
-                nothingDependsOnTheLedgersCode());
+                nothingDependsOnTheLedgersCode(),
+                noFilesystemWhereTheUploadIsHandled());
+    }
+
+    /**
+     * FR-ING-9: the uploaded file name is never used as a path. The code that sees the name - the
+     * web adapter, the parsers and the use case - holds no filesystem API at all, so it has no way to
+     * turn the name into one, whatever it does with the string. The upload's bytes reach it as a
+     * stream the servlet container keeps; configuration is where the temp directory is set up.
+     */
+    ArchRule noFilesystemWhereTheUploadIsHandled() {
+        return noClasses().that().resideInAnyPackage(pkg("domain.."), pkg("application.."), pkg("adapters.in.web.."),
+                        pkg("adapters.in.file.."))
+                .should().dependOnClassesThat(FILESYSTEM_API)
+                .because("an uploaded file name must never become a path (FR-ING-9)")
+                .allowEmptyShould(true);
     }
 
     /** TDD 5.2, and CLAUDE.md 7.2: no Spring, Jackson, Kafka or JDBC in the domain. */
