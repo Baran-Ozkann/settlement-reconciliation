@@ -27,7 +27,17 @@ public record StatementFile(
         Instant receivedAt) {
 
     private static final Pattern SHA256 = Pattern.compile("[0-9a-f]{64}");
+    /**
+     * The operator's name for the statement, unique per source among ingested files (FR-ING-3). The
+     * same allow-list as a stored file name: it is shown and logged, and nothing a statement needs
+     * to be called is outside it.
+     */
+    private static final Pattern STATEMENT_REFERENCE = Pattern.compile("[A-Za-z0-9._-]{1,100}");
     private static final int MAX_UPLOADER_LENGTH = 100;
+
+    public static boolean isValidStatementReference(String reference) {
+        return reference != null && STATEMENT_REFERENCE.matcher(reference).matches();
+    }
 
     public StatementFile {
         Objects.requireNonNull(id, "id");
@@ -35,8 +45,8 @@ public record StatementFile(
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(lines, "lines");
         Objects.requireNonNull(receivedAt, "receivedAt");
-        if (statementReference == null || statementReference.isEmpty()) {
-            throw new InvalidStatementFileException("a statement reference is required");
+        if (!isValidStatementReference(statementReference)) {
+            throw new InvalidStatementFileException("a statement reference is 1-100 characters of [A-Za-z0-9._-]");
         }
         if (sha256 == null || !SHA256.matcher(sha256).matches()) {
             throw new InvalidStatementFileException("sha256 is 64 lower-case hex digits");

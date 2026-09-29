@@ -13,11 +13,13 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.SqlArrayValue;
 import org.springframework.stereotype.Repository;
 import tools.jackson.databind.json.JsonMapper;
 
+import com.baran.recon.application.port.StatementFileAlreadyIngestedException;
 import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.domain.item.BankLine;
 import com.baran.recon.domain.item.PspLine;
@@ -44,6 +46,10 @@ class JdbcStatementStore implements StatementStore {
 
     /** TDD 5.3: lines are inserted this many to a statement. */
     static final int BATCH_SIZE = 1_000;
+
+    /** FR-ING-3: the partial unique indexes that let a file be ingested once, by content and by reference. */
+    private static final Set<String> INGESTED_ONCE =
+            Set.of("statement_files_sha256_ingested_unique", "statement_files_reference_ingested_unique");
 
     private static final String INSERT_FILE = """
             INSERT INTO statement_files (id, source_code, statement_reference, sha256, sanitized_filename,
@@ -113,19 +119,26 @@ class JdbcStatementStore implements StatementStore {
 
     @Override
     public void storeFile(StatementFile file) {
-        jdbc.sql(INSERT_FILE)
-                .param("id", file.id())
-                .param("sourceCode", file.source().value())
-                .param("statementReference", file.statementReference())
-                .param("sha256", file.sha256())
-                .param("sanitizedFilename", file.sanitizedFilename())
-                .param("sizeBytes", file.sizeBytes())
-                .param("lineCount", file.lines().lineCount())
-                .param("status", file.status().name())
-                .param("errorSummary", errorSummary(file.lines()), Types.VARCHAR)
-                .param("uploadedBy", file.uploadedBy())
-                .param("receivedAt", timestamp(file.receivedAt()))
-                .update();
+        try {
+            jdbc.sql(INSERT_FILE)
+                    .param("id", file.id())
+                    .param("sourceCode", file.source().value())
+                    .param("statementReference", file.statementReference())
+                    .param("sha256", file.sha256())
+                    .param("sanitizedFilename", file.sanitizedFilename())
+                    .param("sizeBytes", file.sizeBytes())
+                    .param("lineCount", file.lines().lineCount())
+                    .param("status", file.status().name())
+                    .param("errorSummary", errorSummary(file.lines()), Types.VARCHAR)
+                    .param("uploadedBy", file.uploadedBy())
+                    .param("receivedAt", timestamp(file.receivedAt()))
+                    .update();
+        } catch (DuplicateKeyException duplicate) {
+            if (PostgresErrors.violatedConstraint(duplicate).filter(INGESTED_ONCE::contains).isPresent()) {
+                throw new StatementFileAlreadyIngestedException(duplicate);
+            }
+            throw duplicate;
+        }
     }
 
     @Override

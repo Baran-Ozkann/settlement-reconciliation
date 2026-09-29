@@ -62,6 +62,15 @@ recon:
   # TDD 6: TRY alone, matching the ledger. A ledger entry in another real ISO 4217 currency is still
   # projected, warned about and counted: it is money that moved on a mapped account.
   supported-currencies: [ TRY ]
+  # FR-ING-7, FR-ING-8: statement uploads.
+  ingestion:
+    # The longest line, in bytes, not counting its ending. A longer one is LINE_TOO_LONG.
+    max-line-length: 4KB
+    # The most data lines a file may have. The first line over it refuses the file with 413.
+    max-lines: 2000000
+    # Invalid lines a file may have and still be ingested, in basis points of its data lines (100 is
+    # 1 %). 0: any invalid line rejects the file. An integer, since no floating point is used (INV-8).
+    max-invalid-line-ratio-bp: 0
   # TDD 8.1. Ledger entries are stored only for accounts listed here (FR-LED-2). Empty until OQ-3
   # settles which ledger account a PSP clears through; no such account exists in any ledger yet.
   sources: []

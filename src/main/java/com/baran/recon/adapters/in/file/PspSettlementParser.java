@@ -6,9 +6,13 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
 import com.baran.recon.adapters.in.file.FieldRules.LineRejected;
 import com.baran.recon.application.port.ParsedLine;
 import com.baran.recon.application.port.StatementContext;
+import com.baran.recon.application.statement.IngestionLimits;
 import com.baran.recon.domain.item.PspLine;
 import com.baran.recon.domain.item.PspLineType;
 import com.baran.recon.domain.money.CurrencyCode;
@@ -29,12 +33,18 @@ import com.baran.recon.domain.statement.ValidationCode;
  * </ol>
  * A currency that is real ISO 4217 but not a supported one is read like any other (TDD 7.3).
  */
+@Component
 final class PspSettlementParser extends CsvStatementParser {
 
     static final String HEADER =
             "line_id,transaction_reference,batch_id,transaction_date,value_date,type,gross_amount,fee_amount,net_amount,currency";
 
     private static final int MAX_REFERENCE_LENGTH = 64;
+
+    @Autowired
+    PspSettlementParser(IngestionLimits limits) {
+        this(limits.maxLineBytes(), limits.maxLines());
+    }
 
     PspSettlementParser(int maxLineBytes, long maxLines) {
         super(HEADER, maxLineBytes, maxLines);

@@ -6,9 +6,13 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
 import com.baran.recon.adapters.in.file.FieldRules.LineRejected;
 import com.baran.recon.application.port.ParsedLine;
 import com.baran.recon.application.port.StatementContext;
+import com.baran.recon.application.statement.IngestionLimits;
 import com.baran.recon.domain.item.BankLine;
 import com.baran.recon.domain.money.CurrencyCode;
 import com.baran.recon.domain.money.Money;
@@ -25,11 +29,17 @@ import com.baran.recon.domain.statement.ValidationCode;
  * <p>A real ISO 4217 currency outside the supported set is read like any other, as for PSP lines
  * (TDD 7.3); TDD 7.2's "supported set" is proposed for the same correction.
  */
+@Component
 final class BankStatementParser extends CsvStatementParser {
 
     static final String HEADER = "line_id,booking_date,value_date,amount,currency,reference,description";
 
     private static final int MAX_TEXT_LENGTH = 140;
+
+    @Autowired
+    BankStatementParser(IngestionLimits limits) {
+        this(limits.maxLineBytes(), limits.maxLines());
+    }
 
     BankStatementParser(int maxLineBytes, long maxLines) {
         super(HEADER, maxLineBytes, maxLines);
