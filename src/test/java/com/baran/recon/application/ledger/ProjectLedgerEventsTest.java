@@ -27,7 +27,6 @@ import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.money.CurrencyCode;
 import com.baran.recon.domain.source.LedgerAccountSources;
 import com.baran.recon.domain.source.SourceDefinition;
-import com.baran.recon.domain.source.SourceType;
 
 import static com.baran.recon.application.ledger.ProjectionOutcome.DUPLICATE_ENTRY_ID;
 import static com.baran.recon.application.ledger.ProjectionOutcome.DUPLICATE_EVENT;
@@ -47,8 +46,7 @@ class ProjectLedgerEventsTest {
     private final FakeStore store = new FakeStore();
     private final CountingTransactions transactions = new CountingTransactions();
     private final ProjectLedgerEvents projection = new ProjectLedgerEvents(
-            LedgerAccountSources.of(List.of(new SourceDefinition(SourceCode.of("PSP_ALPHA"),
-                    SourceType.PSP_SETTLEMENT, Set.of(CLEARING)))),
+            LedgerAccountSources.of(List.of(SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(CLEARING)))),
             store, transactions, Clock.fixed(NOW, ZoneOffset.UTC), ISTANBUL);
 
     @Test

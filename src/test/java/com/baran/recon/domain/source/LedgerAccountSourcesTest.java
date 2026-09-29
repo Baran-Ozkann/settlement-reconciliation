@@ -1,6 +1,7 @@
 package com.baran.recon.domain.source;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -18,6 +19,7 @@ class LedgerAccountSourcesTest {
     private static final UUID CLEARING = UUID.fromString("00000000-0000-4000-8000-000000000001");
     private static final UUID OTHER_CLEARING = UUID.fromString("00000000-0000-4000-8000-000000000002");
     private static final UUID UNMAPPED = UUID.fromString("00000000-0000-4000-8000-0000000000ff");
+    private static final BatchIdPattern BATCH_PATTERN = BatchIdPattern.of("BATCH[-_]?([A-Za-z0-9_-]{1,64})");
 
     @Test
     @DisplayName("FR-LED-2: a mapped account resolves to its source, an unmapped one to nothing")
@@ -25,7 +27,7 @@ class LedgerAccountSourcesTest {
         LedgerAccountSources sources = LedgerAccountSources.of(List.of(
                 psp("PSP_ALPHA", CLEARING),
                 psp("PSP_BETA", OTHER_CLEARING),
-                new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT, Set.of())));
+                SourceDefinition.bank(SourceCode.of("BANK_MAIN"), BATCH_PATTERN)));
 
         assertThat(sources.sourceOf(CLEARING)).contains(SourceCode.of("PSP_ALPHA"));
         assertThat(sources.sourceOf(OTHER_CLEARING)).contains(SourceCode.of("PSP_BETA"));
@@ -57,11 +59,12 @@ class LedgerAccountSourcesTest {
     @Test
     @DisplayName("a bank statement source cannot map ledger accounts")
     void bankSourceWithLedgerAccountsIsRefused() {
-        assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT, Set.of(CLEARING)))
+        assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT,
+                Set.of(CLEARING), Optional.of(BATCH_PATTERN)))
                 .isInstanceOf(InvalidSourceConfigurationException.class);
     }
 
     private static SourceDefinition psp(String code, UUID account) {
-        return new SourceDefinition(SourceCode.of(code), SourceType.PSP_SETTLEMENT, Set.of(account));
+        return SourceDefinition.psp(SourceCode.of(code), Set.of(account));
     }
 }
