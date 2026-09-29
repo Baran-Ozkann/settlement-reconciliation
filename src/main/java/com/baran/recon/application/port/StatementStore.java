@@ -15,6 +15,14 @@ import com.baran.recon.domain.statement.StatementFile;
  */
 public interface StatementStore {
 
+    /**
+     * Within the current transaction, lets lines be stored before the file they belong to. A file
+     * is stored once, in its final state, which is known only after its last line: the reference
+     * from each line to its file is then checked when the transaction commits, and the commit is
+     * refused if the file was never stored.
+     */
+    void checkLineFilesAtCommit();
+
     void storeFile(StatementFile file);
 
     /** @return how many lines were stored */

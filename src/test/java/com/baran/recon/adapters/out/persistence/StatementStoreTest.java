@@ -13,11 +13,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.domain.item.BankLine;
@@ -59,6 +62,9 @@ class StatementStoreTest {
 
     @Autowired
     private JdbcClient jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     @DisplayName("an ingested file and its PSP and bank lines are read back unchanged")
@@ -119,6 +125,29 @@ class StatementStoreTest {
 
         assertThatThrownBy(() -> store.storePspLines(Stream.of(pspLine(second, "L-1", Optional.empty()))))
                 .isInstanceOf(DuplicateKeyException.class);
+    }
+
+    @Test
+    @DisplayName("FR-ING-6: after checkLineFilesAtCommit, lines may precede their file; without the file the commit fails")
+    void linesMayPrecedeTheirFileUntilCommit() {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        StatementFile file = file(SourceCode.of("PSP_DEFERRED"), StatementFileStatus.INGESTED, List.of());
+        PspLine line = pspLine(file, "L-1", Optional.empty());
+        StatementFile orphanFile = file(SourceCode.of("PSP_DEFERRED"), StatementFileStatus.INGESTED, List.of());
+        PspLine orphan = pspLine(orphanFile, "L-2", Optional.empty());
+
+        transaction.executeWithoutResult(status -> {
+            store.checkLineFilesAtCommit();
+            store.storePspLines(Stream.of(line));
+            store.storeFile(file);
+        });
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+            store.checkLineFilesAtCommit();
+            store.storePspLines(Stream.of(orphan));
+        })).isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("psp_lines_file_fk");
+
+        assertThat(store.findPspLine(line.id())).contains(line);
+        assertThat(store.findPspLine(orphan.id())).isEmpty();
     }
 
     private static StatementFile file(SourceCode source, StatementFileStatus status, List<LineError> errors) {

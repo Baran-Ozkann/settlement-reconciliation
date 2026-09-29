@@ -78,6 +78,12 @@ class JdbcStatementStore implements StatementStore {
         this.json = json;
     }
 
+    /** V10 made both foreign keys deferrable; this defers them for the current transaction only. */
+    @Override
+    public void checkLineFilesAtCommit() {
+        jdbc.sql("SET CONSTRAINTS psp_lines_file_fk, bank_lines_file_fk DEFERRED").update();
+    }
+
     @Override
     public void storeFile(StatementFile file) {
         jdbc.sql(INSERT_FILE)
