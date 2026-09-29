@@ -43,13 +43,18 @@ public record Break(
         }
     }
 
-    /** A new break, OPEN, and the event that opens it. */
+    /**
+     * A new break, OPEN, and the event that opens it. The reason says what the item and the related
+     * items cannot: a DUPLICATE_LINE break opened at ingestion names the file and line that repeated
+     * the item, which has no row of its own to relate to.
+     */
     public static Transition open(UUID id, BreakType type, ItemRef item, List<ItemRef> relatedItems,
-                                  Optional<UUID> openedRunId, Actor actor, Instant at) {
+                                  Optional<UUID> openedRunId, Actor actor, Optional<String> reason, Instant at) {
+        reason.ifPresent(Break::requireReason);
         Break opened = new Break(id, type, item, relatedItems, BreakStatus.OPEN, Optional.empty(), openedRunId,
                 Optional.empty(), at, Optional.empty());
         return new Transition(opened, new BreakEvent(id, Optional.empty(), BreakStatus.OPEN, Optional.empty(),
-                actor, Optional.empty(), at));
+                actor, reason, at));
     }
 
     public Transition startInvestigation(Actor operator, Optional<String> reason, Instant at) {

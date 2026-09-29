@@ -183,7 +183,7 @@ class BreakStoreTest {
 
     private Transition open(ItemRef item) {
         return Break.open(UUID.randomUUID(), BreakType.AMOUNT_MISMATCH, item, List.of(item(ItemSide.LEDGER)),
-                Optional.of(runId), Actor.SYSTEM, OPENED);
+                Optional.of(runId), Actor.SYSTEM, Optional.empty(), OPENED);
     }
 
     private static ItemRef item(ItemSide side) {

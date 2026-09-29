@@ -81,6 +81,21 @@ class BreakLifecycleTest {
         assertThat(opened.event().from()).isEmpty();
         assertThat(opened.event().to()).isEqualTo(OPEN);
         assertThat(opened.event().actor()).isEqualTo(Actor.SYSTEM);
+        assertThat(opened.event().reason()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("FR-ING-4: an opening event can carry a reason, blank or over 1000 characters refused")
+    void openingEventCarriesAReason() {
+        Transition opened = Break.open(UUID.randomUUID(), BreakType.DUPLICATE_LINE, PSP_LINE, List.of(), Optional.empty(),
+                OPERATOR, Optional.of("Line 7 of statement file f00 repeats this line's line_id"), OPENED);
+
+        assertThat(opened.event().reason()).contains("Line 7 of statement file f00 repeats this line's line_id");
+        assertThat(opened.event().actor()).isEqualTo(OPERATOR);
+        assertThatThrownBy(() -> Break.open(UUID.randomUUID(), BreakType.DUPLICATE_LINE, PSP_LINE, List.of(),
+                Optional.empty(), OPERATOR, Optional.of(" "), OPENED)).isInstanceOf(InvalidBreakException.class);
+        assertThatThrownBy(() -> Break.open(UUID.randomUUID(), BreakType.DUPLICATE_LINE, PSP_LINE, List.of(),
+                Optional.empty(), OPERATOR, Optional.of("x".repeat(1001)), OPENED)).isInstanceOf(InvalidBreakException.class);
     }
 
     @Test
@@ -196,7 +211,7 @@ class BreakLifecycleTest {
     private static Transition open() {
         return Break.open(UUID.fromString("00000000-0000-4000-8000-000000000001"), BreakType.AMOUNT_MISMATCH,
                 PSP_LINE, List.of(LEDGER_ENTRY), Optional.of(UUID.fromString("00000000-0000-4000-8000-000000000002")),
-                Actor.SYSTEM, OPENED);
+                Actor.SYSTEM, Optional.empty(), OPENED);
     }
 
     private static Break breakIn(BreakStatus status) {
