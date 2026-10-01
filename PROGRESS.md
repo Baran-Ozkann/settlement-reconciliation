@@ -1,8 +1,56 @@
 # Progress
 
-**Current phase:** 3 — Ledger event consumer (complete, pending the owner's review)
+**Current phase:** 4 — Statement ingestion (complete, pending the owner's review; NFR-PERF-1's 60 s
+target is not met, see below)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
-**Last updated:** 2026-09-26
+**Last updated:** 2026-10-01
+
+## Phase 4 — done
+
+- [x] Parsers for both formats behind `StatementParser`, every TDD 7.3 code, strict UTF-8, bounded
+  lines, BOM, CRLF; one record per physical line, so a quoted line break is `INVALID_FORMAT`
+- [x] `IngestStatement`: hash before parsing, duplicate hash or reference refused with the original's
+  id (FR-ING-3), lines stored in batches of 1,000 inside one transaction with the file row last
+  (V10 defers the line-to-file check to commit), DUPLICATE_LINE break on the stored line or the
+  existing unresolved break recorded instead (FR-ING-4, INV-7), invalid-line threshold in basis points
+- [x] Security baseline (TDD 11.1): HTTP Basic, two users (OPERATOR implies VIEWER) with bcrypt
+  hashes from the environment; a missing, malformed, "system" or shared user stops startup; sessions
+  never created; 401 and 403 as Problem Details. `ops/security/HashPassword.java` makes a hash
+- [x] CSRF option A: `CrossSiteRequestFilter` refuses a state-changing request whose
+  `Sec-Fetch-Site` is not same-origin or none, whose `Origin` is `null` or not this server's, or that
+  repeats either header. The server's origin comes from `server.address` and the bound port
+- [x] `POST /api/v1/statements` (OPERATOR) and `GET /api/v1/statements/{id}` (VIEWER): 201, 422 with
+  line numbers and codes, 409 with the original's id, 413, 400, 500, 401, 403; no error body carries
+  a stack trace, SQL, a path or the file's name (`LeakCheck`)
+- [x] Limits under `recon.ingestion.*`, each set once: `max-file-size` and `temp-directory` go to the
+  servlet container (threshold 0, nothing in memory), the line limits to the parsers
+- [x] Proofs: limits at their boundaries, no temp file after any outcome, a failure mid-file and
+  after the file row both leave nothing and the same file then succeeds, the rollback's break proof
+- [x] NFR-PERF-1 measured under `-Pperf` with `-Xmx512m`: 97.1 / 98.3 / 100.0 s for 1,000,000
+  lines, peak heap 147-155 MB. **Target 60 s not met.** About 64 s is the line inserts and 27 s the
+  commit; the perf profile fails on the assertion until the target is met
+
+## Carried into later phases
+
+- **TDD text (owner):** 413 for too many lines (§4.2 and the Phase 4 status list); no REJECTED row
+  for an infrastructure failure (§5.3 step 5 says one is recorded); one record per physical line,
+  a quoted line break being `INVALID_FORMAT` (§7); ISO-only currency for bank lines in §7.2, as §7.1
+  and §7.3 already say for PSP lines
+- **NFR-PERF-1 (owner):** the database is the cost, not the parser or the heap. Options are in the
+  Phase 4 report; none is taken, since each changes a committed design decision or the TDD's batch
+  size
+- Phase 7: every new endpoint needs its own role rule in `SecurityConfiguration`; anything not named
+  there needs only authentication. `/api/v1/statements` is the pattern
+- Phase 9: METRICS for prometheus (any authenticated user reads it until then); a correlation id per
+  request; the threat model must cover `.env` holding the user hashes in single quotes
+- A browser at `http://localhost:8090` is refused for every POST: the configured origin is
+  `http://127.0.0.1:8090`. PowerShell and curl send no `Origin` and are unaffected
+- Test contexts share one PostgreSQL; the test profile caps each pool at four connections and keeps
+  one once idle. A new context with its own `@DynamicPropertySource` is a new pool
+- The ArchUnit fixture controllers under `archfixture` are picked up by component scan in every test
+  context. They map no request, so nothing is exposed, but they are beans
+
+# Phase 3 record
 
 ## Phase 3 — done
 
