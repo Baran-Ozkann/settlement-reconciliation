@@ -256,6 +256,10 @@
                         <configuration>
                             <groups>perf</groups>
                             <excludedGroups combine.self="override"/>
+                            <!-- NFR-PERF-1 is defined for a JVM limited to 512 MB of heap, and its test
+                                 refuses to measure without the limit. The projection measurement
+                                 shares the profile and runs under the same limit. -->
+                            <argLine>-Xmx512m</argLine>
                         </configuration>
                     </plugin>
                 </plugins>
