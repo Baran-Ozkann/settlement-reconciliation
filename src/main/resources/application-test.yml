@@ -3,6 +3,15 @@
 # credentials and never reads .env.
 
 spring:
+  datasource:
+    hikari:
+      # Test contexts are cached for the whole run, each with its own pool, and all of them share one
+      # PostgreSQL that admits 100 connections. Hikari's default of ten kept open per context runs
+      # out of slots once a run has a dozen contexts; four at most, and one once a context is idle,
+      # leaves room for many more.
+      maximum-pool-size: 4
+      minimum-idle: 1
+      idle-timeout: 10000
   kafka:
     # Most test contexts have no broker. Without these the admin client would try to create the
     # dead-letter topic at startup, and the listener to poll, against an address where nothing
