@@ -3,6 +3,7 @@ package com.baran.recon.config;
 import java.util.regex.Pattern;
 
 import jakarta.servlet.DispatcherType;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -20,14 +21,17 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.csrf.CsrfFilter;
 
 /**
  * The v1 security baseline (TDD 11.1): HTTP Basic over loopback, one user per role, each user's name
  * and bcrypt hash from the environment and none in the repository. OPERATOR includes VIEWER.
  *
  * <p>Every request needs an authenticated user except the health endpoint. Sessions are never
- * created, so each request carries its credentials. A production deployment would use an OAuth2
- * resource server instead.
+ * created, so each request carries its credentials. Spring's session CSRF token has no session to
+ * live in; {@link CrossSiteRequestFilter} takes its place, and is not a Spring bean so the servlet
+ * container does not register it a second time outside the chain. A production deployment would
+ * use an OAuth2 resource server instead.
  *
  * <p>Only a servlet application has requests to secure. A test context without a web server has no
  * {@link HttpSecurity} to build a chain from, and no user who could log in.
@@ -44,7 +48,7 @@ class SecurityConfiguration {
     private static final Pattern BCRYPT = Pattern.compile("\\$2[aby]\\$(0[4-9]|[12][0-9]|3[01])\\$[./A-Za-z0-9]{53}");
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, ServerOrigin serverOrigin) throws Exception {
         return http
                 .authorizeHttpRequests(requests -> requests
                         .requestMatchers(EndpointRequest.to(HealthEndpoint.class)).permitAll()
@@ -55,9 +59,14 @@ class SecurityConfiguration {
                 .sessionManagement(sessions -> sessions.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .requestCache(cache -> cache.disable())
                 .logout(logout -> logout.disable())
-                // Spring's CSRF token lives in an HTTP session, which this API never creates.
                 .csrf(csrf -> csrf.disable())
+                .addFilterAt(new CrossSiteRequestFilter(serverOrigin::value), CsrfFilter.class)
                 .build();
+    }
+
+    @Bean
+    ServerOrigin serverOrigin(@Value("${server.address}") String address) {
+        return new ServerOrigin(address);
     }
 
     @Bean

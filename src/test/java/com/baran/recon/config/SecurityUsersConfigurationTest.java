@@ -35,7 +35,8 @@ class SecurityUsersConfigurationTest {
     private final WebApplicationContextRunner runner = new WebApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(SecurityAutoConfiguration.class,
                     ServletWebSecurityAutoConfiguration.class))
-            .withUserConfiguration(SecurityConfiguration.class);
+            .withUserConfiguration(SecurityConfiguration.class)
+            .withPropertyValues("server.address=127.0.0.1");
 
     @Test
     @DisplayName("two valid users start the application: the operator holds OPERATOR, which implies VIEWER")
