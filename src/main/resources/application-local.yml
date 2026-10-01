@@ -14,3 +14,13 @@ spring:
   kafka:
     # This repository's own broker from docker compose, on loopback; 9094 keeps clear of the ledger's.
     bootstrap-servers: 127.0.0.1:${KAFKA_PORT:9094}
+
+recon:
+  # TDD 8.1's two sources, so a statement can be uploaded locally. No ledger account is mapped to
+  # PSP_ALPHA until OQ-3 settles which one a PSP clears through, so it projects no ledger entries yet.
+  sources:
+    - code: PSP_ALPHA
+      type: PSP_SETTLEMENT
+    - code: BANK_MAIN
+      type: BANK_STATEMENT
+      batch-id-pattern: "BATCH[-_]?([A-Za-z0-9_-]{1,64})"

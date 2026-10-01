@@ -71,8 +71,14 @@ recon:
   # TDD 6: TRY alone, matching the ledger. A ledger entry in another real ISO 4217 currency is still
   # projected, warned about and counted: it is money that moved on a mapped account.
   supported-currencies: [ TRY ]
-  # FR-ING-7, FR-ING-8: statement uploads.
+  # FR-ING-7, FR-ING-8: statement uploads. Each limit is set here once, for whichever part of the
+  # application enforces it.
   ingestion:
+    # The largest file an upload may carry. The servlet container refuses a larger one with 413 while
+    # it is still arriving, so it is never written out in full.
+    max-file-size: 200MB
+    # Where the servlet container keeps an upload, under a name of its own, until the request ends.
+    temp-directory: ${java.io.tmpdir}/settlement-reconciliation/uploads
     # The longest line, in bytes, not counting its ending. A longer one is LINE_TOO_LONG.
     max-line-length: 4KB
     # The most data lines a file may have. The first line over it refuses the file with 413.
