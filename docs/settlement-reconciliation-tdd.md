@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.5 — DLQ headers and INVALID_EVENT_ID, supported currencies, two consumer metrics (Phase 3 outcomes)
+Version: 1.6 — ingestion statuses and limits, one record per line, CSRF option A, Phase 4.1 bulk write (Phase 4 outcomes)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -111,10 +111,19 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-ING-7** Validation rules (§7) are applied per line. If the invalid-line ratio exceeds the configured
   threshold (default 0 — any invalid line rejects the file), the file is `REJECTED`; the response contains
   line numbers and error codes (never raw line content).
-- **FR-ING-8** Limits (configurable): max file size 200 MB, max line length 4 KB, max 2,000,000 lines,
-  UTF-8 only (a leading BOM is stripped), header row required and must match exactly.
+- **FR-ING-8** Limits (configurable under `recon.ingestion.*`, each set once and fed to whichever part
+  enforces it): max file size 200 MB, max line length 4,096 bytes not counting the line ending, max
+  2,000,000 data lines (the header is not counted), UTF-8 only (a leading BOM is stripped), header row
+  required and must match exactly. A file over the size limit or over the line limit is refused with
+  `413` and **nothing is recorded** — it is not a `REJECTED` file, because it was never read to the end.
 - **FR-ING-9** The original filename is sanitized (allow-list `[A-Za-z0-9._-]`, max 100 chars) before being
   stored or logged; it is never used as a path.
+- **FR-ING-10** Upload responses: `201` INGESTED with the file summary; `422` REJECTED with line numbers and
+  codes (the file is recorded); `409` duplicate hash or `(source, statementReference)`, carrying the
+  original ingestion's id; `413` oversize file or too many lines; `400` unknown source or malformed
+  `statementReference` (`[A-Za-z0-9._-]{1,100}`); `500` infrastructure failure, with nothing recorded;
+  `401`/`403`. Every error is Problem Details and carries no stack trace, SQL, path, or uploaded filename
+  (tested).
 
 ### 4.3 Matching (FR-MAT)
 - **FR-MAT-1** Matching is triggered by `POST /api/v1/runs` with `source` and `valueDateFrom`/`valueDateTo`,
@@ -240,15 +249,21 @@ ArchUnit rules (Phase 1):
 4. Commit DB transaction → acknowledge offset.
 
 **File ingestion**
-1. Controller checks auth, size header, source exists, `statementReference` format.
-2. Stream the upload to a temp file while computing SHA-256 (never hold the file in memory).
-3. Reject on duplicate hash / duplicate `(source, statementReference)`.
-4. Parse in streaming mode; validate each line; collect errors (line number + code).
-5. In one transaction: insert `statement_files` row, batch-insert lines (JDBC batch, size 1,000),
-   record duplicate-line breaks, set status `INGESTED`. On any failure: rollback, status `REJECTED`
-   recorded in a separate transaction.
-6. Delete the temp file in all cases.
-7. Trigger a run for the affected source and value-date range.
+1. The servlet container spools every multipart part to the configured temp directory (memory
+   threshold 0) and refuses an oversize file with `413` while it is still arriving. Security checks
+   authentication, role, and the cross-site rules (§11.1).
+2. The controller checks the source exists and the `statementReference` format.
+3. The use case hashes the spooled file (SHA-256) and refuses a duplicate hash or `(source,
+   statementReference)` with `409`.
+4. Parse in streaming mode; validate each line; collect errors (line number + code). Over the line
+   limit: `413`, nothing recorded.
+5. Over the invalid-line threshold: the file is recorded `REJECTED` with its line errors, no line stored
+   (`422`). Otherwise, in one transaction: lines in batches (Phase 4.1 settles the bulk write form),
+   duplicate-line breaks, and the `statement_files` row last (V10 defers the line-to-file foreign keys
+   to commit). On an infrastructure failure: rollback, `500`, **nothing recorded** — no `REJECTED` row,
+   because the file was not found invalid, and the same file can be uploaded again.
+6. The container deletes its part files when the request ends, on every outcome.
+7. Trigger a run for the affected source and value-date range (Phase 5).
 
 **Matching run**
 1. Acquire a PostgreSQL advisory lock keyed by source (one run per source at a time).
@@ -306,6 +321,13 @@ The ledger stores money as `BIGINT` minor units (kuruş), chosen over `NUMERIC` 
 Both formats: UTF-8, comma-separated, RFC 4180 quoting, `\n` or `\r\n` line endings, one header row,
 decimal point `.`, no thousands separators, dates `YYYY-MM-DD`.
 
+- **One record per physical line.** A quoted field may contain commas and doubled quotes, but not a line
+  break; a line whose quotes are left open at its end is `INVALID_FORMAT`. Line numbers in errors are
+  therefore physical line numbers, the header being line 1.
+- Each invalid line reports one code: the first rule it fails.
+- A header problem (`HEADER_MISMATCH`, or a header that is not valid UTF-8 or too long) stops parsing:
+  no data line is evaluated. A file with only the header has 0 data lines.
+
 ### 7.1 PSP settlement report CSV v1
 
 Header (exact):
@@ -339,7 +361,7 @@ line_id,booking_date,value_date,amount,currency,reference,description
 | booking_date | date | required |
 | value_date | date | required |
 | amount | decimal | non-zero |
-| currency | ISO 4217 | supported set |
+| currency | ISO 4217 | must be a real ISO 4217 code (`INVALID_CURRENCY` otherwise). A valid code outside `supported-currencies` is ingested, not rejected, as in §7.1 |
 | reference | string | 0–140 chars; batch id extracted with the source's configured regex |
 | description | string | 0–140 chars; stored, never used for matching |
 
@@ -564,12 +586,27 @@ all, enforced by a `CHECK`.
 | GET | `/api/v1/breaks/export?…` | VIEWER | CSV export (injection-safe) |
 | GET | `/api/v1/reports/summary?source=&valueDate=` | VIEWER | Reconciliation summary |
 | GET | `/actuator/health` | public | Liveness/readiness |
-| GET | `/actuator/prometheus` | METRICS | Metrics scrape |
+| GET | `/actuator/prometheus` | METRICS (any authenticated user until Phase 9) | Metrics scrape |
 
 ### 11.1 Security design
 - Spring Security, HTTP Basic over localhost in v1 (documented as a v1 simplification; production would
-  use an OAuth2 resource server). Users and bcrypt hashes come from environment variables; none are in
-  the repo. Roles: `VIEWER`, `OPERATOR` (includes VIEWER), `METRICS`.
+  use an OAuth2 resource server). Users and bcrypt hashes come from environment variables
+  (`RECON_OPERATOR_USERNAME`, `RECON_OPERATOR_PASSWORD_HASH`, `RECON_VIEWER_USERNAME`,
+  `RECON_VIEWER_PASSWORD_HASH`); none are in the repo. A missing or malformed user, the username
+  `system`, or two users with the same name stops startup. `.env` holds a hash in single quotes, because
+  docker compose reads that file too and would expand each `$`; the application drops one enclosing pair.
+  Roles: `VIEWER`, `OPERATOR` (includes VIEWER), `METRICS` (Phase 9; until then any authenticated user
+  reads `/actuator/prometheus` and `/actuator/info`).
+- Stateless: no HTTP session is created; each request carries its credentials. `401` (with a Basic
+  challenge) and `403` are Problem Details like every other error.
+- **CSRF (option A).** A browser caches Basic credentials and sends them with a cross-site form post,
+  which needs no CORS preflight. Spring's CSRF token needs a session, so `CrossSiteRequestFilter` replaces
+  it: a state-changing request (not GET/HEAD/OPTIONS/TRACE) is refused with `403`, before authentication,
+  when `Sec-Fetch-Site` is anything but `same-origin` or `none`, when `Origin` is `null`, when `Origin` is
+  not this server's own origin, or when either header is repeated. The server's origin is
+  `http://<server.address>:<bound port>`, from configuration, **never** from the request's `Host` (a DNS
+  rebinding page sends a `Host` that agrees with its own `Origin`). A client sending neither header
+  (curl, PowerShell) passes on to authentication.
 - The authenticated principal is recorded as `actor` in all events and as `uploaded_by`/`triggered_by`.
 - Request body limits configured at the servlet level to match FR-ING-8.
 - Rate of uploads is not limited in v1; documented in the threat model.
@@ -698,6 +735,23 @@ Goal: replace every assumption about the ledger with facts.
   401 and 403 on the upload endpoint,
   oversize line, non-UTF-8 bytes; streaming verified with a 1,000,000-line generated file under `-Xmx512m`
   (performance profile, not default CI).
+
+### Phase 4.1 — Bulk write path (follow-up, before Phase 5)
+Phase 4 measured NFR-PERF-1 at 97–100 s against 60 s (peak heap 147–155 MB of 512 MB): about 64 s in
+line inserts and 27 s at commit. Phase 5 writes up to a million matches in one transaction, so the bulk
+write technique is settled here first.
+- Measure the current statement form, then try, in order and each measured: driver-side batch
+  rewriting or multi-row `VALUES`; `COPY FROM STDIN` into a transaction-scoped staging table followed by
+  `INSERT … SELECT … ON CONFLICT DO NOTHING RETURNING` (duplicates still become `DUPLICATE_LINE`
+  breaks); and the commit-time cost of the deferred line-to-file foreign keys.
+- No constraint, foreign key, CHECK, index, or trigger is dropped or disabled; no durability setting is
+  changed; the 60 s target is not lowered. If the target is still missed, the phase reports the
+  measurements and the owner decides.
+- Also: the use case re-checks the file size behind the servlet limit (`413`); startup deletes stale
+  container part files from the dedicated temp directory; the ArchUnit fixtures move out of
+  `com.baran.recon` so no test context scans them.
+- Exit: NFR-PERF-1 measured three times under `-Xmx512m` with a per-stage breakdown; all Phase 4 tests
+  and break proofs still pass.
 
 ### Phase 5 — Stage A matching
 - Run orchestration (advisory lock, config snapshot, single transaction), rules A1–A3, ambiguity handling,
