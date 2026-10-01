@@ -56,6 +56,15 @@ management:
         include: health, info, prometheus
 
 recon:
+  # TDD 11.1: HTTP Basic users, one per role, from the environment. No default: an unset variable
+  # stops startup. The hash is bcrypt; .env.example says how to make one.
+  security:
+    operator:
+      username: ${RECON_OPERATOR_USERNAME}
+      password-hash: ${RECON_OPERATOR_PASSWORD_HASH}
+    viewer:
+      username: ${RECON_VIEWER_USERNAME}
+      password-hash: ${RECON_VIEWER_PASSWORD_HASH}
   # TDD 6: a ledger entry's value date is the date its created_at falls on in this zone. Snapshotted
   # onto each run from Phase 5 (FR-MAT-8).
   value-date-zone: Europe/Istanbul

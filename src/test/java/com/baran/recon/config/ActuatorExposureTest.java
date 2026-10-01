@@ -19,14 +19,16 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import com.baran.recon.support.ReconPostgres;
+import com.baran.recon.support.ReconUsers;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Asks the running management connector over real HTTP which endpoints answer (CLAUDE.md 3.2):
- * health, info and prometheus do, and every other endpoint Spring Boot ships is absent. A 404 is
- * the only acceptable answer for those - not a 401, which would mean the endpoint exists and is
- * one misconfigured rule away from being readable.
+ * health, info and prometheus do, and every other endpoint Spring Boot ships is absent. Every
+ * request but health's carries a user's credentials, so a 404 is the only acceptable answer for
+ * the others - not a 401 or 403, which would mean the endpoint exists and is one misconfigured rule
+ * away from being readable.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
@@ -54,9 +56,9 @@ class ActuatorExposureTest {
     }
 
     @Test
-    @DisplayName("health is UP, with the database reached as the application role")
+    @DisplayName("NFR-SEC-1: health is UP without credentials, with the database reached as the application role")
     void healthIsUp() throws Exception {
-        HttpResponse<String> response = get("health");
+        HttpResponse<String> response = http.send(request("health").GET().build(), HttpResponse.BodyHandlers.ofString());
 
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(response.body()).contains("\"status\":\"UP\"");
@@ -68,6 +70,15 @@ class ActuatorExposureTest {
         assertThat(get(endpoint).statusCode()).isEqualTo(200);
     }
 
+    @ParameterizedTest(name = "{0} is read by a VIEWER too")
+    @ValueSource(strings = {"info", "prometheus"})
+    @DisplayName("Any authenticated user reads info and prometheus until Phase 9 adds METRICS")
+    void viewerReadsExposedEndpoint(String endpoint) throws Exception {
+        HttpRequest request = request(endpoint).header("Authorization", ReconUsers.viewerAuthorization()).GET().build();
+
+        assertThat(http.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()).isEqualTo(200);
+    }
+
     @ParameterizedTest(name = "{0} is not exposed")
     @ValueSource(strings = {"env", "configprops", "beans", "heapdump", "threaddump", "loggers",
             "mappings", "metrics", "conditions", "scheduledtasks", "flyway", "shutdown", "caches",
@@ -76,8 +87,13 @@ class ActuatorExposureTest {
         assertThat(get(endpoint).statusCode()).isEqualTo(404);
     }
 
+    /** As the operator, so that only the exposure list can explain a 404. */
     private HttpResponse<String> get(String endpoint) throws IOException, InterruptedException {
-        URI uri = URI.create("http://127.0.0.1:" + managementPort + "/actuator/" + endpoint);
-        return http.send(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofString());
+        HttpRequest request = request(endpoint).header("Authorization", ReconUsers.operatorAuthorization()).GET().build();
+        return http.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpRequest.Builder request(String endpoint) {
+        return HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + managementPort + "/actuator/" + endpoint));
     }
 }

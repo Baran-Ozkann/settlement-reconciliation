@@ -1,0 +1,143 @@
+package com.baran.recon.config;
+
+import java.util.regex.Pattern;
+
+import jakarta.servlet.DispatcherType;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
+import org.springframework.boot.security.autoconfigure.actuate.web.servlet.EndpointRequest;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.web.SecurityFilterChain;
+
+/**
+ * The v1 security baseline (TDD 11.1): HTTP Basic over loopback, one user per role, each user's name
+ * and bcrypt hash from the environment and none in the repository. OPERATOR includes VIEWER.
+ *
+ * <p>Every request needs an authenticated user except the health endpoint. Sessions are never
+ * created, so each request carries its credentials. A production deployment would use an OAuth2
+ * resource server instead.
+ *
+ * <p>Only a servlet application has requests to secure. A test context without a web server has no
+ * {@link HttpSecurity} to build a chain from, and no user who could log in.
+ */
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+@EnableConfigurationProperties(SecurityConfiguration.UsersProperties.class)
+class SecurityConfiguration {
+
+    static final String OPERATOR = "OPERATOR";
+    static final String VIEWER = "VIEWER";
+
+    private static final Pattern USERNAME = Pattern.compile("[A-Za-z0-9._-]{1,100}");
+    private static final Pattern BCRYPT = Pattern.compile("\\$2[aby]\\$(0[4-9]|[12][0-9]|3[01])\\$[./A-Za-z0-9]{53}");
+
+    @Bean
+    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        return http
+                .authorizeHttpRequests(requests -> requests
+                        .requestMatchers(EndpointRequest.to(HealthEndpoint.class)).permitAll()
+                        // The error page renders a failure the request already met; it opens nothing.
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                        .anyRequest().authenticated())
+                .httpBasic(basic -> basic.realmName("settlement-reconciliation"))
+                .sessionManagement(sessions -> sessions.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .requestCache(cache -> cache.disable())
+                .logout(logout -> logout.disable())
+                // Spring's CSRF token lives in an HTTP session, which this API never creates.
+                .csrf(csrf -> csrf.disable())
+                .build();
+    }
+
+    @Bean
+    RoleHierarchy roleHierarchy() {
+        return RoleHierarchyImpl.withDefaultRolePrefix().role(OPERATOR).implies(VIEWER).build();
+    }
+
+    @Bean
+    PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    UserDetailsService users(UsersProperties properties) {
+        properties.validate();
+        return new InMemoryUserDetailsManager(
+                User.withUsername(properties.operator().username()).password(properties.operator().passwordHash())
+                        .roles(OPERATOR).build(),
+                User.withUsername(properties.viewer().username()).password(properties.viewer().passwordHash())
+                        .roles(VIEWER).build());
+    }
+
+    /**
+     * {@code recon.security}: the two users, bound from environment variables by application.yml.
+     * A missing or malformed value stops startup, and no message ever repeats a value it read.
+     */
+    @ConfigurationProperties("recon.security")
+    record UsersProperties(Credentials operator, Credentials viewer) {
+
+        void validate() {
+            check("operator", operator);
+            check("viewer", viewer);
+            if (operator.username().equals(viewer.username())) {
+                throw new IllegalStateException("recon.security.operator and recon.security.viewer must be different users");
+            }
+        }
+
+        private static void check(String role, Credentials credentials) {
+            if (credentials == null) {
+                throw new IllegalStateException("recon.security." + role + " is not configured");
+            }
+            checkSet(role + ".username", credentials.username());
+            checkSet(role + ".password-hash", credentials.passwordHash());
+            String username = credentials.username();
+            // The name is recorded as the actor of what the user does, so it cannot be the system's.
+            if (!USERNAME.matcher(username).matches() || "system".equals(username)) {
+                throw new IllegalStateException("recon.security." + role
+                        + ".username must be 1-100 characters of [A-Za-z0-9._-], and not \"system\"");
+            }
+            if (!BCRYPT.matcher(credentials.passwordHash()).matches()) {
+                throw new IllegalStateException("recon.security." + role + ".password-hash must be a bcrypt hash");
+            }
+        }
+
+        /** The binder leaves a placeholder whose variable is unset as its own text, so that is unset too. */
+        private static void checkSet(String key, String value) {
+            if (value == null || value.isBlank() || value.startsWith("${")) {
+                throw new IllegalStateException("recon.security." + key + " is not set");
+            }
+        }
+    }
+
+    record Credentials(String username, String passwordHash) {
+
+        /**
+         * A bcrypt hash is full of {@code $}, so .env holds it in single quotes: docker compose reads
+         * that file too, and would take each {@code $} as the start of a variable. The local profile
+         * reads .env as a properties file, which keeps the quotes, so one enclosing pair is dropped.
+         */
+        Credentials {
+            if (passwordHash != null && passwordHash.length() >= 2 && passwordHash.startsWith("'")
+                    && passwordHash.endsWith("'")) {
+                passwordHash = passwordHash.substring(1, passwordHash.length() - 1);
+            }
+        }
+
+        /** Never the hash, so a failure that prints the properties cannot print it. */
+        @Override
+        public String toString() {
+            return "Credentials[username=" + username + "]";
+        }
+    }
+}

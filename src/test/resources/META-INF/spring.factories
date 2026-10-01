@@ -1,0 +1,2 @@
+# Every Spring test context gets the application's two users, with passwords generated per test JVM.
+org.springframework.test.context.ContextCustomizerFactory=com.baran.recon.support.ReconUsers$Factory

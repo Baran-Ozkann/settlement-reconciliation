@@ -14,13 +14,14 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import com.baran.recon.support.ReconPostgres;
+import com.baran.recon.support.ReconUsers;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The break proof for {@code ActuatorExposureTest}, kept as a test so it runs on every build
  * (TDD 9.1). With env added to the exposure list - in this context's properties only, no file is
- * edited - /actuator/env answers 200. So the 404 that test expects comes from the exposure list
+ * edited - /actuator/env answers 200 to the same credentials that test sends. So the 404 that test expects comes from the exposure list
  * and would turn into a failure the moment the list grew, rather than from an endpoint that is
  * missing for some other reason.
  */
@@ -44,8 +45,9 @@ class ActuatorExposureBreakProofTest {
     void exposedEnvAnswers() throws Exception {
         URI uri = URI.create("http://127.0.0.1:" + managementPort + "/actuator/env");
         try (HttpClient http = HttpClient.newHttpClient()) {
-            HttpResponse<Void> response =
-                    http.send(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.discarding());
+            HttpRequest request = HttpRequest.newBuilder(uri)
+                    .header("Authorization", ReconUsers.operatorAuthorization()).GET().build();
+            HttpResponse<Void> response = http.send(request, HttpResponse.BodyHandlers.discarding());
 
             assertThat(response.statusCode()).isEqualTo(200);
         }
