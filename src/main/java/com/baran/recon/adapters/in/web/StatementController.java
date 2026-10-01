@@ -3,6 +3,7 @@ package com.baran.recon.adapters.in.web;
 import java.io.IOException;
 import java.net.URI;
 import java.security.Principal;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,6 +11,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -19,6 +22,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.baran.recon.application.statement.IngestStatement;
 import com.baran.recon.application.statement.UploadedStatement;
+import com.baran.recon.application.statement.ViewStatement;
 import com.baran.recon.domain.statement.StatementFile;
 import com.baran.recon.domain.statement.StatementFileStatus;
 
@@ -30,6 +34,8 @@ import com.baran.recon.domain.statement.StatementFileStatus;
  * <p>An ingested file is 201 with its summary. A rejected file is recorded too, and is 422 with the
  * line numbers and codes that rejected it (FR-ING-7). Every refusal before that is answered by
  * {@link ApiExceptionHandler}.
+ *
+ * <p>{@code GET /api/v1/statements/{id}}, for a VIEWER, shows a recorded file of either status.
  */
 @RestController
 @RequestMapping(StatementController.PATH)
@@ -40,9 +46,18 @@ class StatementController {
     private static final Logger LOG = LoggerFactory.getLogger(StatementController.class);
 
     private final IngestStatement ingest;
+    private final ViewStatement view;
 
-    StatementController(IngestStatement ingest) {
+    StatementController(IngestStatement ingest, ViewStatement view) {
         this.ingest = ingest;
+        this.view = view;
+    }
+
+    @GetMapping("/{id}")
+    ResponseEntity<?> get(@PathVariable("id") UUID id) {
+        return view.find(id).<ResponseEntity<?>>map(file -> ResponseEntity.ok(StatementView.of(file)))
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                        .body(ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "No statement file has this id.")));
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

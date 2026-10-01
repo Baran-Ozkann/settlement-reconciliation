@@ -22,6 +22,7 @@ import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.application.statement.IngestStatement;
 import com.baran.recon.application.statement.IngestionLimits;
+import com.baran.recon.application.statement.ViewStatement;
 import com.baran.recon.domain.source.ConfiguredSources;
 
 /**
@@ -78,6 +79,11 @@ class IngestionConfiguration {
     IngestStatement ingestStatement(ConfiguredSources sources, List<StatementParser> parsers, StatementStore store,
                                     BreakStore breaks, Transactions transactions, Clock clock, IngestionLimits limits) {
         return new IngestStatement(sources, parsers, store, breaks, transactions, clock, limits);
+    }
+
+    @Bean
+    ViewStatement viewStatement(StatementStore store) {
+        return new ViewStatement(store);
     }
 
     /**

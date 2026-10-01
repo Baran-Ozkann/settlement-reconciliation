@@ -35,8 +35,8 @@ import org.springframework.security.web.csrf.CsrfFilter;
  * The v1 security baseline (TDD 11.1): HTTP Basic over loopback, one user per role, each user's name
  * and bcrypt hash from the environment and none in the repository. OPERATOR includes VIEWER.
  *
- * <p>Every request needs an authenticated user except the health endpoint, and an upload needs an
- * OPERATOR. A request without valid credentials is 401 with a Basic challenge, one whose user lacks
+ * <p>Every request needs an authenticated user except the health endpoint, an upload needs an
+ * OPERATOR, and reading a statement file a VIEWER, which an OPERATOR also is. A request without valid credentials is 401 with a Basic challenge, one whose user lacks
  * the role is 403, each as Problem Details like every other error (FR-API-2). Sessions are never
  * created, so each request carries its credentials. Spring's session CSRF token has no session to
  * live in; {@link CrossSiteRequestFilter} takes its place, and is not a Spring bean so the servlet
@@ -74,6 +74,7 @@ class SecurityConfiguration {
                         // The error page renders a failure the request already met; it opens nothing.
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/statements").hasRole(OPERATOR)
+                        .requestMatchers(HttpMethod.GET, "/api/v1/statements/*").hasRole(VIEWER)
                         .anyRequest().authenticated())
                 .httpBasic(basic -> basic.realmName(REALM).authenticationEntryPoint(CHALLENGE))
                 .exceptionHandling(errors -> errors.authenticationEntryPoint(CHALLENGE).accessDeniedHandler(DENIED))

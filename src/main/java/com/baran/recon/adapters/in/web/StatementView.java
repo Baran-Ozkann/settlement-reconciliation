@@ -7,12 +7,14 @@ import java.util.UUID;
 import com.baran.recon.domain.statement.DuplicateLine;
 import com.baran.recon.domain.statement.LineError;
 import com.baran.recon.domain.statement.StatementFile;
+import com.baran.recon.domain.statement.StatementFileStatus;
 
 /**
  * A statement file as the API shows it: its status, counts, and the line numbers and codes of its
  * errors (FR-ING-7), never a line's content. The file name is the stored, sanitized one (FR-ING-9).
  * The lists hold the first {@value com.baran.recon.domain.statement.LineSummary#MAX_LISTED} of each;
- * the counts are complete.
+ * the counts are complete. A rejected file stored none of its lines (FR-ING-6), whatever its valid
+ * lines number.
  */
 record StatementView(
         UUID id,
@@ -34,7 +36,8 @@ record StatementView(
     static StatementView of(StatementFile file) {
         return new StatementView(file.id(), file.source().value(), file.statementReference(), file.status().name(),
                 file.sha256(), file.sanitizedFilename(), file.sizeBytes(), file.lines().lineCount(),
-                file.lines().storedLineCount(), file.lines().invalidLineCount(), LineErrorView.of(file.lines().allErrors()),
+                file.status() == StatementFileStatus.INGESTED ? file.lines().storedLineCount() : 0,
+                file.lines().invalidLineCount(), LineErrorView.of(file.lines().allErrors()),
                 file.lines().duplicateLineCount(), file.lines().duplicates().stream().map(DuplicateLineView::of).toList(),
                 file.uploadedBy(), file.receivedAt());
     }
