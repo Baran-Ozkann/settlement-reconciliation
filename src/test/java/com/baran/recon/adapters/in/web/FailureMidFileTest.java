@@ -6,9 +6,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -18,22 +16,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.context.annotation.Bean;
-import org.springframework.dao.TransientDataAccessResourceException;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import com.baran.recon.application.port.StatementStore;
-import com.baran.recon.domain.item.BankLine;
-import com.baran.recon.domain.item.PspLine;
-import com.baran.recon.domain.item.SourceCode;
-import com.baran.recon.domain.statement.StatementFile;
 import com.baran.recon.support.ReconPostgres;
 
 import static com.baran.recon.application.statement.StatementFiles.psp;
@@ -47,11 +38,16 @@ import static org.awaitility.Awaitility.await;
  * after the first batch was written and a DUPLICATE_LINE break opened inside the same transaction,
  * the way a crash between the write and the commit would. The upload is 500, and nothing of it is
  * left: no file row, no line, no break, no temp file. The same file then uploads successfully.
+ *
+ * <p>A failure after the file row is written leaves nothing either. There the deferred line-to-file
+ * check no longer helps, since every line has its file, so the rollback alone removes it;
+ * {@code FailureAfterFileRowBreakProofTest} shows the same failure kept when the transaction commits.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "recon.sources[0].code=PSP_FAIL",
         "recon.sources[0].type=PSP_SETTLEMENT"})
 @ActiveProfiles("test")
+@Import(FailingStatementStore.Injection.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("FR-ING-6, NFR-REL-1: a failure mid-file leaves nothing, and the same file then succeeds")
 class FailureMidFileTest {
@@ -98,7 +94,7 @@ class FailureMidFileTest {
         String content = psp(lines(id));
         FailingStatementStore failing = (FailingStatementStore) store;
 
-        failing.failOnBatch(2);
+        failing.failOnPspBatch(2);
         StatementApi.Response failed = api.upload(PSP, "STMT-" + id, content);
 
         assertThat(failing.batchesSeen()).isEqualTo(2);
@@ -122,6 +118,29 @@ class FailureMidFileTest {
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(tempFiles()).isEmpty());
     }
 
+    @Test
+    @DisplayName("FR-ING-6: a failure after the file row and every line are written: 500, nothing left; then 201")
+    void failureAfterTheFileRowRollsBackAndTheSameFileThenSucceeds() throws Exception {
+        String id = unique();
+        String content = psp(lines(id));
+        FailingStatementStore failing = (FailingStatementStore) store;
+
+        failing.failAfterStoringFile();
+        StatementApi.Response failed = api.upload(PSP, "STMT-" + id, content);
+
+        assertThat(failing.filesStored()).isEqualTo(1);
+        assertThat(failed.status()).isEqualTo(500);
+        assertThat(count("SELECT count(*) FROM statement_files WHERE statement_reference = :value", "STMT-" + id)).isZero();
+        assertThat(count("SELECT count(*) FROM psp_lines WHERE line_id LIKE :value", id + "-%")).isZero();
+
+        failing.disarm();
+        StatementApi.Response retried = api.upload(PSP, "STMT-" + id, content);
+
+        assertThat(retried.status()).isEqualTo(201);
+        assertThat(count("SELECT count(*) FROM psp_lines WHERE line_id LIKE :value", id + "-%")).isEqualTo(LINES);
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(tempFiles()).isEmpty());
+    }
+
     /** Line 0001 repeats the earlier file's line, in the first batch; the rest are new. */
     private static List<String> lines(String id) {
         return IntStream.rangeClosed(1, LINES).mapToObj(n -> pspLine(id + "-" + String.format("%04d", n))).toList();
@@ -137,97 +156,6 @@ class FailureMidFileTest {
         }
         try (Stream<Path> files = Files.list(TEMP_DIRECTORY)) {
             return new ArrayList<>(files.map(file -> file.getFileName().toString()).toList());
-        }
-    }
-
-    @TestConfiguration(proxyBeanMethods = false)
-    static class InjectTheFailure {
-
-        @Bean
-        static BeanPostProcessor failingStatementStore() {
-            return new BeanPostProcessor() {
-                @Override
-                public Object postProcessAfterInitialization(Object bean, String beanName) {
-                    return bean instanceof StatementStore real ? new FailingStatementStore(real) : bean;
-                }
-            };
-        }
-    }
-
-    /**
-     * The application's own store, wrapped so that the batch of PSP lines the test names fails after
-     * it was written, inside the ingestion's transaction.
-     */
-    static final class FailingStatementStore implements StatementStore {
-
-        private final StatementStore delegate;
-        private final AtomicInteger batches = new AtomicInteger();
-        private volatile int failingBatch;
-
-        FailingStatementStore(StatementStore delegate) {
-            this.delegate = delegate;
-        }
-
-        void failOnBatch(int batch) {
-            batches.set(0);
-            failingBatch = batch;
-        }
-
-        void disarm() {
-            failingBatch = 0;
-        }
-
-        int batchesSeen() {
-            return batches.get();
-        }
-
-        @Override
-        public List<LineConflict> storePspLinesIfAbsent(List<PspLine> lines) {
-            List<LineConflict> conflicts = delegate.storePspLinesIfAbsent(lines);
-            if (batches.incrementAndGet() == failingBatch) {
-                throw new TransientDataAccessResourceException("injected after batch " + failingBatch);
-            }
-            return conflicts;
-        }
-
-        @Override
-        public void checkLineFilesAtCommit() {
-            delegate.checkLineFilesAtCommit();
-        }
-
-        @Override
-        public void storeFile(StatementFile file) {
-            delegate.storeFile(file);
-        }
-
-        @Override
-        public List<LineConflict> storeBankLinesIfAbsent(List<BankLine> lines) {
-            return delegate.storeBankLinesIfAbsent(lines);
-        }
-
-        @Override
-        public Optional<StatementFile> findFile(UUID id) {
-            return delegate.findFile(id);
-        }
-
-        @Override
-        public Optional<UUID> findIngestedFileBySha256(String sha256) {
-            return delegate.findIngestedFileBySha256(sha256);
-        }
-
-        @Override
-        public Optional<UUID> findIngestedFileByReference(SourceCode source, String statementReference) {
-            return delegate.findIngestedFileByReference(source, statementReference);
-        }
-
-        @Override
-        public Optional<PspLine> findPspLine(UUID id) {
-            return delegate.findPspLine(id);
-        }
-
-        @Override
-        public Optional<BankLine> findBankLine(UUID id) {
-            return delegate.findBankLine(id);
         }
     }
 }
