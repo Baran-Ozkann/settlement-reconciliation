@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 import jakarta.servlet.MultipartConfigElement;
@@ -71,11 +72,46 @@ class UploadDirectoryTest {
                 .rootCause().hasMessageContaining("is the user's home directory"));
     }
 
+    /**
+     * Written as this OS names its root ({@code C:\} or {@code /}) and as {@code /}, which on Windows
+     * is the root of the current drive. {@code /} is also what a resource lookup resolves to the
+     * classpath root, so a binding that went through one would hand the guard a build directory
+     * instead, on either OS.
+     */
     @Test
-    @DisplayName("a filesystem root stops startup")
+    @DisplayName("a filesystem root stops startup, written as the OS names it or as /")
     void rootStopsStartup() {
-        context(base.getRoot().toString()).run(started -> assertThat(started).hasFailed().getFailure()
-                .rootCause().hasMessageContaining("is a filesystem root"));
+        for (String written : List.of(base.getRoot().toString(), "/")) {
+            context(written).run(started -> assertThat(started).hasFailed().getFailure()
+                    .rootCause().hasMessageContaining("is a filesystem root"));
+        }
+    }
+
+    @Test
+    @DisplayName("a blank directory stops startup, rather than meaning the working directory")
+    void blankStopsStartup() {
+        for (String written : new String[] {"", " "}) {
+            context(written).run(started -> assertThat(started).hasFailed().getFailure()
+                    .rootCause().hasMessageContaining("recon.ingestion.temp-directory must be set"));
+        }
+    }
+
+    @Test
+    @DisplayName("a link to a filesystem root stops startup once the link is followed")
+    void linkToRootStopsStartup() throws IOException {
+        Path link = base.resolve("root-link");
+        try {
+            Files.createSymbolicLink(link, base.getRoot());
+        } catch (FileSystemException | UnsupportedOperationException refused) {
+            assumeTrue(false, "this OS account may not create symbolic links");
+        }
+        try {
+            context(link.toString()).run(started -> assertThat(started).hasFailed().getFailure()
+                    .rootCause().hasMessageContaining("is a filesystem root"));
+        } finally {
+            // Removes the link only. Nothing that walks target/ later should meet a link to the root.
+            Files.delete(link);
+        }
     }
 
     @Test

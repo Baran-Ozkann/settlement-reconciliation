@@ -78,8 +78,11 @@ class IngestionConfiguration {
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
     UploadDirectory uploadDirectory(IngestionProperties properties, @Value("${java.io.tmpdir}") String systemTemp,
                                     @Value("${user.home}") String home) {
-        Path configured = Objects.requireNonNull(properties.tempDirectory(), "recon.ingestion.temp-directory must be set");
-        return UploadDirectory.prepare(configured, Path.of(systemTemp), Path.of(home));
+        String configured = properties.tempDirectory();
+        if (configured == null || configured.isBlank()) {
+            throw new IllegalArgumentException("recon.ingestion.temp-directory must be set");
+        }
+        return UploadDirectory.prepare(Path.of(configured), Path.of(systemTemp), Path.of(home));
     }
 
     @Bean
@@ -95,14 +98,18 @@ class IngestionConfiguration {
 
     /**
      * @param maxFileSize           FR-ING-8, 200 MB by default: the largest file an upload may carry
-     * @param tempDirectory         where the servlet container keeps uploads while they are ingested
+     * @param tempDirectory         where the servlet container keeps uploads while they are ingested.
+     *                              Text, made a path with {@code Path.of}: bound as a {@code Path},
+     *                              Spring's editor first tries the text as a resource location, and
+     *                              {@code /}, or any path that names a classpath directory, would
+     *                              become that build directory before the guard ever saw it
      * @param maxLineLength         FR-ING-8, 4 KB by default: the longest line, not counting its ending
      * @param maxLines              FR-ING-8, 2,000,000 by default: the most data lines a file may have
      * @param maxInvalidLineRatioBp FR-ING-7, 0 by default: invalid lines a file may have and still be
      *                              ingested, in basis points of its data lines
      */
     @ConfigurationProperties("recon.ingestion")
-    record IngestionProperties(DataSize maxFileSize, Path tempDirectory, DataSize maxLineLength, long maxLines,
+    record IngestionProperties(DataSize maxFileSize, String tempDirectory, DataSize maxLineLength, long maxLines,
                                int maxInvalidLineRatioBp) {
     }
 }
