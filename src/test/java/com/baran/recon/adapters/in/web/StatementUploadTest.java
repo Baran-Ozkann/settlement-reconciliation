@@ -11,13 +11,16 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.bind.annotation.RestController;
 
 import com.baran.recon.support.Multipart;
 import com.baran.recon.support.ReconPostgres;
@@ -56,6 +59,9 @@ class StatementUploadTest {
     @Autowired
     private JdbcClient jdbc;
 
+    @Autowired
+    private ApplicationContext context;
+
     private StatementApi api;
 
     @DynamicPropertySource
@@ -71,6 +77,15 @@ class StatementUploadTest {
     @AfterAll
     void closeClient() {
         api.close();
+    }
+
+    @Test
+    @DisplayName("TDD 5.2: every @RestController bean is the web adapter's; no test fixture is scanned in as one")
+    void everyRestControllerIsInTheWebAdapter() {
+        assertThat(context.getBeansWithAnnotation(RestController.class).values())
+                .extracting(bean -> AopUtils.getTargetClass(bean).getName())
+                .contains(StatementController.class.getName())
+                .allSatisfy(name -> assertThat(name).matches("com\\.baran\\.recon\\.adapters\\.in\\.web\\.[^.$]+"));
     }
 
     @Test
