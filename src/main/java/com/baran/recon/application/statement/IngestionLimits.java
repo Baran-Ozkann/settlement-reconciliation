@@ -4,7 +4,8 @@ package com.baran.recon.application.statement;
  * The configured limits of FR-ING-8 and the invalid-line threshold of FR-ING-7, as the application
  * reads them. The line limits are enforced by the parsers while they read. The file size limit is
  * the same {@code recon.ingestion.max-file-size} the servlet container is given, which refuses an
- * oversize body while it is still arriving.
+ * oversize body while it is still arriving; the use case checks it again on the bytes it reads, so a
+ * container configured otherwise cannot let a larger file through.
  *
  * @param maxFileBytes                  largest file, in bytes
  * @param maxLineBytes                  longest line, in bytes, not counting its ending

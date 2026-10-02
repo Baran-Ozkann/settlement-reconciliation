@@ -30,7 +30,7 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger LOG = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
-    /** FR-ING-1 and FR-ING-3: refused before a line was read, so nothing of the upload is recorded. */
+    /** FR-ING-1, FR-ING-3, FR-ING-8: refused before a line was read, so nothing of the upload is recorded. */
     @ExceptionHandler(UploadRefusedException.class)
     ProblemDetail uploadRefused(UploadRefusedException refused) {
         ProblemDetail problem = switch (refused.reason()) {
@@ -42,6 +42,8 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                     "A file with the same content was already ingested.");
             case DUPLICATE_REFERENCE -> ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
                     "A file was already ingested under this source and statement reference.");
+            case FILE_TOO_LARGE -> ProblemDetail.forStatusAndDetail(HttpStatus.CONTENT_TOO_LARGE,
+                    "The file is larger than the file size limit.");
         };
         refused.originalFileId().ifPresent(original -> problem.setProperty("originalStatementId", original));
         return problem;

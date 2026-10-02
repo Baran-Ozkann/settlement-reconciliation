@@ -41,7 +41,8 @@ import com.baran.recon.domain.statement.StatementFileStatus;
  * <ol>
  *   <li>the source must be configured, and its type chooses the parser (FR-ING-2); the statement
  *       reference must be well formed;</li>
- *   <li>the content is hashed, and a file already ingested with the same hash, or under the same
+ *   <li>the content is hashed and its size counted; a file over the size limit is refused at the
+ *       first byte past it (FR-ING-8), and a file already ingested with the same hash, or under the same
  *       source and reference, is refused with the original's id before a line is read (FR-ING-3);</li>
  *   <li>in one transaction, the file is parsed line by line and its lines stored in batches as they
  *       come; a line already stored for the source is a duplicate (FR-ING-4). The file row is written
@@ -101,7 +102,7 @@ public final class IngestStatement {
             throw UploadRefusedException.invalidStatementReference();
         }
         Actor uploader = Actor.operator(upload.uploadedBy());
-        Hashed hashed = hash(upload.content());
+        Hashed hashed = hash(upload.content(), limits.maxFileBytes());
         refuseIfAlreadyIngested(source.code(), upload.statementReference(), hashed.sha256());
 
         UUID fileId = UUID.randomUUID();
@@ -168,14 +169,21 @@ public final class IngestStatement {
         }
     }
 
-    /** The size is counted from the bytes read, never taken from the client. */
-    private static Hashed hash(UploadedStatement.Content content) throws IOException {
+    /**
+     * The size is counted from the bytes read, never taken from the client, and held to the file size
+     * limit here as well as at the servlet: reading stops at the first byte over it, before anything
+     * is recorded.
+     */
+    private static Hashed hash(UploadedStatement.Content content, long maxFileBytes) throws IOException {
         MessageDigest digest = sha256();
         long size = 0;
         byte[] buffer = new byte[64 * 1024];
         try (InputStream in = new DigestInputStream(content.open(), digest)) {
             for (int read = in.read(buffer); read >= 0; read = in.read(buffer)) {
                 size += read;
+                if (size > maxFileBytes) {
+                    throw UploadRefusedException.fileTooLarge();
+                }
             }
         }
         return new Hashed(HexFormat.of().formatHex(digest.digest()), size);

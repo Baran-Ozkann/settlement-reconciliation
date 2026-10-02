@@ -18,7 +18,9 @@ public final class UploadRefusedException extends RuntimeException {
         /** A file with the same content was already ingested (FR-ING-3). */
         DUPLICATE_CONTENT,
         /** A file was already ingested under this source and statement reference (FR-ING-3). */
-        DUPLICATE_REFERENCE
+        DUPLICATE_REFERENCE,
+        /** The file is larger than the file size limit, counted as it is read (FR-ING-8). */
+        FILE_TOO_LARGE
     }
 
     private final Reason reason;
@@ -48,6 +50,11 @@ public final class UploadRefusedException extends RuntimeException {
     static UploadRefusedException duplicateReference(UUID original) {
         return new UploadRefusedException(Reason.DUPLICATE_REFERENCE, Optional.of(original),
                 "a file was already ingested under this source and statement reference");
+    }
+
+    static UploadRefusedException fileTooLarge() {
+        return new UploadRefusedException(Reason.FILE_TOO_LARGE, Optional.empty(),
+                "the file is larger than the file size limit");
     }
 
     public Reason reason() {
