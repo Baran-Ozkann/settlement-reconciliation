@@ -26,15 +26,16 @@ class IngestionLimitsTest {
     })
     @DisplayName("FR-ING-7: rejected only when the ratio exceeds the threshold; at the threshold it is ingested")
     void rejectsAboveTheThresholdOnly(int basisPoints, long invalid, long lines, boolean rejected) {
-        assertThat(new IngestionLimits(4096, 2_000_000, basisPoints).rejects(invalid, lines)).isEqualTo(rejected);
+        assertThat(new IngestionLimits(200L << 20, 4096, 2_000_000, basisPoints).rejects(invalid, lines)).isEqualTo(rejected);
     }
 
     @Test
     @DisplayName("limits that cannot hold are refused")
     void impossibleLimitsAreRefused() {
-        assertThatThrownBy(() -> new IngestionLimits(0, 1, 0)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new IngestionLimits(1, 0, 0)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new IngestionLimits(1, 1, -1)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new IngestionLimits(1, 1, 10_001)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new IngestionLimits(0, 1, 1, 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new IngestionLimits(1, 0, 1, 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new IngestionLimits(1, 1, 0, 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new IngestionLimits(1, 1, 1, -1)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new IngestionLimits(1, 1, 1, 10_001)).isInstanceOf(IllegalArgumentException.class);
     }
 }

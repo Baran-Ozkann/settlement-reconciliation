@@ -25,20 +25,21 @@ class IngestionConfigurationTest {
     private final ApplicationContextRunner context = new ApplicationContextRunner()
             .withInitializer(started -> started.addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor()))
             .withBean(IngestionConfiguration.class)
-            .withPropertyValues("recon.ingestion.max-line-length=4KB", "recon.ingestion.max-lines=2000000",
-                    "recon.ingestion.max-invalid-line-ratio-bp=0");
+            .withPropertyValues("recon.ingestion.max-file-size=200MB", "recon.ingestion.max-line-length=4KB",
+                    "recon.ingestion.max-lines=2000000", "recon.ingestion.max-invalid-line-ratio-bp=0");
 
     @Test
-    @DisplayName("the defaults of FR-ING-8 bind: 4 KB lines, 2,000,000 lines, no invalid line allowed")
+    @DisplayName("the defaults of FR-ING-8 bind: 200 MB files, 4 KB lines, 2,000,000 lines, no invalid line allowed")
     void defaultsBind() {
         context.run(started -> assertThat(started.getBean(IngestionLimits.class))
-                .isEqualTo(new IngestionLimits(4096, 2_000_000, 0)));
+                .isEqualTo(new IngestionLimits(200L * 1024 * 1024, 4096, 2_000_000, 0)));
     }
 
     @ParameterizedTest(name = "{0}={1}")
     @CsvSource({
             "recon.ingestion.max-invalid-line-ratio-bp, 10001, the invalid-line ratio is 0-10000 basis points",
             "recon.ingestion.max-lines, 0, the line limits must be positive",
+            "recon.ingestion.max-file-size, 0B, the file size limit must be positive",
             "recon.ingestion.max-line-length, 4GB, recon.ingestion.max-line-length is too large"})
     @DisplayName("a limit that cannot hold fails the limits, and so the application's startup")
     void impossibleLimitFails(String property, String value, String message) {

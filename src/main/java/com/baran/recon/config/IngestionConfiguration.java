@@ -28,8 +28,8 @@ import com.baran.recon.domain.source.ConfiguredSources;
 /**
  * {@code recon.ingestion}: the limits of FR-ING-8 and the invalid-line threshold of FR-ING-7, each
  * set once. The file size limit and the temp directory go to the servlet container, which refuses an
- * oversize upload while it is still arriving (TDD 11.1); the line limits go to the parsers. A limit
- * that cannot hold stops startup.
+ * oversize upload while it is still arriving (TDD 11.1). The file size limit also goes to the use
+ * case, and the line limits to the parsers. A limit that cannot hold stops startup.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(IngestionConfiguration.IngestionProperties.class)
@@ -47,7 +47,10 @@ class IngestionConfiguration {
         if (maxLineBytes > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("recon.ingestion.max-line-length is too large");
         }
-        return new IngestionLimits((int) maxLineBytes, properties.maxLines(), properties.maxInvalidLineRatioBp());
+        long maxFileBytes = Objects.requireNonNull(properties.maxFileSize(), "recon.ingestion.max-file-size must be set")
+                .toBytes();
+        return new IngestionLimits(maxFileBytes, (int) maxLineBytes, properties.maxLines(),
+                properties.maxInvalidLineRatioBp());
     }
 
     /**
