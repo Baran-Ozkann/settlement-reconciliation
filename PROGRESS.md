@@ -1,9 +1,64 @@
 # Progress
 
-**Current phase:** 4.1 — Bulk write path (part A measured; NFR-PERF-1 still missed, the owner
-decides; parts B to E not started)
+**Current phase:** 4.1 — Bulk write path, done (Phase 5 not started)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
 **Last updated:** 2026-10-02
+
+## Phase 4.1 — done
+
+- [x] NFR-PERF-1 revised to 120 s in TDD v1.7 (§4.6) by the owner; the perf test asserts 120 s and
+  cites the revision. All 17 runs of this phase, every form, took 94.4-113.7 s
+- [x] A2, time-ordered line ids (UUID version 7): measured, **not kept**, not committed (table
+  below)
+- [x] B. The use case counts the bytes it reads from the spooled part and refuses past
+  `recon.ingestion.max-file-size` with 413, nothing recorded; the same property feeds the servlet.
+  `ApplicationFileSizeLimitTest` with the servlet at four times the limit; break proof
+  `ApplicationFileSizeLimitBreakProofTest`
+- [x] C. The upload directory is prepared in a bean of its own: startup stops on the system temp
+  directory, a filesystem root or the user's home (as configured and through a link), then deletes
+  regular files directly in it named `upload_*.tmp`, logging only counts. `UploadDirectoryTest`
+  (two symbolic link cases skipped by assumption here); break proof `UploadDirectoryBreakProofTest`
+- [x] D. ArchUnit fixtures under `com.baran.archfixture`; `StatementUploadTest` asserts every
+  `@RestController` bean is in `adapters.in.web` (recorded one-off proof against `e01b998`)
+- [x] E. `docs/break-proofs.md` Phase 4.1 section; per-commit verification in
+  `target/verify-results-3.txt`; report `.phase-reports/phase-4.1-report.md`
+
+### A2: time-ordered line ids, measured through the perf test
+
+The change: a generator of our own (no dependency) making RFC 9562 version 7 ids: 48-bit Unix
+milliseconds from the injected `Clock`, version and variant bits, then 74 bits from a
+`SecureRandom`. Within one millisecond it used the RFC's method 2, "monotonic random": the 74 bits
+grow by a random step of 1 to 2^32, seeded below 2^73, the timestamp moving on a millisecond if they
+ran out. Both parsers took their line ids from it. Nine unit tests passed (version and variant bits,
+ascending byte order over 100,000 ids in one millisecond and across milliseconds, a clock stepping
+back, no duplicate in 1,000,000, the timestamp read back, the carry into the high bits), and the
+full suite passed with it (957 tests).
+
+Protocol: `.\mvnw.cmd -q -B test -Pperf "-Dtest=StatementIngestionPerformanceTest"` (`-Xmx512m`),
+baseline = `1fd90b3` and v7 = the same commit plus the uncommitted change, each in its own worktree
+under target/, one run at a time, interleaved in one sitting (2026-10-02, 15:46-15:58). Machine as
+in part A; CPU load 1-2 % at each run's start; no other container running.
+
+| Run (in order) | Form | Total | Receive + hash | Parse with inserts | of which inserts | Parse outside inserts | Commit + response | Peak heap |
+|---|---|---|---|---|---|---|---|---|
+| 1 | baseline | 99.279 s | 1.466 s | 68.960 s | 63.987 s | 4.973 s | 28.841 s | 126 MB |
+| 2 | v7 | 94.441 s | 1.470 s | 65.941 s | 60.480 s | 5.461 s | 27.021 s | 134 MB |
+| 3 | baseline | 96.424 s | 1.465 s | 67.475 s | 62.337 s | 5.138 s | 27.476 s | 124 MB |
+| 4 | v7 | 99.037 s | 1.443 s | 69.923 s | 62.460 s | 7.463 s | 27.662 s | 125 MB |
+| 5 | baseline | 100.384 s | 2.405 s | 70.526 s | 63.237 s | 7.289 s | 27.441 s | 116 MB |
+| 6 | v7 | 100.090 s | 2.373 s | 69.107 s | 61.005 s | 8.102 s | 28.598 s | 132 MB |
+
+- **Decision: not kept.** Against the baseline run before it, v7 was 4.8 s faster (run 2), 2.6 s
+  slower (run 4) and 0.3 s faster (run 6). The rule was that every v7 run beats the baseline run
+  next to it, so the change was reverted and never committed.
+- The inserts alone were 3.5 s faster, 0.1 s slower and 2.2 s faster: far less than the 21 s the
+  throwaway probe of part A suggested. The parsing outside the inserts was 0.5-2.3 s slower in each
+  pair, which would fit the generator's three random draws per id under a lock against
+  `randomUUID()`'s one, but that was not measured. Why the probe's gain does not carry over was not
+  investigated. All runs answered 201 within the 120 s target.
+- Kept out of the repository (session scratch): the runner script, the series summary each run
+  printed, and the generator's source with a note on how it was wired. The per-run logs and the
+  patch were under target/ and a later clean build deleted them.
 
 ## Phase 4.1 — part A: bulk write path (NFR-PERF-1)
 
@@ -124,12 +179,20 @@ statements take. I stopped optimizing there, as the phase prompt says.
    proposal 1, before drift.
 3. **No privilege change.** TEMPORARY stays withheld from recon_app, since variant 2 is not kept.
 
-### Left for the next session
+### What the owner decided (TDD v1.7)
 
-- [ ] B. The use case re-checks the file size behind the servlet limit (`413`)
-- [ ] C. Startup deletes stale container part files from the dedicated temp directory
-- [ ] D. The ArchUnit fixtures move out of `com.baran.recon` so no test context scans them
-- [ ] E. Close: per-commit verification and the Phase 4.1 report
+The target is 120 s and the `unnest` form stays; no other write form is tried. Proposal 1 was tried
+in the second session and not kept (A2 above). TEMPORARY stays withheld from recon_app.
+
+## Carried out of Phase 4.1
+
+- The upload directory must be one instance's own: a second instance started on the same directory
+  deletes the first one's part files in flight. Nothing checks for that
+- Startup resolves the real paths of `java.io.tmpdir` and `user.home` to compare them with the
+  upload directory; it lists nothing outside the upload directory
+- The size re-check runs on the hashing pass only. The parse pass reads the same spooled file again
+  and does not count, on the ground that the container writes its part file only while the body
+  arrives; nothing re-hashes or re-counts the file after it was hashed
 
 ## Phase 4 — done
 
@@ -173,8 +236,8 @@ statements take. I stopped optimizing there, as the phase prompt says.
   `http://127.0.0.1:8090`. PowerShell and curl send no `Origin` and are unaffected
 - Test contexts share one PostgreSQL; the test profile caps each pool at four connections and keeps
   one once idle. A new context with its own `@DynamicPropertySource` is a new pool
-- The ArchUnit fixture controllers under `archfixture` are picked up by component scan in every test
-  context. They map no request, so nothing is exposed, but they are beans
+- ~~The ArchUnit fixture controllers under `archfixture` are picked up by component scan in every
+  test context~~ Resolved in Phase 4.1: the fixtures live under `com.baran.archfixture`
 
 # Phase 3 record
 
