@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.6 — ingestion statuses and limits, one record per line, CSRF option A, Phase 4.1 bulk write (Phase 4 outcomes)
+Version: 1.7 — NFR-PERF-1 target revised with its measurements, time-ordered line ids (Phase 4.1 part A outcomes)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -171,8 +171,15 @@ IDs are stable. Tests and commit bodies reference them.
   decide. It is never retried automatically: the other actor's change may make this one wrong.
 
 ### 4.6 Non-functional (NFR)
-- **NFR-PERF-1** Ingest a 1,000,000-line PSP file with the JVM limited to `-Xmx512m`. Target: ≤ 60 s on
-  the developer machine. Measured and reported, never estimated.
+- **NFR-PERF-1** Ingest a 1,000,000-line PSP file with the JVM limited to `-Xmx512m`. Target: ≤ 120 s on
+  the developer machine, measured over the whole request. Measured and reported, never estimated.
+  *Revised in v1.7 from 60 s, which was set without measurement.* Phase 4 and Phase 4.1 measured 96–110 s
+  and showed why: the server-side insert of a million rows with every constraint kept is CPU-bound at
+  47–68 s in one backend even with no foreign key, and the deferred line-to-file key adds about 26 s at
+  commit (one check per row; checking it immediately costs more). Multi-row `VALUES` and `COPY` through a
+  staging table were both slower than the current `unnest` form. A settlement file arrives once a day,
+  so two minutes is operationally ample. The original target, every measurement and the analysis are
+  kept in `PROGRESS.md`, the Phase 4.1 report and, in Phase 10, the README.
 - **NFR-PERF-2** Stage A for 1,000,000 PSP lines against 1,000,000 ledger entries. Target: ≤ 120 s.
 - **NFR-PERF-3** Kafka projection throughput target: ≥ 5,000 events/s sustained in the local setup.
 - **NFR-REL-1** A crash during ingestion leaves no partial data; re-uploading the same file succeeds.
@@ -752,6 +759,10 @@ write technique is settled here first.
   `com.baran.recon` so no test context scans them.
 - Exit: NFR-PERF-1 measured three times under `-Xmx512m` with a per-stage breakdown; all Phase 4 tests
   and break proofs still pass.
+- Outcome of part A: no write form reached 60 s; the `unnest` form stays and the target is revised
+  (§4.6). Random v4 line ids scatter inserts across the primary key index, and ascending ids made a
+  throwaway probe's inserts about 21 s faster, so the second session adopts time-ordered (UUID version 7, RFC 9562)
+  ids for statement lines, kept only if the perf test measures a gain.
 
 ### Phase 5 — Stage A matching
 - Run orchestration (advisory lock, config snapshot, single transaction), rules A1–A3, ambiguity handling,
