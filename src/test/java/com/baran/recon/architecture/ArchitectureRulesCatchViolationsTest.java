@@ -15,15 +15,16 @@ import org.junit.jupiter.params.provider.MethodSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Each rule against a fixture tree under {@code com.baran.recon.archfixture} that breaks it on
- * purpose, and every rule against one that breaks none. The application's own packages are nearly
+ * Each rule against a fixture tree under {@code com.baran.archfixture} that breaks it on
+ * purpose, and every rule against one that breaks none. The trees live outside
+ * {@code com.baran.recon}, so no test context's component scan takes a fixture for a bean. The application's own packages are nearly
  * empty in Phase 1, so this is the evidence that each rule rejects what it names and accepts what
  * it does not.
  */
 @DisplayName("TDD 5.2, INV-8, INV-9: each architecture rule rejects its violation")
 class ArchitectureRulesCatchViolationsTest {
 
-    private static final String FIXTURES = "com.baran.recon.archfixture.";
+    private static final String FIXTURES = "com.baran.archfixture.";
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("violations")
