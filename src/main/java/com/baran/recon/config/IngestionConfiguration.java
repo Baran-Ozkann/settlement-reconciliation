@@ -1,14 +1,12 @@
 package com.baran.recon.config;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 
 import jakarta.servlet.MultipartConfigElement;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -61,21 +59,27 @@ class IngestionConfiguration {
      */
     @Bean
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-    MultipartConfigElement multipartConfigElement(IngestionProperties properties) {
-        Path directory = Objects.requireNonNull(properties.tempDirectory(), "recon.ingestion.temp-directory must be set")
-                .toAbsolutePath();
-        try {
-            Files.createDirectories(directory);
-        } catch (IOException unusable) {
-            throw new UncheckedIOException("recon.ingestion.temp-directory cannot be created", unusable);
-        }
+    MultipartConfigElement multipartConfigElement(UploadDirectory directory, IngestionProperties properties) {
         long maxFileBytes = Objects.requireNonNull(properties.maxFileSize(), "recon.ingestion.max-file-size must be set")
                 .toBytes();
         if (maxFileBytes < 1) {
             throw new IllegalArgumentException("recon.ingestion.max-file-size must be positive");
         }
-        return new MultipartConfigElement(directory.toString(), maxFileBytes,
+        return new MultipartConfigElement(directory.path().toString(), maxFileBytes,
                 Math.addExact(maxFileBytes, MULTIPART_OVERHEAD_BYTES), 0);
+    }
+
+    /**
+     * The directory the servlet container keeps uploads in, created if it is not there. It is
+     * compared with the JVM's own temp directory and home, read through the environment so a test
+     * can stand others in for them.
+     */
+    @Bean
+    @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+    UploadDirectory uploadDirectory(IngestionProperties properties, @Value("${java.io.tmpdir}") String systemTemp,
+                                    @Value("${user.home}") String home) {
+        Path configured = Objects.requireNonNull(properties.tempDirectory(), "recon.ingestion.temp-directory must be set");
+        return UploadDirectory.prepare(configured, Path.of(systemTemp), Path.of(home));
     }
 
     @Bean
