@@ -17,7 +17,9 @@
 - [x] C. The upload directory is prepared in a bean of its own: startup stops on the system temp
   directory, a filesystem root or the user's home (as configured and through a link), then deletes
   regular files directly in it named `upload_*.tmp`, logging only counts. `UploadDirectoryTest`
-  (two symbolic link cases skipped by assumption here); break proof `UploadDirectoryBreakProofTest`
+  (the three symbolic link cases run on Linux and are skipped by assumption on this Windows
+  machine); break proof `UploadDirectoryBreakProofTest`. The property is bound as text: bound as a
+  `Path`, a configured `/` became the classpath root before the guard saw it (fixed in `df08898`)
 - [x] D. ArchUnit fixtures under `com.baran.archfixture`; `StatementUploadTest` asserts every
   `@RestController` bean is in `adapters.in.web` (recorded one-off proof against `e01b998`)
 - [x] E. `docs/break-proofs.md` Phase 4.1 section; per-commit verification in
