@@ -1,9 +1,135 @@
 # Progress
 
-**Current phase:** 4 — Statement ingestion (complete, pending the owner's review; NFR-PERF-1's 60 s
-target is not met, see below)
+**Current phase:** 4.1 — Bulk write path (part A measured; NFR-PERF-1 still missed, the owner
+decides; parts B to E not started)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
-**Last updated:** 2026-10-01
+**Last updated:** 2026-10-02
+
+## Phase 4.1 — part A: bulk write path (NFR-PERF-1)
+
+**Outcome: target missed by every form; no code change committed.** The statement form stays as it
+is. Neither variant was faster than it, so neither is kept, and no privilege or schema change is
+needed.
+
+### What reaches PostgreSQL today
+
+`JdbcStatementStore` sends one statement per 1,000 lines:
+`INSERT INTO psp_lines … SELECT … FROM unnest(13 array parameters) WITH ORDINALITY … ORDER BY
+position ON CONFLICT (source_code, line_id) DO NOTHING RETURNING id`, so 1,000 statements per
+million lines, all in the ingestion transaction. No JDBC batch (`addBatch`/`executeBatch`) is used
+for lines, and the datasource URL sets no driver options, so `reWriteBatchedInserts` is off and has
+nothing to rewrite. Duplicates are found by `RETURNING id`, never by update counts: a line whose id
+is not returned was skipped, and one more statement reads the stored line it met.
+
+### Protocol
+
+`.\mvnw.cmd -q -B test -Pperf "-Dtest=StatementIngestionPerformanceTest"` (`-Xmx512m`), one run at
+a time, variants interleaved with the baseline in one sitting (2026-10-02, 14:27-14:59). Machine as
+in Phase 4: Ryzen 5 7535HS (6 cores / 12 threads), 15.2 GB, Windows 11 Pro 10.0.26200, Temurin
+21.0.12, `postgres:16-alpine` in Docker Desktop, default configuration. Also running: Chrome and
+WhatsApp (idle); CPU load 0-9 % at each run's start. No other container ran (the ledger's are
+created but stopped). Columns are the test's own breakdown: everything before parsing starts
+(receive + hash), parsing with the inserts it drives, the inserts alone, everything after the file
+row is written (commit + response).
+
+| Run (in order) | Form | Total | Receive + hash | Parse with inserts | of which inserts | Commit + response | Peak heap |
+|---|---|---|---|---|---|---|---|
+| 1 | baseline | 110.509 s | 2.409 s | 79.275 s | 70.486 s | 28.785 s | 111 MB |
+| 2 | variant 1 | 113.718 s | 2.269 s | 81.008 s | 73.378 s | 30.420 s | 116 MB |
+| 3 | baseline | 106.103 s | 2.222 s | 74.774 s | 67.098 s | 29.094 s | 133 MB |
+| 4 | variant 1 | 109.641 s | 2.254 s | 78.987 s | 71.605 s | 28.387 s | 126 MB |
+| 5 | baseline | 105.075 s | 2.237 s | 73.520 s | 66.082 s | 29.303 s | 111 MB |
+| 6 | variant 1 | 107.494 s | 2.225 s | 77.809 s | 70.565 s | 27.449 s | 116 MB |
+| 7 | variant 2 | 109.861 s | 1.433 s | 80.170 s | 74.953 s | 28.248 s | 138 MB |
+| 8 | baseline | 97.749 s | 1.487 s | 68.044 s | 63.076 s | 28.207 s | 123 MB |
+| 9 | variant 2 | 108.107 s | 1.473 s | 79.358 s | 74.440 s | 27.267 s | 133 MB |
+| 10 | baseline | 96.216 s | 1.445 s | 67.748 s | 62.940 s | 27.013 s | 145 MB |
+| 11 | variant 2 | 109.757 s | 1.536 s | 80.904 s | 75.879 s | 27.307 s | 128 MB |
+
+- **Baseline** (five runs): 96.2-110.5 s. The same code drifted by 14 s within the sitting, so each
+  variant is compared with the baseline run next to it.
+- **Variant 1, explicit multi-row `VALUES`** (`INSERT … VALUES (13 ?) × 1,000 ON CONFLICT DO
+  NOTHING RETURNING id`, positional binds): 2.4-3.5 s slower than the baseline run before each.
+  Driver-side rewriting was not tried as such: it applies only to a JDBC batch, which this path
+  does not use, and turning the inserts into one would report `SUCCESS_NO_INFO` per row and lose the
+  per-line answer that duplicate detection needs. Multi-row `VALUES` is what rewriting would send,
+  with `RETURNING` kept. Measured only; the store tests were not run on it.
+- **Variant 2, `COPY FROM STDIN`** into a `CREATE TEMPORARY TABLE IF NOT EXISTS … ON COMMIT DROP`
+  staging table on the transaction's connection (`PGConnection.getCopyAPI()`), `TRUNCATE` before
+  each batch, then `INSERT … SELECT … ORDER BY position ON CONFLICT DO NOTHING RETURNING id`: 10-14 s
+  slower than the baseline run before it, all of it in the inserts (three round trips per batch
+  instead of one, and every row written twice). It needed `GRANT TEMPORARY ON DATABASE` for
+  recon_app (an uncommitted V11). With it, `StatementStoreTest`, `IngestStatementTest`,
+  `StatementUploadTest` and `FailureMidFileTest` passed, duplicates across files included. It
+  returned `id`, not `line_id`: a line id repeated within one batch is stored once, and only the id
+  says which of the two lines was stored. The escaping round-trip test was not written, because the
+  variant is not kept. The grant, the store change and the COPY encoder were removed from the working
+  tree.
+- **Neither variant met 60 s in any run**, so both are measured and reported, not committed.
+
+### Variant 3: what the deferred line-to-file key costs at commit
+
+Throwaway `postgres:16-alpine` containers, no published port, psql through `docker exec`, a fresh
+container per probe, removed afterwards. Each probe creates the V2 `psp_lines` DDL (every CHECK, the
+primary key and the unique constraint) and inserts 1,000,000 synthetic rows generated on the server
+in 1,000 statements of 1,000, in one transaction. No client is involved, so these are PostgreSQL's
+own costs. Script and runner: kept out of the repository (session scratch).
+
+| Probe | Round 1 inserts / commit | Round 2 inserts / commit | WAL |
+|---|---|---|---|
+| key deferred, file row last (today) | 55.6 s / 25.8 s | 68.6 s / 26.2 s | 412 MB |
+| key immediate, file row first | 98.7 s / 0.03 s | 110.3 s / 0.03 s | 412 MB |
+| no key (measurement only) | 54.1 s / 0.02 s | 67.9 s / 0.02 s | 411 MB |
+| no key, ids ascending instead of random v4 | — | 46.9 s / 0.02 s | 398 MB |
+
+Round 1 ran deferred, immediate, no key; round 2 the reverse, then ascending ids. Four more deferred
+probes (two with `shared_buffers=1GB`) gave 68.9 / 77.6 / 77.6 / 70.7 s of inserts and
+26.0-28.0 s at commit. During one, `docker stats` showed the container at 100-107 % CPU, one backend
+running with no wait event, no block read and 1.3 GB written.
+
+- **The commit-time cost is the foreign key itself: 25.8-28.0 s per million lines in seven probes**,
+  matching the 27.0-30.4 s commit stage of the perf test. Deferred, each inserted row queues an
+  after-trigger event, and at commit PostgreSQL runs the key's check trigger once per row: one SPI
+  query (`SELECT 1 FROM statement_files WHERE id = $1 FOR KEY SHARE`) each, about 26 µs, in the
+  one backend, on CPU. PostgreSQL 16 has no set-based check for rows inserted under an existing key.
+  With the key deferred, the inserts themselves cost the same as with no key at all.
+- **Checking the key immediately is dearer, not cheaper:** 42.6 and 42.4 s over no key, against
+  26 s deferred. Writing the file row first would also mean writing it before its final state,
+  which V6's grants forbid. V10's deferral is therefore the cheapest form measured; no change to
+  the write order or to V10 is proposed.
+- **The inserts are CPU-bound in one backend, not I/O-bound.** WAL is 412 MB, below `max_wal_size`
+  (no checkpoint started for WAL during any probe), and a larger `shared_buffers` made no
+  difference, so no server setting is proposed. Durability settings were neither changed nor tested.
+- The same probe with no key took 54.1 s in one round and 67.9 s in the other, so the VM drifts
+  by about 25 % between containers. Every comparison above is within one round.
+
+### Where that leaves NFR-PERF-1
+
+Even with no key, PostgreSQL alone takes 47-68 s for the rows (including generating them on the
+server), the Java side takes 6-11 s (receive and hash 1.4-2.4 s, parsing outside the inserts
+4.8-8.8 s), and the key adds 26 s at commit. **60 s is not reachable on this machine with every
+constraint kept and the file written in one transaction on one connection**, whatever form the
+statements take. I stopped optimizing there, as the phase prompt says.
+
+### Proposals for the owner (nothing committed)
+
+1. **Time-ordered line ids.** Lines get `UUID.randomUUID()` (v4). Ascending ids made the probe's
+   inserts 21 s faster (46.9 s against 67.9 s, same round): random keys scatter writes across the
+   primary key index. A time-ordered (v7-style) id, generated by the application, changes no schema,
+   constraint or setting, but its first 48 bits tell when the line was stored, and Java 21 has no v7
+   generator, so it would be about 20 lines of our own code. Measured in a probe only, never through
+   the perf test. It does not reach 60 s on its own: about 47 + 26 + 6-11 = 79-84 s.
+2. **The target or its conditions** (TDD §4.6), since no write form reaches it here. A figure for
+   this machine and setup would be about 96-111 s today (this sitting), or about 80-85 s with
+   proposal 1, before drift.
+3. **No privilege change.** TEMPORARY stays withheld from recon_app, since variant 2 is not kept.
+
+### Left for the next session
+
+- [ ] B. The use case re-checks the file size behind the servlet limit (`413`)
+- [ ] C. Startup deletes stale container part files from the dedicated temp directory
+- [ ] D. The ArchUnit fixtures move out of `com.baran.recon` so no test context scans them
+- [ ] E. Close: per-commit verification and the Phase 4.1 report
 
 ## Phase 4 — done
 
