@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.7 — NFR-PERF-1 target revised with its measurements, time-ordered line ids (Phase 4.1 part A outcomes)
+Version: 1.8 — Phase 4.1 outcomes, Stage A decisions for Phase 5 (run lifecycle, reference rules, item status), OQ-3 settled
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -113,7 +113,8 @@ IDs are stable. Tests and commit bodies reference them.
   line numbers and error codes (never raw line content).
 - **FR-ING-8** Limits (configurable under `recon.ingestion.*`, each set once and fed to whichever part
   enforces it): max file size 200 MB, max line length 4,096 bytes not counting the line ending, max
-  2,000,000 data lines (the header is not counted), UTF-8 only (a leading BOM is stripped), header row
+  2,000,000 data lines (the header is not counted), the file size enforced by the servlet container and
+  again by the application from the same property, UTF-8 only (a leading BOM is stripped), header row
   required and must match exactly. A file over the size limit or over the line limit is refused with
   `413` and **nothing is recorded** — it is not a `REJECTED` file, because it was never read to the end.
 - **FR-ING-9** The original filename is sanitized (allow-list `[A-Za-z0-9._-]`, max 100 chars) before being
@@ -179,7 +180,9 @@ IDs are stable. Tests and commit bodies reference them.
   commit (one check per row; checking it immediately costs more). Multi-row `VALUES` and `COPY` through a
   staging table were both slower than the current `unnest` form. A settlement file arrives once a day,
   so two minutes is operationally ample. The original target, every measurement and the analysis are
-  kept in `PROGRESS.md`, the Phase 4.1 report and, in Phase 10, the README.
+  kept in `PROGRESS.md`, the Phase 4.1 report and, in Phase 10, the README. Time-ordered (v7) line ids
+  were measured through the perf test and not kept (−4.8, +2.6, −0.3 s against adjacent baseline runs);
+  line ids stay random v4. The margin to 120 s is 10–25 s on the developer machine.
 - **NFR-PERF-2** Stage A for 1,000,000 PSP lines against 1,000,000 ledger entries. Target: ≤ 120 s.
 - **NFR-PERF-3** Kafka projection throughput target: ≥ 5,000 events/s sustained in the local setup.
 - **NFR-REL-1** A crash during ingestion leaves no partial data; re-uploading the same file succeeds.
@@ -260,8 +263,9 @@ ArchUnit rules (Phase 1):
    threshold 0) and refuses an oversize file with `413` while it is still arriving. Security checks
    authentication, role, and the cross-site rules (§11.1).
 2. The controller checks the source exists and the `statementReference` format.
-3. The use case hashes the spooled file (SHA-256) and refuses a duplicate hash or `(source,
-   statementReference)` with `409`.
+3. The use case hashes the spooled file (SHA-256) and counts its bytes: a file past `max-file-size` is
+   refused with `413`, nothing recorded; a duplicate hash or `(source, statementReference)` is refused
+   with `409`.
 4. Parse in streaming mode; validate each line; collect errors (line number + code). Over the line
    limit: `413`, nothing recorded.
 5. Over the invalid-line threshold: the file is recorded `REJECTED` with its line errors, no line stored
@@ -269,15 +273,22 @@ ArchUnit rules (Phase 1):
    duplicate-line breaks, and the `statement_files` row last (V10 defers the line-to-file foreign keys
    to commit). On an infrastructure failure: rollback, `500`, **nothing recorded** — no `REJECTED` row,
    because the file was not found invalid, and the same file can be uploaded again.
-6. The container deletes its part files when the request ends, on every outcome.
+6. The container deletes its part files when the request ends, on every outcome. At startup, regular
+   files named like the container's part files (`upload_*.tmp`) that a stopped JVM left directly in the
+   temp directory are deleted; startup stops if that directory is the system temp directory, a
+   filesystem root or the user's home. The directory must be one instance's own (v1 runs one instance).
 7. Trigger a run for the affected source and value-date range (Phase 5).
 
 **Matching run**
-1. Acquire a PostgreSQL advisory lock keyed by source (one run per source at a time).
-2. Create `reconciliation_runs` row with config snapshot.
-3. Stage A (if source type is PSP), then Stage B (if a bank source is linked and has lines in range).
-4. Persist matches, open breaks, auto-resolve breaks — in one transaction per run.
-5. Record run statistics; release lock.
+1. Insert the `reconciliation_runs` row as `RUNNING`, with its config snapshot, in its own transaction.
+   One run per source at a time is enforced by the database: a partial unique index on
+   `reconciliation_runs(source_code) WHERE status = 'RUNNING'`. A second run for the source fails to
+   insert; a manual trigger answers `409` with the running run's id.
+2. In one transaction: Stage A (if the source type is PSP), then Stage B (Phase 6); persist matches,
+   open breaks, auto-resolve breaks (`MATCHED_LATE`), record statistics, set `COMPLETED`.
+3. On failure: roll that transaction back and set `FAILED` in a transaction of its own. Nothing of the
+   run's work remains (NFR-REL-2).
+4. At startup, a run left `RUNNING` by a stopped JVM is set `FAILED` (v1 runs one instance).
 
 ---
 
@@ -425,6 +436,29 @@ recon:
 Duplicate references: if two PSP lines carry the same reference, neither is matched by A1;
 both get `DUPLICATE_LINE` breaks. (Never guess which one is the real one.)
 
+Stage A details (settled in v1.8):
+- **References are compared as UUIDs.** A PSP `transaction_reference` that parses as a UUID is
+  compared with the ledger entry's `transaction_id`; case and formatting do not matter.
+- **Known and unknown references.** A reference is *known* when a ledger entry of the source carries
+  that `transaction_id`, matched or not. A3 applies only to a PSP line whose reference is empty, not
+  a UUID, or unknown. A line whose reference is known but whose entry is already actively matched is
+  not offered to A3; it stays unmatched and reaches `MISSING_IN_LEDGER` through its grace period.
+- **Scope and candidates.** A run's items are those of its source with `value_date` in
+  `[valueDateFrom, valueDateTo]` (FR-MAT-9 excludes entries with none). A candidate on the other side
+  may lie outside that range, as long as it is within the value-date window of the item.
+- **Window.** "Value dates within window" means the two value dates are at most
+  `value-date-window-days` business days apart (§8.1 calendar).
+- **Item status after a run (INV-1).** An item is `MATCHED` if it is in an active match; otherwise
+  `BROKEN` if it is the subject of an unresolved break **or named in the related items** of one;
+  otherwise `PENDING`. A ledger entry named by an A2 or ambiguity break is therefore `BROKEN` and gets
+  no grace break of its own.
+- **Idempotent re-runs.** Re-running the same scope with no new data writes a run row and nothing
+  else: no match, no break, no event. An existing unresolved break is never opened twice (INV-7).
+- **Auto-resolution.** When a run matches an item that is the subject of an unresolved break, the
+  break is resolved in the same transaction with `MATCHED_LATE`, actor `system` (FR-BRK-5).
+- **Memory.** A run never holds all of a source's items in memory: matching is set-based in SQL or
+  streams in a fixed order, so NFR-PERF-2 runs under the same `-Xmx512m` as NFR-PERF-1.
+
 **Stage B — PSP batches ↔ bank lines (N:1)**
 
 | Order | Rule id | Condition | Outcome |
@@ -546,6 +580,7 @@ bank_lines            (id UUID PK, file_id FK, source_code, line_id, booking_dat
                        UNIQUE(source_code, line_id))
 reconciliation_runs   (id UUID PK, source_code, value_date_from, value_date_to,
                        status,                                 -- RUNNING | COMPLETED | FAILED
+                                                               -- partial UNIQUE (source_code) WHERE status = 'RUNNING'
                        config_snapshot JSONB, stats JSONB, started_at, finished_at, triggered_by)
 matches               (id UUID PK, run_id FK, rule_id, rule_version, cardinality, status,
                        amount_difference BIGINT, currency CHAR(3),  -- the difference is money, so it
@@ -615,7 +650,13 @@ all, enforced by a `CHECK`.
   rebinding page sends a `Host` that agrees with its own `Origin`). A client sending neither header
   (curl, PowerShell) passes on to authentication.
 - The authenticated principal is recorded as `actor` in all events and as `uploaded_by`/`triggered_by`.
-- Request body limits configured at the servlet level to match FR-ING-8.
+- Request body limits configured at the servlet level to match FR-ING-8, and re-checked by the use
+  case from the same property.
+- **Configuration binding.** A filesystem path in configuration is bound as text and made a `Path`
+  with `Path.of`, never bound as `Path`: Spring's `PathEditor` first tries the text as a resource
+  location, and Phase 4.1 found a configured `/` bound as the classpath root (`target/test-classes`),
+  so a guard checked a directory nobody had configured. An ArchUnit rule forbids `Path` components in
+  `@ConfigurationProperties` types.
 - Rate of uploads is not limited in v1; documented in the threat model.
 - Phase 9 produces `docs/threat-model.md` (STRIDE per component: upload, Kafka listener, API, DB).
 
@@ -752,7 +793,8 @@ write technique is settled here first.
   `INSERT … SELECT … ON CONFLICT DO NOTHING RETURNING` (duplicates still become `DUPLICATE_LINE`
   breaks); and the commit-time cost of the deferred line-to-file foreign keys.
 - No constraint, foreign key, CHECK, index, or trigger is dropped or disabled; no durability setting is
-  changed; the 60 s target is not lowered. If the target is still missed, the phase reports the
+  changed; the target is not lowered by the implementation (the owner revised it in v1.7, §4.6). If
+  the target is still missed, the phase reports the
   measurements and the owner decides.
 - Also: the use case re-checks the file size behind the servlet limit (`413`); startup deletes stale
   container part files from the dedicated temp directory; the ArchUnit fixtures move out of
@@ -761,15 +803,27 @@ write technique is settled here first.
   and break proofs still pass.
 - Outcome of part A: no write form reached 60 s; the `unnest` form stays and the target is revised
   (§4.6). Random v4 line ids scatter inserts across the primary key index, and ascending ids made a
-  throwaway probe's inserts about 21 s faster, so the second session adopts time-ordered (UUID version 7, RFC 9562)
-  ids for statement lines, kept only if the perf test measures a gain.
+  throwaway probe's inserts about 21 s faster. Measured in the second session through the perf test,
+  v7 ids were 4.8 s faster, 2.6 s slower and 0.3 s faster than the adjacent baseline runs, so line ids
+  stay random v4. CI on Linux then found the `Path` binding defect (§11.1), fixed in `df08898`.
 
 ### Phase 5 — Stage A matching
-- Run orchestration (advisory lock, config snapshot, single transaction), rules A1–A3, ambiguity handling,
-  duplicate-reference handling, grace-period evaluation for ledger and PSP sides, PENDING status.
-- Exit: FR-MAT-1…6, FR-MAT-8 for Stage A; INV-1, INV-4, INV-5 property tests (shuffled inputs, fixed seed);
-  test that an existing active match is never altered by a later run; concurrent run attempt on the same
-  source is rejected or serialized.
+- Run orchestration per §5.3 (RUNNING row, one run per source by partial unique index, config snapshot,
+  one work transaction, FAILED on failure, stale RUNNING set FAILED at startup), rules A1–A3 with the
+  §8.2 Stage A details, ambiguity handling, duplicate-reference handling, grace-period evaluation for
+  ledger and PSP sides, PENDING status, `MATCHED_LATE` auto-resolution (moved here from Phase 7, since
+  the run is what matches an item with an open break), FR-MAT-9/10.
+- `POST /api/v1/runs` (OPERATOR; synchronous; `201` with the run's status and stats, `409` with the
+  running run's id when the source is busy, `400` for an unknown source or a bad range) and
+  `GET /api/v1/runs/{id}` (VIEWER).
+- Automatic trigger (FR-MAT-1): after an ingestion commits, a run for that file's source and value-date
+  range is submitted to a single-thread background executor. If the source is busy it waits and tries
+  again until the running run ends; it never runs alongside it and is never dropped silently (a run it
+  cannot start is logged WARN with the file id). The upload's response does not wait for it.
+- Exit: FR-MAT-1…6, FR-MAT-8…10 for Stage A, FR-BRK-5; INV-1, INV-4, INV-5 property tests (shuffled
+  inputs, fixed seed); an existing active match is never altered by a later run; a re-run with no new
+  data writes nothing but its run row; a concurrent run on the same source is refused by the index
+  (with its break proof); NFR-PERF-2 measured three times under `-Xmx512m` (perf profile).
 
 ### Phase 6 — Stage B matching
 - Batch aggregation, regex batch-id extraction, rules B1–B2, `UNEXPECTED_BANK_LINE`, `MISSING_SETTLEMENT`
@@ -778,7 +832,7 @@ write technique is settled here first.
   small hand-written dataset whose expected results are asserted item by item.
 
 ### Phase 7 — Break management and API
-- Break transitions endpoint, resolution codes, reopen-as-new-break, auto-resolve `MATCHED_LATE`, match
+- Break transitions endpoint, resolution codes, reopen-as-new-break, match
   reversal (FR-MAT-7) with events, list/detail/export/summary endpoints, Problem Details, pagination.
 - Exit: FR-BRK-1…7, FR-API-1…6 covered; two concurrent transitions on one break produce exactly one
   success and one 409, with one event written; INV-6 replay test; export injection test; authorization tests for
@@ -816,10 +870,11 @@ Spring Boot 4, Maven, `JdbcClient` without JPA, package `com.baran.ledger`, `BIG
 signed entry amounts, single currency TRY, topic `ledger.account-activity` keyed by account public id,
 one event per ledger entry, `event-id` header as the dedupe key, and — since ledger commit `e3119e9` —
 `entry_id` and `created_at` on the payload (OQ-1, OQ-2).
+**OQ-3** (v1.8): the account type does not affect matching, because a source maps ledger accounts by
+id (§8.1). In the synthetic world the PSP clearing account is an `ASSET`, money receivable from the
+PSP; Phase 8's data uses one such account per PSP source.
 
 Still open:
-1. **OQ-3** How a PSP clearing account is represented with the ledger's account types
-   (ASSET/LIABILITY/…). Needed by Phase 2's source mapping.
-2. **OQ-4** Whether Phase 8 generates ledger data through the ledger's API or publishes
+1. **OQ-4** Whether Phase 8 generates ledger data through the ledger's API or publishes
    schema-valid synthetic events onto the topic.
-3. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Phase 10.
+2. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Phase 10.
