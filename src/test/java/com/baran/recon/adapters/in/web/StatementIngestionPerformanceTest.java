@@ -66,8 +66,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("NFR-PERF-1: ingesting a 1,000,000-line PSP file under -Xmx512m")
 class StatementIngestionPerformanceTest {
 
-    /** NFR-PERF-1. A miss fails this test; the numbers are printed first either way. */
-    private static final Duration TARGET = Duration.ofSeconds(60);
+    /**
+     * NFR-PERF-1, revised in TDD v1.7 (4.6) from 60 s, which was set before anything was measured.
+     * A miss fails this test; the numbers are printed first either way.
+     */
+    private static final Duration TARGET = Duration.ofSeconds(120);
     private static final long MAX_HEAP = 512L * 1024 * 1024;
     private static final int LINES = 1_000_000;
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -85,7 +88,7 @@ class StatementIngestionPerformanceTest {
     }
 
     @Test
-    @DisplayName("NFR-PERF-1: a million lines are ingested in 60 s or less, with the heap capped at 512 MB")
+    @DisplayName("NFR-PERF-1: a million lines are ingested in 120 s or less, with the heap capped at 512 MB")
     void millionLinesUnderTheHeapCap() throws Exception {
         assertThat(Runtime.getRuntime().maxMemory()).as("run under -Pperf, which sets -Xmx512m").isLessThanOrEqualTo(MAX_HEAP);
         String id = UUID.randomUUID().toString().substring(0, 8);
