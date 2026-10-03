@@ -114,11 +114,12 @@ class RunMatchingTest {
     @DisplayName("FR-MAT-9, FR-MAT-10: an entry without a value date is out of the run's scope and counted")
     void entryWithoutValueDateIsOutOfScopeAndCounted() {
         SourceCode source = SourceCode.of("PSP_RUN_SCOPE");
-        ledgerEntries.storeIfAbsent(dated(source, FROM));
-        ledgerEntries.storeIfAbsent(dated(source, TO.plusDays(3)));
-        ledgerEntries.storeIfAbsent(undated(source));
-        ledgerEntries.storeIfAbsent(undated(source));
-        ledgerEntries.storeIfAbsent(undated(SourceCode.of("PSP_RUN_OTHER")));
+        // Each insert must write its row, so an event id another class already used fails here.
+        assertThat(ledgerEntries.storeIfAbsent(dated(source, FROM))).isTrue();
+        assertThat(ledgerEntries.storeIfAbsent(dated(source, TO.plusDays(3)))).isTrue();
+        assertThat(ledgerEntries.storeIfAbsent(undated(source))).isTrue();
+        assertThat(ledgerEntries.storeIfAbsent(undated(source))).isTrue();
+        assertThat(ledgerEntries.storeIfAbsent(undated(SourceCode.of("PSP_RUN_OTHER")))).isTrue();
 
         ReconciliationRun completed = matching.run(source.value(), FROM, TO, "system");
 
