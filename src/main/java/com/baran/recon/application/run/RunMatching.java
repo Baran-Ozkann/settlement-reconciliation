@@ -1,6 +1,7 @@
 package com.baran.recon.application.run;
 
 import java.time.Clock;
+import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -8,14 +9,18 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunAlreadyRunningException;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.Transactions;
+import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.item.SourceCode;
+import com.baran.recon.domain.match.StageARule;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.source.ConfiguredSources;
 import com.baran.recon.domain.source.SourceDefinition;
@@ -41,6 +46,18 @@ public final class RunMatching {
 
     /** FR-MAT-8: the zone a ledger entry's created_at was read in to give its value date (TDD 6). */
     public static final String VALUE_DATE_ZONE = "value_date_zone";
+    /** FR-MAT-8, TDD 8.1: the weekend days of the business calendar, in week order, comma-separated. */
+    public static final String BUSINESS_CALENDAR_WEEKEND = "business_calendar_weekend";
+    /** FR-MAT-8, TDD 8.1: the holidays of the business calendar, ISO dates in order, comma-separated. */
+    public static final String BUSINESS_CALENDAR_HOLIDAYS = "business_calendar_holidays";
+    /** FR-MAT-8, TDD 8.1: the PSP source's value-date window, in business days. */
+    public static final String VALUE_DATE_WINDOW_DAYS = "value_date_window_days";
+    /** FR-MAT-8, TDD 8.1: business days a ledger entry may stay unmatched before it is MISSING_IN_PSP. */
+    public static final String GRACE_DAYS_LEDGER_UNMATCHED = "grace_days_ledger_unmatched";
+    /** FR-MAT-8, TDD 8.1: business days a PSP line may stay unmatched before it is MISSING_IN_LEDGER. */
+    public static final String GRACE_DAYS_PSP_UNMATCHED = "grace_days_psp_unmatched";
+    /** FR-MAT-8: followed by a Stage A rule id, the version of that rule the run ran. */
+    public static final String RULE_VERSION_PREFIX = "rule_version.";
 
     private static final Pattern SOURCE_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
 
@@ -50,15 +67,17 @@ public final class RunMatching {
     private final Transactions transactions;
     private final Clock clock;
     private final ZoneId valueDateZone;
+    private final BusinessCalendar calendar;
 
     public RunMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries,
-                       Transactions transactions, Clock clock, ZoneId valueDateZone) {
+                       Transactions transactions, Clock clock, ZoneId valueDateZone, BusinessCalendar calendar) {
         this.sources = Objects.requireNonNull(sources, "sources");
         this.runs = Objects.requireNonNull(runs, "runs");
         this.ledgerEntries = Objects.requireNonNull(ledgerEntries, "ledgerEntries");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.valueDateZone = Objects.requireNonNull(valueDateZone, "valueDateZone");
+        this.calendar = Objects.requireNonNull(calendar, "calendar");
     }
 
     /**
@@ -101,7 +120,7 @@ public final class RunMatching {
 
     private ReconciliationRun start(SourceDefinition source, LocalDate from, LocalDate to, String triggeredBy) {
         ReconciliationRun running = ReconciliationRun.start(UUID.randomUUID(), source.code(), from, to,
-                configSnapshot(), now(), triggeredBy);
+                configSnapshot(source), now(), triggeredBy);
         try {
             transactions.inTransaction(() -> {
                 runs.insert(running);
@@ -113,8 +132,26 @@ public final class RunMatching {
         return running;
     }
 
-    private Map<String, String> configSnapshot() {
-        return Map.of(VALUE_DATE_ZONE, valueDateZone.getId());
+    /**
+     * FR-MAT-8: everything the run reads from configuration. A PSP source's run adds what Stage A
+     * reads: the business calendar, the source's window and grace periods, and the rule versions.
+     */
+    private Map<String, String> configSnapshot(SourceDefinition source) {
+        Map<String, String> snapshot = new TreeMap<>();
+        snapshot.put(VALUE_DATE_ZONE, valueDateZone.getId());
+        source.stageA().ifPresent(stageA -> {
+            snapshot.put(BUSINESS_CALENDAR_WEEKEND, calendar.weekend().stream().sorted()
+                    .map(DayOfWeek::name).collect(Collectors.joining(",")));
+            snapshot.put(BUSINESS_CALENDAR_HOLIDAYS, calendar.holidays().stream().sorted()
+                    .map(LocalDate::toString).collect(Collectors.joining(",")));
+            snapshot.put(VALUE_DATE_WINDOW_DAYS, Integer.toString(stageA.valueDateWindowDays()));
+            snapshot.put(GRACE_DAYS_LEDGER_UNMATCHED, Integer.toString(stageA.graceDaysLedgerUnmatched()));
+            snapshot.put(GRACE_DAYS_PSP_UNMATCHED, Integer.toString(stageA.graceDaysPspUnmatched()));
+            for (StageARule rule : StageARule.values()) {
+                snapshot.put(RULE_VERSION_PREFIX + rule.name(), Integer.toString(rule.version()));
+            }
+        });
+        return snapshot;
     }
 
     private ReconciliationRun work(SourceDefinition source, ReconciliationRun running) {

@@ -50,6 +50,10 @@ import static org.awaitility.Awaitility.await;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_RUN_SOLO",
         "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].value-date-window-days=1",
+        "recon.sources[0].grace-days-psp-unmatched=4",
+        "recon.business-calendar.holidays[0]=2026-10-29",
+        "recon.business-calendar.holidays[1]=2026-05-19",
         "recon.sources[1].code=PSP_RUN_SCOPE",
         "recon.sources[1].type=PSP_SETTLEMENT",
         "recon.sources[2].code=PSP_RUN_FAIL",
@@ -101,7 +105,16 @@ class RunMatchingTest {
         assertThat(completed.valueDateFrom()).isEqualTo(FROM);
         assertThat(completed.valueDateTo()).isEqualTo(TO);
         assertThat(completed.triggeredBy()).isEqualTo("operator-001");
-        assertThat(completed.configSnapshot()).containsExactly(Map.entry(RunMatching.VALUE_DATE_ZONE, "Europe/Istanbul"));
+        assertThat(completed.configSnapshot()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                RunMatching.VALUE_DATE_ZONE, "Europe/Istanbul",
+                RunMatching.BUSINESS_CALENDAR_WEEKEND, "SATURDAY,SUNDAY",
+                RunMatching.BUSINESS_CALENDAR_HOLIDAYS, "2026-05-19,2026-10-29",
+                RunMatching.VALUE_DATE_WINDOW_DAYS, "1",
+                RunMatching.GRACE_DAYS_LEDGER_UNMATCHED, "3",
+                RunMatching.GRACE_DAYS_PSP_UNMATCHED, "4",
+                "rule_version.A1_EXACT_REFERENCE", "1",
+                "rule_version.A2_REFERENCE_CONFLICT", "1",
+                "rule_version.A3_FALLBACK_UNIQUE", "1"));
         assertThat(completed.stats()).hasValueSatisfying(stats -> assertThat(stats).containsExactlyInAnyOrderEntriesOf(
                 Map.of(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE, 0L, ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 0L)));
         assertThat(completed.finishedAt()).hasValueSatisfying(finished -> assertThat(finished).isAfterOrEqualTo(
@@ -236,6 +249,8 @@ class RunMatchingTest {
         ReconciliationRun completed = matching.run("BANK_RUN", FROM, TO, "system");
 
         assertThat(completed.status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(completed.configSnapshot()).as("Stage A's configuration is not read for a bank source")
+                .containsOnlyKeys(RunMatching.VALUE_DATE_ZONE);
         assertThat(runs.findById(completed.id())).contains(completed);
     }
 

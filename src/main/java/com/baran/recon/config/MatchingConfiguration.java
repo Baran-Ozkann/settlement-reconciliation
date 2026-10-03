@@ -14,6 +14,7 @@ import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.application.run.RunMatching;
+import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.source.ConfiguredSources;
 
 /** The matching run use case, built from the ports it needs (TDD 5.3). */
@@ -22,12 +23,12 @@ class MatchingConfiguration {
 
     private static final Logger LOG = LoggerFactory.getLogger(MatchingConfiguration.class);
 
-    /** {@code recon.value-date-zone} is snapshotted onto every run (FR-MAT-8). */
+    /** {@code recon.value-date-zone} and the business calendar are snapshotted onto a run (FR-MAT-8). */
     @Bean
     RunMatching runMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries,
                             Transactions transactions, Clock clock,
-                            @Value("${recon.value-date-zone}") ZoneId valueDateZone) {
-        return new RunMatching(sources, runs, ledgerEntries, transactions, clock, valueDateZone);
+                            @Value("${recon.value-date-zone}") ZoneId valueDateZone, BusinessCalendar calendar) {
+        return new RunMatching(sources, runs, ledgerEntries, transactions, clock, valueDateZone, calendar);
     }
 
     /**
