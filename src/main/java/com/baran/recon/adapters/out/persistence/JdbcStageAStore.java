@@ -2,7 +2,11 @@ package com.baran.recon.adapters.out.persistence;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.SqlArrayValue;
@@ -10,8 +14,13 @@ import org.springframework.stereotype.Repository;
 
 import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.domain.breaks.Actor;
+import com.baran.recon.domain.item.ItemSide;
+import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.RuleId;
 import com.baran.recon.domain.match.StageARule;
+import com.baran.recon.domain.money.CurrencyCode;
+import com.baran.recon.domain.run.ItemStatus;
+import com.baran.recon.domain.run.ItemTotal;
 
 import static com.baran.recon.adapters.out.persistence.SqlValues.timestamp;
 
@@ -336,6 +345,58 @@ class JdbcStageAStore implements StageAStore {
     private static final String OPEN_GRACE_BREAKS = "WITH " + String.join(",\n", NAMED, GRACE_FINDINGS, BREAK_WRITES)
             + "\nSELECT count(*) FROM opened_event";
 
+    /**
+     * INV-1, INV-4: the range's items by status, decided with EXISTS so an item is counted once
+     * however many matches or breaks touch it, and the same items again without a status. A sum is
+     * NUMERIC in PostgreSQL; the cast back to BIGINT fails rather than wrap if it ever overflows.
+     */
+    private static final String ITEM_TOTALS = "WITH " + NAMED + """
+            ,
+            ledger_item AS (
+                SELECT entry.currency, entry.amount,
+                       CASE WHEN EXISTS (SELECT 1 FROM match_items item
+                                          WHERE item.side = 'LEDGER' AND item.item_id = entry.id AND item.active)
+                                 THEN 'MATCHED'
+                            WHEN EXISTS (SELECT 1 FROM breaks subject
+                                          WHERE subject.item_side = 'LEDGER' AND subject.item_id = entry.id
+                                            AND subject.status <> 'RESOLVED')
+                              OR EXISTS (SELECT 1 FROM named WHERE named.side = 'LEDGER' AND named.id = entry.id)
+                                 THEN 'BROKEN'
+                            ELSE 'PENDING' END AS status
+                  FROM ledger_entries entry
+                 WHERE entry.source_code = :source AND entry.value_date BETWEEN :from AND :to
+            ),
+            psp_item AS (
+                SELECT line.currency, line.gross_amount AS amount,
+                       CASE WHEN EXISTS (SELECT 1 FROM match_items item
+                                          WHERE item.side = 'PSP' AND item.item_id = line.id AND item.active)
+                                 THEN 'MATCHED'
+                            WHEN EXISTS (SELECT 1 FROM breaks subject
+                                          WHERE subject.item_side = 'PSP' AND subject.item_id = line.id
+                                            AND subject.status <> 'RESOLVED')
+                              OR EXISTS (SELECT 1 FROM named WHERE named.side = 'PSP' AND named.id = line.id)
+                                 THEN 'BROKEN'
+                            ELSE 'PENDING' END AS status
+                  FROM psp_lines line
+                 WHERE line.source_code = :source AND line.value_date BETWEEN :from AND :to
+            )
+            SELECT 'LEDGER' AS side, currency, status, count(*) AS items, CAST(sum(amount) AS BIGINT) AS amount
+              FROM ledger_item GROUP BY currency, status
+            UNION ALL
+            SELECT 'PSP', currency, status, count(*), CAST(sum(amount) AS BIGINT)
+              FROM psp_item GROUP BY currency, status
+            UNION ALL
+            SELECT 'LEDGER', currency, NULL, count(*), CAST(sum(amount) AS BIGINT)
+              FROM ledger_entries
+             WHERE source_code = :source AND value_date BETWEEN :from AND :to
+             GROUP BY currency
+            UNION ALL
+            SELECT 'PSP', currency, NULL, count(*), CAST(sum(gross_amount) AS BIGINT)
+              FROM psp_lines
+             WHERE source_code = :source AND value_date BETWEEN :from AND :to
+             GROUP BY currency
+            """;
+
     private final JdbcClient jdbc;
 
     JdbcStageAStore(JdbcClient jdbc) {
@@ -383,6 +444,22 @@ class JdbcStageAStore implements StageAStore {
                 .param("actor", Actor.SYSTEM.name())
                 .param("at", timestamp(pass.at()))
                 .query(Long.class).single());
+    }
+
+    @Override
+    public ItemTotals itemTotals(SourceCode source, LocalDate valueDateFrom, LocalDate valueDateTo) {
+        List<ItemTotal> totals = jdbc.sql(ITEM_TOTALS)
+                .param("source", source.value())
+                .param("from", valueDateFrom)
+                .param("to", valueDateTo)
+                .query((row, n) -> new ItemTotal(ItemSide.valueOf(row.getString("side")),
+                        CurrencyCode.of(row.getString("currency")),
+                        Optional.ofNullable(row.getString("status")).map(ItemStatus::valueOf),
+                        row.getLong("items"), row.getLong("amount")))
+                .list();
+        Map<Boolean, List<ItemTotal>> byKind = totals.stream()
+                .collect(Collectors.partitioningBy(total -> total.status().isPresent()));
+        return new ItemTotals(byKind.get(true), byKind.get(false));
     }
 
     private JdbcClient.StatementSpec matching(String sql, StageAPass pass, StageARule rule) {

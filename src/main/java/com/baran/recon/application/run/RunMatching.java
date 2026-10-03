@@ -19,12 +19,14 @@ import com.baran.recon.application.port.RunAlreadyRunningException;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.StageAStore.FallbackOutcome;
+import com.baran.recon.application.port.StageAStore.ItemTotals;
 import com.baran.recon.application.port.StageAStore.StageAPass;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.calendar.BusinessDayIndex;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.StageARule;
+import com.baran.recon.domain.run.ItemStatistics;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.source.ConfiguredSources;
 import com.baran.recon.domain.source.SourceDefinition;
@@ -163,13 +165,23 @@ public final class RunMatching {
         return snapshot;
     }
 
+    /**
+     * The run's statistics (FR-MAT-10, FR-API-4). After Stage A they hold its items per side,
+     * currency and status, which must add up to its scope (INV-1, INV-4): if they do not, the run
+     * fails here, inside its work transaction, and nothing it wrote is kept.
+     */
     private ReconciliationRun work(SourceDefinition source, ReconciliationRun running) {
-        source.stageA().ifPresent(stageA -> matchStageA(running, stageA));
-        long inScope = ledgerEntries.countInScope(running.source(), running.valueDateFrom(), running.valueDateTo());
-        long withoutValueDate = ledgerEntries.countWithoutValueDate(running.source());
-        ReconciliationRun completed = running.complete(Map.of(
-                ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE, inScope,
-                ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, withoutValueDate), now());
+        Map<String, Long> stats = new TreeMap<>();
+        source.stageA().ifPresent(settings -> {
+            matchStageA(running, settings);
+            ItemTotals totals = stageA.itemTotals(running.source(), running.valueDateFrom(), running.valueDateTo());
+            stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
+        });
+        stats.put(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE,
+                ledgerEntries.countInScope(running.source(), running.valueDateFrom(), running.valueDateTo()));
+        stats.put(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE,
+                ledgerEntries.countWithoutValueDate(running.source()));
+        ReconciliationRun completed = running.complete(stats, now());
         runs.recordOutcome(completed);
         return completed;
     }

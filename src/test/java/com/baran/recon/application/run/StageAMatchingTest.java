@@ -2,6 +2,7 @@ package com.baran.recon.application.run;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -500,6 +501,37 @@ class StageAMatchingTest {
                         tuple("AMOUNT_MISMATCH", "PSP L-CONFLICT", Set.of(named)),
                         tuple("DUPLICATE_LINE", "PSP L-FLAGGED", Set.of()));
         assertThat(fixture.eventsOf(flagged)).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("FR-API-4, INV-4: the run's stats count and sum its matched, pending and broken items per side and currency")
+    void statsCountAndSumEachStatusPerSideAndCurrency() {
+        UUID matched = UUID.randomUUID();
+        UUID conflicting = UUID.randomUUID();
+        fixture.ledger(source, matched, 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-MATCHED", matched.toString(), 1_000, TRY, FRIDAY);
+        fixture.ledger(source, conflicting, 2_500, TRY, FRIDAY);
+        fixture.psp(source, "L-CONFLICT", conflicting.toString(), 2_000, TRY, FRIDAY);
+        fixture.ledger(source, UUID.randomUUID(), 300, TRY, FRIDAY);
+        fixture.psp(source, "L-PENDING", null, 444, "EUR", FRIDAY);
+        fixture.ledger(source, UUID.randomUUID(), -700, TRY, MONDAY);
+        fixture.ledger(source, UUID.randomUUID(), 9_999, TRY, FRIDAY_BEFORE);
+
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsExactlyInAnyOrderEntriesOf(
+                Map.ofEntries(
+                        Map.entry("ledger.TRY.matched.count", 1L), Map.entry("ledger.TRY.matched.sum", 1_000L),
+                        Map.entry("ledger.TRY.pending.count", 1L), Map.entry("ledger.TRY.pending.sum", 300L),
+                        Map.entry("ledger.TRY.broken.count", 2L), Map.entry("ledger.TRY.broken.sum", 1_800L),
+                        Map.entry("psp.TRY.matched.count", 1L), Map.entry("psp.TRY.matched.sum", 1_000L),
+                        Map.entry("psp.TRY.pending.count", 0L), Map.entry("psp.TRY.pending.sum", 0L),
+                        Map.entry("psp.TRY.broken.count", 1L), Map.entry("psp.TRY.broken.sum", 2_000L),
+                        Map.entry("psp.EUR.matched.count", 0L), Map.entry("psp.EUR.matched.sum", 0L),
+                        Map.entry("psp.EUR.pending.count", 1L), Map.entry("psp.EUR.pending.sum", 444L),
+                        Map.entry("psp.EUR.broken.count", 0L), Map.entry("psp.EUR.broken.sum", 0L),
+                        Map.entry(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE, 4L),
+                        Map.entry(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 0L))));
     }
 
     private BreakView breakOn(String subject) {

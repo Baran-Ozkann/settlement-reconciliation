@@ -2,11 +2,13 @@ package com.baran.recon.application.port;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
 import com.baran.recon.domain.calendar.BusinessDayIndex;
 import com.baran.recon.domain.item.SourceCode;
+import com.baran.recon.domain.run.ItemTotal;
 
 /**
  * The rules of Stage A (TDD 8.2), each applied by the database to a source's items as one set, so
@@ -77,6 +79,23 @@ public interface StageAStore {
      * @return the breaks opened
      */
     int openGraceBreaks(StageAPass pass, LocalDate ledgerGraceStart, LocalDate pspGraceStart);
+
+    /**
+     * The source's ledger entries and PSP lines with a value date in the range, totalled per side
+     * and currency twice over, in one statement and so on one snapshot: by status (INV-1, in the
+     * order of {@link com.baran.recon.domain.run.ItemStatus}) and of every status. The two agree
+     * unless an item was counted twice or not at all.
+     */
+    ItemTotals itemTotals(SourceCode source, LocalDate valueDateFrom, LocalDate valueDateTo);
+
+    /** A run's in-scope items, totalled by status and of every status. */
+    record ItemTotals(List<ItemTotal> byStatus, List<ItemTotal> inScope) {
+
+        public ItemTotals {
+            byStatus = List.copyOf(byStatus);
+            inScope = List.copyOf(inScope);
+        }
+    }
 
     /** What A3 did: the matches it made and the ambiguity breaks it opened. */
     record FallbackOutcome(int matched, int breaksOpened) {
