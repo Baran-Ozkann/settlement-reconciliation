@@ -30,6 +30,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunAlreadyRunningException;
 import com.baran.recon.application.port.RunStore;
+import com.baran.recon.application.port.StatementStore;
+import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.item.LedgerEntry;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.money.CurrencyCode;
@@ -40,6 +42,7 @@ import com.baran.recon.support.ReconPostgres;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.groups.Tuple.tuple;
 import static org.awaitility.Awaitility.await;
 
 /**
@@ -66,7 +69,9 @@ import static org.awaitility.Awaitility.await;
         "recon.sources[5].type=PSP_SETTLEMENT",
         "recon.sources[6].code=BANK_RUN",
         "recon.sources[6].type=BANK_STATEMENT",
-        "recon.sources[6].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
+        "recon.sources[6].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
+        "recon.sources[7].code=PSP_RUN_ROLLBACK",
+        "recon.sources[7].type=PSP_SETTLEMENT"})
 @ActiveProfiles("test")
 @Import({HeldLedgerEntryStore.Injection.class, FailingRunStore.Injection.class})
 @DisplayName("TDD 5.3: a matching run is recorded RUNNING, does its work in one transaction, and ends COMPLETED or FAILED")
@@ -94,6 +99,12 @@ class RunMatchingTest {
 
     @Autowired
     private JdbcClient jdbc;
+
+    @Autowired
+    private StatementStore statements;
+
+    @Autowired
+    private Transactions transactions;
 
     @Test
     @DisplayName("FR-MAT-8, FR-MAT-10: a run with nothing to match completes with its snapshot and statistics")
@@ -213,6 +224,37 @@ class RunMatchingTest {
             held.release(source);
             threads.shutdownNow();
         }
+    }
+
+    @Test
+    @DisplayName("NFR-REL-2: a run that fails after Stage A wrote a match and a break leaves neither; a re-run makes both")
+    void failureAfterStageAWroteLeavesNoneOfIt() {
+        SourceCode source = SourceCode.of("PSP_RUN_ROLLBACK");
+        StageAFixture fixture = new StageAFixture(ledgerEntries, statements, transactions, jdbc, 9_600_500_000L);
+        UUID exact = UUID.randomUUID();
+        UUID conflicting = UUID.randomUUID();
+        fixture.ledger(source, exact, 1_000, "TRY", FROM);
+        fixture.psp(source, "L-EXACT", exact.toString(), 1_000, "TRY", FROM);
+        fixture.ledger(source, conflicting, 2_000, "TRY", FROM);
+        fixture.psp(source, "L-CONFLICT", conflicting.toString(), 2_500, "TRY", FROM);
+        FailingRunStore.of(runs).failTheNextCompletionOf(source);
+
+        assertThatThrownBy(() -> matching.run(source.value(), FROM, TO, "operator-001"))
+                .isInstanceOf(IllegalStateException.class).hasMessage(FailingRunStore.FAILURE);
+
+        UUID failedId = runIds(source).getFirst();
+        assertThat(runs.findById(failedId).orElseThrow().status()).isEqualTo(RunStatus.FAILED);
+        assertThat(fixture.matches(source)).as("the A1 match was rolled back").isEmpty();
+        assertThat(fixture.breaks(source)).as("the A2 break was rolled back").isEmpty();
+        assertThat(jdbc.sql("SELECT count(*) FROM break_events e JOIN breaks b ON b.id = e.break_id "
+                        + "WHERE b.opened_run_id = :runId").param("runId", failedId).query(Long.class).single())
+                .isZero();
+
+        ReconciliationRun retried = matching.run(source.value(), FROM, TO, "operator-001");
+        assertThat(fixture.matches(source)).extracting(StageAFixture.MatchView::psp, StageAFixture.MatchView::runId)
+                .containsExactly(tuple("PSP L-EXACT", retried.id()));
+        assertThat(fixture.breaks(source)).extracting(StageAFixture.BreakView::type, StageAFixture.BreakView::subject)
+                .containsExactly(tuple("AMOUNT_MISMATCH", "PSP L-CONFLICT"));
     }
 
     @Test
