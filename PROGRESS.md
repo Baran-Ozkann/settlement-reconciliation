@@ -198,8 +198,8 @@ No `ORDER BY ... LIMIT` decides anything: `(array_agg(id))[1]` appears only wher
   `PSP_RUN_NO_ROLLBACK`, `PSP_STALE_KEPT`
 - jqwik runs `StageAPropertiesTest`; a `TestContextManager` prepares its Spring context. A new
   jqwik class needing the application can do the same
-- A mistake in the 1a session: two build logs were written to the system temp directory (`/tmp` in two build logs were written to the system temp directory (`/tmp` in
-  Git Bash) and moved under target/ at once. No repository content was in them beyond test
+- A mistake in the 1a session: two build logs were written to the system temp directory (`/tmp`
+  in Git Bash) and moved under target/ at once. No repository content was in them beyond test
   output, and they never reached a commit
 
 ## Phase 4.1 — done
