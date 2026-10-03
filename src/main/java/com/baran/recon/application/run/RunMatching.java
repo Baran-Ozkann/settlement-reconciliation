@@ -18,6 +18,7 @@ import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunAlreadyRunningException;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StageAStore;
+import com.baran.recon.application.port.StageAStore.FallbackOutcome;
 import com.baran.recon.application.port.StageAStore.StageAPass;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
@@ -187,9 +188,11 @@ public final class RunMatching {
                 now());
         int byReference = stageA.matchByReference(pass);
         int referenceBreaks = stageA.openReferenceBreaks(pass);
-        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1 and opened {3} reference "
-                        + "breaks", running.id(), running.source().value(), Integer.toString(byReference),
-                Integer.toString(referenceBreaks));
+        FallbackOutcome byAmount = stageA.matchByAmount(pass);
+        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1 and {3} by A3, and opened "
+                        + "{4} reference and {5} ambiguity breaks", running.id(), running.source().value(),
+                Integer.toString(byReference), Integer.toString(byAmount.matched()), Integer.toString(referenceBreaks),
+                Integer.toString(byAmount.breaksOpened()));
     }
 
     /**

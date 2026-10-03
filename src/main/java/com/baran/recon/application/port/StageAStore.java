@@ -47,6 +47,23 @@ public interface StageAStore {
     int openReferenceBreaks(StageAPass pass);
 
     /**
+     * A3, after the reference rules: a PSP line in the run's range with no reference A1 could use -
+     * none, one that is not a UUID, or one no ledger entry of the source carries, matched or not -
+     * is matched, low confidence, to the only unmatched entry with its currency and amount within
+     * the window, provided no other such line has that entry as a candidate. A line whose reference
+     * is repeated by another unmatched line was given DUPLICATE_LINE and is not offered.
+     *
+     * <p>A line with several candidates, or whose only candidate another line also has, gets
+     * AMBIGUOUS_MATCH naming its candidates (FR-MAT-4). Matches and breaks are decided on one
+     * snapshot, so a match made here never changes what another line is found to be.
+     */
+    FallbackOutcome matchByAmount(StageAPass pass);
+
+    /** What A3 did: the matches it made and the ambiguity breaks it opened. */
+    record FallbackOutcome(int matched, int breaksOpened) {
+    }
+
+    /**
      * What a step works on: the run, its source and value-date range, the window in business days
      * with the business days that measure it, and the time its writes are recorded at.
      */

@@ -58,6 +58,8 @@ class StageAMatchingTest {
     private static final LocalDate TUESDAY = LocalDate.of(2026, 10, 6);
     private static final LocalDate WEDNESDAY = LocalDate.of(2026, 10, 7);
     private static final LocalDate FRIDAY = LocalDate.of(2026, 10, 9);
+    /** Monday 2026-10-12, the day every run of this class is made on. */
+    private static final LocalDate TODAY = FixedRunClock.TODAY;
 
     private static final String TRY = "TRY";
 
@@ -226,8 +228,8 @@ class StageAMatchingTest {
         run(MONDAY, FRIDAY);
 
         assertThat(fixture.matches(source)).isEmpty();
-        assertThat(onlyBreak()).extracting(BreakView::type, BreakView::subject, BreakView::related)
-                .containsExactly("AMBIGUOUS_MATCH", "PSP L-001", Set.of(first, second));
+        assertThat(breakOn("PSP L-001")).extracting(BreakView::type, BreakView::related)
+                .containsExactly("AMBIGUOUS_MATCH", Set.of(first, second));
     }
 
     @Test
@@ -256,7 +258,8 @@ class StageAMatchingTest {
         run(MONDAY, FRIDAY);
 
         assertThat(fixture.matches(source)).isEmpty();
-        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject, BreakView::related)
+        assertThat(fixture.breaks(source)).filteredOn(found -> found.subject().startsWith("PSP"))
+                .extracting(BreakView::type, BreakView::subject, BreakView::related)
                 .as("a line outside the range is named, and gets its own break when a run covers it")
                 .containsExactlyInAnyOrder(
                         tuple("DUPLICATE_LINE", "PSP L-001", Set.of("PSP L-002", "PSP L-LATER")),
@@ -273,9 +276,126 @@ class StageAMatchingTest {
 
         run(MONDAY, FRIDAY);
 
-        assertThat(onlyBreak()).extracting(BreakView::id, BreakView::type, BreakView::status)
+        assertThat(breakOn("PSP L-001")).extracting(BreakView::id, BreakView::type, BreakView::status)
                 .containsExactly(earlier, "DUPLICATE_LINE", "OPEN");
         assertThat(fixture.eventsOf(earlier)).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("A3_FALLBACK_UNIQUE: a line without a reference and the one entry of its currency and amount match, low confidence")
+    void lineWithoutReferenceMatchesItsOnlyCandidate() {
+        String entry = fixture.ledger(source, UUID.randomUUID(), 4_000, TRY, FRIDAY);
+        fixture.ledger(source, UUID.randomUUID(), 4_000, "EUR", FRIDAY);
+        fixture.ledger(source, UUID.randomUUID(), 4_100, TRY, FRIDAY);
+        fixture.psp(source, "L-001", null, 4_000, TRY, FRIDAY);
+
+        ReconciliationRun run = run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).containsExactly(
+                new MatchView("A3_FALLBACK_UNIQUE", 1, "ONE_TO_ONE", "ACTIVE", 0, TRY, true, run.id(), entry, "PSP L-001", 1));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: A3 takes a reference that is not a UUID, or a UUID no entry of the source carries")
+    void unusableReferencesFallBackToA3() {
+        String forText = fixture.ledger(source, UUID.randomUUID(), 1_000, TRY, FRIDAY);
+        String forUnknown = fixture.ledger(source, UUID.randomUUID(), 2_000, TRY, FRIDAY);
+        fixture.psp(source, "L-TEXT", "ORDER-77", 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-UNKNOWN", UUID.randomUUID().toString(), 2_000, TRY, FRIDAY);
+
+        run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactlyInAnyOrder(
+                        tuple("A3_FALLBACK_UNIQUE", forText, "PSP L-TEXT"),
+                        tuple("A3_FALLBACK_UNIQUE", forUnknown, "PSP L-UNKNOWN"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a known reference is never offered to A3, whether its entry is matched or has no value date")
+    void knownReferencesAreNotOfferedToA3() {
+        UUID matched = UUID.randomUUID();
+        UUID undated = UUID.randomUUID();
+        String matchedEntry = fixture.ledger(source, matched, 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-FIRST", matched.toString(), 1_000, TRY, FRIDAY);
+        run(FRIDAY, FRIDAY);
+        fixture.undatedLedger(source, undated, 3_000, TRY);
+        fixture.ledger(source, UUID.randomUUID(), 2_000, TRY, FRIDAY);
+        fixture.ledger(source, UUID.randomUUID(), 3_000, TRY, FRIDAY);
+        fixture.psp(source, "L-AGAIN", matched.toString(), 2_000, TRY, FRIDAY);
+        fixture.psp(source, "L-UNDATED", undated.toString(), 3_000, TRY, FRIDAY);
+
+        run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple(matchedEntry, "PSP L-FIRST"));
+        assertThat(fixture.breaks(source)).as("both lines are inside their grace period").isEmpty();
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: lines repeating an unknown reference are DUPLICATE_LINE and are not offered to A3")
+    void duplicatedUnknownReferenceIsNotOfferedToA3() {
+        String unknown = UUID.randomUUID().toString();
+        fixture.ledger(source, UUID.randomUUID(), 7_000, TRY, FRIDAY);
+        fixture.psp(source, "L-001", unknown, 7_000, TRY, FRIDAY);
+        fixture.psp(source, "L-002", unknown, 7_000, TRY, FRIDAY);
+
+        run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject)
+                .containsExactlyInAnyOrder(tuple("DUPLICATE_LINE", "PSP L-001"), tuple("DUPLICATE_LINE", "PSP L-002"));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-3: A1 comes first, so an entry it matches is no longer a candidate for A3")
+    void exactReferenceWinsOverTheFallback() {
+        UUID transaction = UUID.randomUUID();
+        String entry = fixture.ledger(source, transaction, 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-REFERENCED", transaction.toString(), 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-UNREFERENCED", null, 1_000, TRY, FRIDAY);
+
+        run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple("A1_EXACT_REFERENCE", entry, "PSP L-REFERENCED"));
+        assertThat(fixture.breaks(source)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("FR-MAT-4: A3 finding two entries makes no match and opens AMBIGUOUS_MATCH naming both")
+    void twoFallbackCandidatesAreAmbiguous() {
+        String first = fixture.ledger(source, UUID.randomUUID(), 5_000, TRY, FRIDAY);
+        String second = fixture.ledger(source, UUID.randomUUID(), 5_000, TRY, TODAY);
+        fixture.psp(source, "L-001", null, 5_000, TRY, FRIDAY);
+
+        run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(breakOn("PSP L-001")).extracting(BreakView::type, BreakView::related)
+                .containsExactly("AMBIGUOUS_MATCH", Set.of(first, second));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-4: two lines whose only candidate is one entry are both AMBIGUOUS_MATCH, and neither matches")
+    void twoLinesClaimingOneEntryAreAmbiguous() {
+        String entry = fixture.ledger(source, UUID.randomUUID(), 6_000, TRY, FRIDAY);
+        fixture.psp(source, "L-001", null, 6_000, TRY, FRIDAY);
+        fixture.psp(source, "L-002", "not-a-uuid", 6_000, TRY, TODAY);
+
+        run(FRIDAY, TODAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactlyInAnyOrder(
+                        tuple("AMBIGUOUS_MATCH", "PSP L-001", Set.of(entry)),
+                        tuple("AMBIGUOUS_MATCH", "PSP L-002", Set.of(entry)));
+    }
+
+    private BreakView breakOn(String subject) {
+        List<BreakView> found = fixture.breaks(source).stream().filter(view -> view.subject().equals(subject)).toList();
+        assertThat(found).as("breaks on %s", subject).hasSize(1);
+        return found.getFirst();
     }
 
     private BreakView onlyBreak() {

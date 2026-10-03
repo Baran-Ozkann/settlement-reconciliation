@@ -186,11 +186,74 @@ class JdbcStageAStore implements StageAStore {
                 RETURNING break_id
             )""";
 
+    /**
+     * A3: lines without a usable reference - none or not a UUID (NULL here), or a UUID that is not
+     * repeated by another unmatched line and that no entry of the source carries, matched or not,
+     * dated or not - and their candidates by currency, amount and window. Every such line counts,
+     * in the range or not, so a pair is unique in both directions over everything the window
+     * reaches: the line has one candidate, and that entry is the candidate of no other line. Only a
+     * line in the range is matched or given a break.
+     */
+    private static final String A3_FINDINGS = """
+            reference_lines AS (
+                SELECT reference, count(*) AS lines FROM psp WHERE reference IS NOT NULL GROUP BY reference
+            ),
+            unreferenced AS (
+                SELECT line.id, line.value_date, line.gross_amount, line.currency
+                  FROM psp line
+                  LEFT JOIN reference_lines counted ON counted.reference = line.reference
+                 WHERE line.reference IS NULL
+                    OR (counted.lines = 1
+                        AND NOT EXISTS (SELECT 1 FROM ledger_entries known
+                                         WHERE known.source_code = :source AND known.transaction_id = line.reference))
+            ),
+            candidate AS (
+                SELECT line.id AS psp_id, entry.id AS ledger_id, line.currency,
+                       line.value_date BETWEEN :from AND :to AS in_range
+                  FROM unreferenced line
+                  JOIN ledger entry ON entry.currency = line.currency AND entry.amount = line.gross_amount
+                  JOIN business_day line_day ON line_day.day = line.value_date
+                  JOIN business_day entry_day ON entry_day.day = entry.value_date
+                 WHERE abs(line_day.ordinal - entry_day.ordinal) <= :windowDays
+            ),
+            by_line AS (
+                SELECT psp_id, count(*) AS entries, bool_or(in_range) AS in_range, min(currency) AS currency,
+                       CASE WHEN count(*) = 1 THEN (array_agg(ledger_id))[1] END AS only_entry,
+                       jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id)
+                           AS related_items
+                  FROM candidate
+                 GROUP BY psp_id
+            ),
+            by_entry AS (
+                SELECT ledger_id, count(*) AS lines FROM candidate GROUP BY ledger_id
+            ),
+            decided AS (
+                SELECT line.psp_id, line.only_entry, line.currency, line.related_items,
+                       line.entries = 1 AND entry.lines = 1 AS unique_pair
+                  FROM by_line line
+                  LEFT JOIN by_entry entry ON entry.ledger_id = line.only_entry
+                 WHERE line.in_range
+            ),
+            pair AS MATERIALIZED (
+                SELECT gen_random_uuid() AS match_id, psp_id, only_entry AS ledger_id, currency
+                  FROM decided
+                 WHERE unique_pair
+            ),
+            found AS (
+                SELECT 'PSP' AS item_side, psp_id AS item_id, 'AMBIGUOUS_MATCH' AS break_type, related_items
+                  FROM decided
+                 WHERE NOT unique_pair
+            )""";
+
     private static final String MATCH_BY_REFERENCE = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED, A1_PAIRS,
             MATCH_WRITES) + "\nSELECT count(*) FROM new_match_event";
 
     private static final String OPEN_REFERENCE_BREAKS = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED,
             REFERENCE_FINDINGS, BREAK_WRITES) + "\nSELECT count(*) FROM opened_event";
+
+    private static final String MATCH_BY_AMOUNT = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED, A3_FINDINGS,
+            MATCH_WRITES, BREAK_WRITES)
+            + "\nSELECT (SELECT count(*) FROM new_match_event) AS matched, (SELECT count(*) FROM opened_event) AS opened";
 
     private final JdbcClient jdbc;
 
@@ -207,6 +270,14 @@ class JdbcStageAStore implements StageAStore {
     @Override
     public int openReferenceBreaks(StageAPass pass) {
         return Math.toIntExact(pass(OPEN_REFERENCE_BREAKS, pass).query(Long.class).single());
+    }
+
+    @Override
+    public FallbackOutcome matchByAmount(StageAPass pass) {
+        return matching(MATCH_BY_AMOUNT, pass, StageARule.A3_FALLBACK_UNIQUE)
+                .query((row, n) -> new FallbackOutcome(Math.toIntExact(row.getLong("matched")),
+                        Math.toIntExact(row.getLong("opened"))))
+                .single();
     }
 
     private JdbcClient.StatementSpec matching(String sql, StageAPass pass, StageARule rule) {
