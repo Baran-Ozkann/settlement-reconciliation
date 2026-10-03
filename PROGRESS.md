@@ -1,10 +1,10 @@
 # Progress
 
-**Current phase:** 5 — Stage A matching, part 1a done (parts 1b and 2 not started)
+**Current phase:** 5 — Stage A matching, parts 1a and 1b done (part 2 not started)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
 **Last updated:** 2026-10-03
 
-## Phase 5 — part 1a done; 1b and 2 to come
+## Phase 5 — parts 1a and 1b done; 2 to come
 
 Phase 5 runs in three sessions: 1a (the ArchUnit configuration rule, the schema and the run
 lifecycle, no matching rule), 1b (Stage A rules, item statuses, property tests) and 2 (HTTP,
@@ -63,19 +63,106 @@ ahead of it too. The tree is unchanged by the rebuild. `BreakStoreTest`, `MatchS
 5. `sources_state` (TDD 10) is not used, and recon_app has no grant on it. Nothing in the TDD
    reads it. Settled by the owner: see Carried below.
 
-### Left for 1b
+### Done in 1b
 
-- Bind `value-date-window-days`, `grace-days-ledger-unmatched` and `grace-days-psp-unmatched` per
-  PSP source, plus `recon.business-calendar`, and add them and the rule versions to the snapshot
-- Stage A in `RunMatching.matchStageA`: A1–A3 with the TDD 8.2 details (UUID comparison, known and
-  unknown references, candidates outside the range but within the window), ambiguity and
-  duplicate-reference breaks, grace breaks `MISSING_IN_PSP` and `MISSING_IN_LEDGER`, item status
-  and the INV-1 finalization check, `MATCHED_LATE` (FR-BRK-5), active matches never altered
-  (FR-MAT-2), idempotent re-runs, set-based or streamed (never everything in memory), match and
-  break counts in the stats
-- Grants and indexes that only Stage A needs
-- jqwik property tests for INV-1, INV-4 and INV-5 (shuffled inputs, fixed seed)
-- Break proofs owed: the rollback of the work transaction (NFR-REL-2), and the startup recovery
+- [x] A. `RunMatchingTest` asserts each fixture insert wrote a row (`ef4fefe`)
+- [x] B. No grant commit: every statement Stage A issues is covered by V5-V9 and V12 as they are
+  (INSERT on `matches`, `match_items`, `match_events`, `breaks`, `break_events` and the two
+  sequences; `UPDATE (status, resolution_code, resolved_at)` on `breaks`, which also allows its
+  `FOR UPDATE`; SELECT on `ledger_entries` and `psp_lines`). Every Stage A test runs as recon_app
+  and none met 42501. `ApplicationRoleGrantsTest` is unchanged and still pins the full set
+- [x] Configuration: a PSP source binds `value-date-window-days`, `grace-days-ledger-unmatched` and
+  `grace-days-psp-unmatched` as `StageASettings` (TDD 8.1's 2, 3, 1 for a key left out; negative,
+  or set on a bank source, stops startup); `recon.business-calendar` binds the weekend and the
+  holidays (text, parsed as ISO dates). Snapshot (decision 9): `business_calendar_weekend`,
+  `business_calendar_holidays`, `value_date_window_days`, the two `grace_days_*` and
+  `rule_version.<rule>` for A1, A2 and A3 (all 1, `StageARule`), on a PSP source's run
+- [x] Domain: `BusinessCalendar.firstDayWithinGrace`, `BusinessDayIndex` (dates numbered by business
+  days, so a window is one subtraction), `ItemStatus`, `ItemTotal`, `ItemStatistics` (the
+  finalization check) and `ScopeNotConservedException`, each with unit and jqwik tests
+- [x] C. Stage A in `JdbcStageAStore` behind the `StageAStore` port, run by `RunMatching` inside the
+  work transaction: A1, the reference breaks (A2, duplicate references, A1 ambiguity), A3 with its
+  ambiguity, MATCHED_LATE, the grace breaks. Every match records rule id, rule version, run id,
+  cardinality, zero difference with its currency, and low_confidence (FR-MAT-6)
+- [x] D. Stats per side and currency: `ledger.TRY.matched.count`, `psp.EUR.broken.sum` and so on,
+  every status present; PSP lines count their gross amount
+- [x] E. `StageAMatchingTest` (28 tests: every rule outcome and every TDD 8.2 Stage A detail, INV-7,
+  MATCHED_LATE from OPEN and INVESTIGATING with its event, the incremental and re-run proofs, the
+  index backstop); `StageAPropertiesTest` (jqwik, seed 20261003: INV-1 and INV-4 over 40 tries
+  with two runs each, INV-5 over 20 tries in three insertion orders each, compared by line id and
+  event id; a coverage check requires every match rule and break type in at least 5 % of tries)
+- [x] F. Break proofs in `docs/break-proofs.md` (part 1b): the two owed from 1a
+  (`WorkRollbackBreakProofTest`, `StaleRunRecoveryBreakProofTest`), the index behind the exclusion,
+  the finalization check, and three recorded one-offs (exclusion, `ON CONFLICT`, INV-5 against a
+  tie-break). One Unproven entry: MATCHED_LATE's status guard, until Phase 7 gives it a concurrent
+  writer
+- [x] G. The full suite in default and in reverse-alphabetical order (below)
+
+### The matching SQL, in short
+
+Six statements in the work transaction, in rule order, each a `WITH` query over the source's rows:
+CTEs pick the unmatched items (`NOT EXISTS` an active `match_items` row), decide, and
+data-modifying CTEs write the matches with their items and events, or the breaks with their
+events. Nothing is read into the JVM but counts. 1) A1: lines whose reference (read as a UUID by
+`pg_input_is_valid` and a cast) no other unmatched line carries, joined to unmatched entries by
+transaction id, currency and amount within the window; a pair is kept when the line has exactly
+one candidate (`HAVING count(*) = 1`), counted over every date before the range applies. 2) The
+reference breaks for lines in the range. 3) A3 and its ambiguity breaks from one snapshot, unique
+both ways. 4) MATCHED_LATE: the run's matched items' unresolved breaks, locked, resolved with their
+events. 5) The grace breaks. 6) The totals by status and in scope, which `ItemStatistics` checks.
+The window is `abs(ordinal - ordinal) <= :windowDays` over the run's `BusinessDayIndex`, bound as
+two arrays; breaks are inserted with `ON CONFLICT` on INV-7's index, so a re-run writes nothing.
+No `ORDER BY ... LIMIT` decides anything: `(array_agg(id))[1]` appears only where the count is 1.
+
+### Decisions in 1b (for the phase report)
+
+1. A PSP source that leaves a Stage A key out takes TDD 8.1's value; the snapshot records the value
+   used. A missing `recon.business-calendar.weekend` is Saturday and Sunday
+2. Every pair a rule looks at must be within the window, A2's included (TDD 8.2: a candidate lies
+   within the window of the item). An entry with the line's reference outside the window gives no
+   A2 break; both items wait for their grace breaks
+3. When several unmatched entries carry the line's reference within the window and none has its
+   currency and amount, the line gets AMBIGUOUS_MATCH naming them all, not A2: nothing says which
+   one it conflicts with
+4. A pair is matched when either item is in the run's range; breaks are opened only on items in
+   the range. A duplicate-reference break names the other lines, in the range or not, so those are
+   BROKEN until a run covering them opens their own
+5. Duplicate references are counted among unmatched lines with a UUID reference. A line whose
+   reference is repeated, known or not, gets DUPLICATE_LINE and is not offered to A3
+6. A3 is unique both ways: the line has one candidate, and no other A3 line within reach has that
+   entry as a candidate. Otherwise every such line in the range gets AMBIGUOUS_MATCH naming its
+   candidates. A3's candidates are any unmatched dated entries, including one whose transaction id
+   another line references (TDD 8.2 as written)
+7. A reference is known when any entry of the source carries it, five-field history included
+8. The finalization check fails the run when its statuses do not add up to its scope
+9. `RunMatching` logs ids and counts through `java.lang.System.Logger`, since the application layer
+   depends on java.* alone (TDD 5.2); Spring Boot routes it to the application's log
+10. Indexes for Stage A (for example on `ledger_entries (source_code, transaction_id)`) are left to
+    part 2, to be added only where the NFR-PERF-2 measurement shows a need
+
+### Open questions for the owner (1b)
+
+1. Decision 6 of the prompt resolves every unresolved break of a matched item as MATCHED_LATE. That
+   includes a DUPLICATE_LINE break ingestion opened on a stored line because a later file repeated
+   its line id: matching the stored line then closes the duplicate as MATCHED_LATE, though the
+   repeated line is still unexplained. Built as written; should MATCHED_LATE be limited to the
+   break types a match answers (MISSING_IN_*, AMBIGUOUS_MATCH, the A2 types)?
+2. Only an unresolved break stops a run from opening one (INV-7). Once Phase 7 lets an operator
+   resolve a break (WRITTEN_OFF, say), the next run of the range opens the same break again on the
+   still unmatched item. Should a run skip an item whose break of the same type was resolved by an
+   operator?
+3. The work transaction is READ COMMITTED, so each Stage A statement sees its own snapshot. A file
+   committed while a run is between statements can have its lines past grace given
+   MISSING_IN_LEDGER before A1 has seen them; the next run matches them and resolves the break as
+   MATCHED_LATE. The finalization check is not affected, since the totals are one statement. Should
+   the work transaction be REPEATABLE READ, so a run decides on one snapshot (a concurrent change
+   to a break it resolves would then fail the run with a serialization error)?
+4. A2 outside the window (decision 2 above): should a same-reference conflict be reported as A2
+   whatever the dates?
+
+### Verification (1b)
+
+
 
 ### Left for 2
 
@@ -84,7 +171,10 @@ ahead of it too. The tree is unchanged by the rebuild. `BreakStoreTest`, `MatchS
   `GET /api/v1/runs/{id}` (VIEWER), each with its role rule in `SecurityConfiguration`
 - The automatic trigger (FR-MAT-1): a single-thread executor after an ingestion commits; it retries
   while the source is busy and is never dropped silently (WARN with the file id)
-- NFR-PERF-2 measured three times under `-Xmx512m`; per-commit verification; the phase report
+- NFR-PERF-2 measured three times under `-Xmx512m`, with indexes added only if the measurement
+  calls for them; each match costs one row in `matches`, two in `match_items` and one in
+  `match_events`, with immediate foreign-key checks on the last three
+- Per-commit verification of part 1a and 1b commits; the phase report
 
 ### Carried
 
@@ -100,7 +190,15 @@ ahead of it too. The tree is unchanged by the rebuild. `BreakStoreTest`, `MatchS
   `registerIn(registry)` in its `@DynamicPropertySource`, and `@DirtiesContext`
 - `HeldLedgerEntryStore` holds a run inside its work transaction, and `FailingRunStore` fails a run
   right after COMPLETED is written (both in `application.run`, test sources)
-- My mistake this session: two build logs were written to the system temp directory (`/tmp` in
+- Stage A tests: `StageAFixture` stores items through the application's stores and reads results
+  back by line id and event id; `FixedRunClock` fixes runs at Monday 2026-10-12. Keys taken in
+  1b: event ids 9_700_000_000 (`StageAMatchingTest`), 9_750_000_000 (`StageAPropertiesTest`, a
+  block of 1,000 per source), 9_800_000_000 (`WorkRollbackBreakProofTest`), 9_600_500_000
+  (`RunMatchingTest`'s fixture); sources `PSP_STAGE_A_*`, `PSP_PROPERTY_*`, `PSP_RUN_ROLLBACK`,
+  `PSP_RUN_NO_ROLLBACK`, `PSP_STALE_KEPT`
+- jqwik runs `StageAPropertiesTest`; a `TestContextManager` prepares its Spring context. A new
+  jqwik class needing the application can do the same
+- A mistake in the 1a session: two build logs were written to the system temp directory (`/tmp` in two build logs were written to the system temp directory (`/tmp` in
   Git Bash) and moved under target/ at once. No repository content was in them beyond test
   output, and they never reached a commit
 
