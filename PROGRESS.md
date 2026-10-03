@@ -1,8 +1,108 @@
 # Progress
 
-**Current phase:** 4.1 — Bulk write path, done (Phase 5 not started)
+**Current phase:** 5 — Stage A matching, part 1a done (parts 1b and 2 not started)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-03
+
+## Phase 5 — part 1a done; 1b and 2 to come
+
+Phase 5 runs in three sessions: 1a (the ArchUnit configuration rule, the schema and the run
+lifecycle, no matching rule), 1b (Stage A rules, item statuses, property tests) and 2 (HTTP,
+automatic trigger, NFR-PERF-2, verification, report).
+
+### Done in 1a
+
+- [x] A. TDD 11.1: `ArchitectureRules.noPathBoundFromConfiguration`. No `@ConfigurationProperties`
+  type, nor a type nested in one, has a `Path` component, directly or inside a generic type. The
+  fixture `com.baran.archfixture.configpath` breaks it twice; the clean tree gains a text-bound record
+- [x] B. V11: partial unique index `reconciliation_runs_one_running_per_source` (`DatabaseMechanism`
+  entry; `PartialUniqueIndexesTest` shows what it allows). V12: `UPDATE (status, stats,
+  finished_at)` on `reconciliation_runs`, column-level, pinned in `ApplicationRoleGrantsTest`. The
+  snapshot and the range stay unwritable (`WithheldPrivilege`)
+- [x] C. `application.run.RunMatching`: the RUNNING row with its snapshot commits alone. A second
+  run of the source is refused there as `RunRefusedException(SOURCE_BUSY)`, naming the running run.
+  The work transaction holds Stage A's place (a PSP source only; it does nothing yet), the
+  statistics and COMPLETED. On failure it is rolled back and FAILED is set in a transaction of its
+  own. Also refused before anything is recorded: `UNKNOWN_SOURCE` and `INVALID_DATE_RANGE`. At
+  startup a `SmartInitializingSingleton` sets every RUNNING run FAILED, before the web server and
+  the listener start, logging run ids only
+- [x] Snapshot (FR-MAT-8) in 1a: `value_date_zone`. Stats: `ledger_entries_in_scope` and
+  `ledger_entries_without_value_date` (FR-MAT-9/10), both counted in the work transaction with
+  bound parameters
+- [x] D. `RunMatchingTest`: completes with snapshot and stats; FR-MAT-9/10; a failure right after
+  COMPLETED is written leaves only a FAILED row with no stats; two runs of one source started
+  together, one refused by the index (no row left); two sources side by side; a bank source; the
+  refusals. `StaleRunRecoveryTest` (throwaway database, leftover run written before the context
+  starts). `RunStoreTest` and `LedgerEntryStoreTest` for the new store operations
+- [x] E. `OneRunningRunPerSourceBreakProofTest`: on a throwaway database without the index, both
+  runs start and complete. Rows in `docs/break-proofs.md`
+
+Verification: at `a5a3c4a`, `.\mvnw.cmd -q -B clean verify` gave 994 tests, 0 failures, 0 errors,
+3 skipped (the symbolic link cases), with coverage at domain 99.4 % and overall 96.2 %;
+`ci/check-rules.sh` exited 0. Commits were not verified one by one with the full build (the prompt
+deferred that to part 2). `BreakStoreTest` and `MatchStoreTest` used to leave a RUNNING
+`PSP_ALPHA` run behind before each test, which the index refuses the second time. With the
+owner's permission the unpushed commits were rebuilt so their fix, `dc32964`, comes just before
+the index (`50889c3`); it needs `ReconciliationRun.complete`, so the domain commit `2e2eb06` moved
+ahead of it too. The tree is unchanged by the rebuild. `BreakStoreTest`, `MatchStoreTest`,
+`PartialUniqueIndexesTest` and `RunStoreTest` pass at every rebuilt commit
+
+### Decisions in 1a (for the phase report)
+
+1. The snapshot holds only `value_date_zone` for now. Windows, grace periods, the business
+   calendar and rule versions join it in 1b, with the configuration binding and the rules that
+   read them. Today `SourcesProperties` binds none of them.
+2. `ledger_entries_in_scope` is a statistic the TDD does not name. It is the run's scope on the
+   ledger side, and it is what makes "out of scope" observable before any rule exists. INV-1's
+   finalization check will compare against it.
+3. A failure is caught as `RuntimeException` at the run's boundary, recorded as FAILED, and
+   rethrown. An `Error` (OutOfMemoryError, for example), or a failure to record FAILED, leaves the
+   run RUNNING: its source stays busy until the next startup.
+4. Startup sets a leftover run's `finished_at` to `GREATEST(now, started_at)`, so a JVM whose clock
+   ran ahead cannot trip `reconciliation_runs_finished_after_start` and stop startup.
+5. `sources_state` (TDD 10) is not used, and recon_app has no grant on it. Nothing in the TDD
+   reads it. Settled by the owner: see Carried below.
+
+### Left for 1b
+
+- Bind `value-date-window-days`, `grace-days-ledger-unmatched` and `grace-days-psp-unmatched` per
+  PSP source, plus `recon.business-calendar`, and add them and the rule versions to the snapshot
+- Stage A in `RunMatching.matchStageA`: A1–A3 with the TDD 8.2 details (UUID comparison, known and
+  unknown references, candidates outside the range but within the window), ambiguity and
+  duplicate-reference breaks, grace breaks `MISSING_IN_PSP` and `MISSING_IN_LEDGER`, item status
+  and the INV-1 finalization check, `MATCHED_LATE` (FR-BRK-5), active matches never altered
+  (FR-MAT-2), idempotent re-runs, set-based or streamed (never everything in memory), match and
+  break counts in the stats
+- Grants and indexes that only Stage A needs
+- jqwik property tests for INV-1, INV-4 and INV-5 (shuffled inputs, fixed seed)
+- Break proofs owed: the rollback of the work transaction (NFR-REL-2), and the startup recovery
+
+### Left for 2
+
+- `POST /api/v1/runs` (OPERATOR; synchronous; 201 with status and stats; 409 with
+  `RunRefusedException.runningRunId()`; 400 for `UNKNOWN_SOURCE` and `INVALID_DATE_RANGE`) and
+  `GET /api/v1/runs/{id}` (VIEWER), each with its role rule in `SecurityConfiguration`
+- The automatic trigger (FR-MAT-1): a single-thread executor after an ingestion commits; it retries
+  while the source is busy and is never dropped silently (WARN with the file id)
+- NFR-PERF-2 measured three times under `-Xmx512m`; per-commit verification; the phase report
+
+### Carried
+
+- `sources_state` stays unused and ungranted until Phase 7. If nothing reads it by then, a
+  migration drops it (owner's decision, 2026-10-03)
+
+### Notes for the next sessions
+
+- Every new application context runs the startup recovery against its database. In the shared
+  test database this sets FAILED any run another class left RUNNING, so a test that holds a run
+  must do so within one context. Store tests that only need a run to refer to record it finished
+- A context that needs a database prepared before it starts uses `ReconPostgres.throwaway()`,
+  `registerIn(registry)` in its `@DynamicPropertySource`, and `@DirtiesContext`
+- `HeldLedgerEntryStore` holds a run inside its work transaction, and `FailingRunStore` fails a run
+  right after COMPLETED is written (both in `application.run`, test sources)
+- My mistake this session: two build logs were written to the system temp directory (`/tmp` in
+  Git Bash) and moved under target/ at once. No repository content was in them beyond test
+  output, and they never reached a commit
 
 ## Phase 4.1 — done
 
