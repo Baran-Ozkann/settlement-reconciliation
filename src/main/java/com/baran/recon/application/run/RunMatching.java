@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -78,6 +79,17 @@ public final class RunMatching {
             recordFailure(running, failure);
             throw failure;
         }
+    }
+
+    /**
+     * Sets FAILED every run a stopped JVM left RUNNING (TDD 5.3). Called at startup, before this
+     * instance can start a run of its own; v1 runs one instance, so any RUNNING run is a leftover.
+     * Its work transaction never committed, so nothing of its work remains.
+     *
+     * @return the ids of the runs it set FAILED
+     */
+    public List<UUID> failRunsLeftRunning() {
+        return transactions.inTransaction(() -> runs.failAllRunning(now()));
     }
 
     private SourceDefinition sourceNamed(String code) {

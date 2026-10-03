@@ -51,11 +51,19 @@ public final class ReconPostgres implements AutoCloseable {
     /** For {@code @DynamicPropertySource}: points the datasource and Flyway at the shared instance. */
     public static void register(DynamicPropertyRegistry registry) {
         SHARED.start();
-        registry.add("spring.datasource.url", SHARED::jdbcUrl);
+        SHARED.registerIn(registry);
+    }
+
+    /**
+     * For {@code @DynamicPropertySource}: points the datasource and Flyway at this instance, for a
+     * context that needs a database prepared before it starts.
+     */
+    public void registerIn(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", this::jdbcUrl);
         registry.add("spring.datasource.username", () -> APP_ROLE);
-        registry.add("spring.datasource.password", () -> SHARED.appPassword);
+        registry.add("spring.datasource.password", () -> appPassword);
         registry.add("spring.flyway.user", () -> MIGRATOR_ROLE);
-        registry.add("spring.flyway.password", () -> SHARED.migratorPassword);
+        registry.add("spring.flyway.password", () -> migratorPassword);
     }
 
     /**
