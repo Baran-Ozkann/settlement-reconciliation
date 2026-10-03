@@ -3,15 +3,20 @@ package com.baran.recon.application.run;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import net.jqwik.api.Arbitraries;
 import net.jqwik.api.Arbitrary;
@@ -36,6 +41,8 @@ import org.springframework.test.context.TestContextManager;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.Transactions;
+import com.baran.recon.application.run.StageAFixture.BreakView;
+import com.baran.recon.application.run.StageAFixture.MatchView;
 import com.baran.recon.application.run.StageAFixture.Psp;
 import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.item.ItemSide;
@@ -50,8 +57,8 @@ import com.baran.recon.support.ReconPostgres;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Stage A's invariants over generated item sets (TDD 9, 13): INV-1 completeness and INV-4
- * conservation, with a fixed seed. A set is a few transactions as both sides see them: usually one
+ * Stage A's invariants over generated item sets (TDD 9, 13): INV-1 completeness, INV-4
+ * conservation and INV-5 determinism, with a fixed seed. A set is a few transactions as both sides see them: usually one
  * ledger entry and one PSP line that agree, sometimes a side missing or repeated, the line's
  * reference of any kind (exact, upper case, none, not a UUID, unknown) and its amount or currency
  * changed, on dates inside and outside the run's range. Amounts are few, so lines without a usable
@@ -66,7 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
 @Import(FixedRunClock.class)
-@Label("INV-1, INV-4: Stage A over generated items")
+@Label("INV-1, INV-4, INV-5: Stage A over generated items")
 class StageAPropertiesTest {
 
     private static final String SEED = "20261003";
@@ -89,6 +96,8 @@ class StageAPropertiesTest {
     private static final int GRACE_PSP = 1;
     private static final BusinessCalendar CALENDAR =
             new BusinessCalendar(Set.of(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY), Set.of());
+
+    private static final Pattern LEDGER_KEY = Pattern.compile("LEDGER (\\d+)");
 
     /** Every match rule and break type Stage A produces; each must occur in some tries. */
     private static final List<String> OUTCOMES = List.of("A1_EXACT_REFERENCE", "A3_FALLBACK_UNIQUE", "AMOUNT_MISMATCH",
@@ -144,6 +153,67 @@ class StageAPropertiesTest {
         insert(fixture, source, index, scenario, ledgerHalf, scenario.ledger().size(), pspHalf, scenario.psp().size());
         assertCompleteAndConserved(source, scenario, scenario.ledger().size(), scenario.psp().size(), run(source));
         requireEveryOutcome(fixture, source);
+    }
+
+    @Property(tries = 20, seed = SEED, shrinking = ShrinkingMode.OFF)
+    @Label("INV-5: the same items stored in shuffled orders give the same matches, breaks and statistics, "
+            + "compared by line id and event id")
+    void shuffledInsertionGivesTheSameResults(@ForAll("scenarios") Scenario scenario, @ForAll Random random) {
+        Outcome first = null;
+        for (int order = 0; order < 3; order++) {
+            int index = NEXT_SOURCE.getAndIncrement();
+            SourceCode source = SourceCode.of(sourceCode(index));
+            StageAFixture fixture = fixture(index);
+            List<Runnable> inserts = new ArrayList<>();
+            for (int i = 0; i < scenario.ledger().size(); i++) {
+                LedgerSpec entry = scenario.ledger().get(i);
+                long eventId = eventBase(index) + i;
+                inserts.add(() -> fixture.ledger(source, eventId, scenario.transactionId(entry.transaction()),
+                        entry.amount(), entry.currency(), entry.valueDate()));
+            }
+            for (int i = 0; i < scenario.psp().size(); i++) {
+                Psp line = psp(scenario, i);
+                inserts.add(() -> fixture.pspLines(source, List.of(line)));
+            }
+            if (order > 0) {
+                Collections.shuffle(inserts, random);
+            }
+            inserts.forEach(Runnable::run);
+
+            Outcome outcome = outcome(fixture, source, eventBase(index), run(source));
+            if (first == null) {
+                first = outcome;
+            } else {
+                assertThat(outcome).as("order %s against the order generated", order).isEqualTo(first);
+            }
+        }
+    }
+
+    /**
+     * What a run decided, by the keys the generated set gave its items: a PSP line by its line id, a
+     * ledger entry by its event id less its source's block. Generated ids appear nowhere.
+     */
+    private static Outcome outcome(StageAFixture fixture, SourceCode source, long eventBase, ReconciliationRun run) {
+        Set<String> matches = new TreeSet<>();
+        for (MatchView match : fixture.matches(source)) {
+            matches.add(String.join("|", match.rule(), Boolean.toString(match.lowConfidence()), match.status(),
+                    Long.toString(match.amountDifference()), match.currency(), logical(match.ledger(), eventBase),
+                    match.psp()));
+        }
+        Set<String> breaks = new TreeSet<>();
+        for (BreakView found : fixture.breaks(source)) {
+            breaks.add(String.join("|", found.type(), found.status(), logical(found.subject(), eventBase),
+                    found.related().stream().map(item -> logical(item, eventBase)).sorted().toList().toString()));
+        }
+        return new Outcome(matches, breaks, run.stats().orElseThrow());
+    }
+
+    private static String logical(String key, long eventBase) {
+        Matcher ledger = LEDGER_KEY.matcher(key);
+        return ledger.matches() ? "LEDGER #" + (Long.parseLong(ledger.group(1)) - eventBase) : key;
+    }
+
+    private record Outcome(Set<String> matches, Set<String> breaks, SortedMap<String, Long> stats) {
     }
 
     /**
