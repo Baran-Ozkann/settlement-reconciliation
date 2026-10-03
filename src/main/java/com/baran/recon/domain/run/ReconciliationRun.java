@@ -67,6 +67,29 @@ public record ReconciliationRun(
                 new TreeMap<>(configSnapshot), Optional.empty(), startedAt, Optional.empty(), triggeredBy);
     }
 
+    /** The run's work committed: COMPLETED, with the statistics it recorded (FR-MAT-10). */
+    public ReconciliationRun complete(Map<String, Long> runStats, Instant finished) {
+        requireRunning();
+        return new ReconciliationRun(id, source, valueDateFrom, valueDateTo, RunStatus.COMPLETED, configSnapshot,
+                Optional.of(new TreeMap<>(runStats)), startedAt, Optional.of(finished), triggeredBy);
+    }
+
+    /**
+     * The run's work did not commit: FAILED, with no statistics, because nothing the work counted or
+     * wrote was kept (NFR-REL-2).
+     */
+    public ReconciliationRun fail(Instant finished) {
+        requireRunning();
+        return new ReconciliationRun(id, source, valueDateFrom, valueDateTo, RunStatus.FAILED, configSnapshot,
+                Optional.empty(), startedAt, Optional.of(finished), triggeredBy);
+    }
+
+    private void requireRunning() {
+        if (status != RunStatus.RUNNING) {
+            throw new InvalidRunException("only a running run can finish; this one is " + status);
+        }
+    }
+
     private static <V> SortedMap<String, V> sortedCopy(Map<String, V> map) {
         return Collections.unmodifiableSortedMap(new TreeMap<>(map));
     }

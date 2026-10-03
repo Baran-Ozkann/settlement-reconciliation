@@ -78,4 +78,47 @@ class ReconciliationRunTest {
         assertThatThrownBy(() -> ReconciliationRun.start(UUID.randomUUID(), PSP, FROM, TO, Map.of(), STARTED, " "))
                 .isInstanceOf(InvalidRunException.class);
     }
+
+    @Test
+    @DisplayName("FR-MAT-10: a running run completes with its statistics and keeps everything else")
+    void runningRunCompletes() {
+        ReconciliationRun running = ReconciliationRun.start(UUID.randomUUID(), PSP, FROM, TO,
+                Map.of("value_date_zone", "Europe/Istanbul"), STARTED, "operator-001");
+        Map<String, Long> stats = new HashMap<>(Map.of(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 2L));
+
+        ReconciliationRun completed = running.complete(stats, STARTED.plusSeconds(5));
+        stats.put(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 9L);
+
+        assertThat(completed.status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(completed.stats()).hasValueSatisfying(recorded ->
+                assertThat(recorded).containsExactly(Map.entry(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 2L)));
+        assertThat(completed.finishedAt()).contains(STARTED.plusSeconds(5));
+        assertThat(completed).usingRecursiveComparison().comparingOnlyFields(
+                        "id", "source", "valueDateFrom", "valueDateTo", "configSnapshot", "startedAt", "triggeredBy")
+                .isEqualTo(running);
+    }
+
+    @Test
+    @DisplayName("NFR-REL-2: a running run fails with no statistics, since its work was not kept")
+    void runningRunFails() {
+        ReconciliationRun running = ReconciliationRun.start(UUID.randomUUID(), PSP, FROM, TO, Map.of(), STARTED, "system");
+
+        ReconciliationRun failed = running.fail(STARTED.plusSeconds(5));
+
+        assertThat(failed.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(failed.stats()).isEmpty();
+        assertThat(failed.finishedAt()).contains(STARTED.plusSeconds(5));
+    }
+
+    @Test
+    @DisplayName("only a running run finishes, and never before it started")
+    void onlyARunningRunFinishes() {
+        ReconciliationRun running = ReconciliationRun.start(UUID.randomUUID(), PSP, FROM, TO, Map.of(), STARTED, "system");
+        ReconciliationRun failed = running.fail(STARTED.plusSeconds(5));
+
+        assertThatThrownBy(() -> failed.complete(Map.of(), STARTED.plusSeconds(6))).isInstanceOf(InvalidRunException.class);
+        assertThatThrownBy(() -> failed.fail(STARTED.plusSeconds(6))).isInstanceOf(InvalidRunException.class);
+        assertThatThrownBy(() -> running.complete(Map.of(), STARTED.minusSeconds(1)))
+                .isInstanceOf(InvalidRunException.class);
+    }
 }
