@@ -60,7 +60,7 @@ class LedgerAccountSourcesTest {
     @DisplayName("a bank statement source cannot map ledger accounts")
     void bankSourceWithLedgerAccountsIsRefused() {
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT,
-                Set.of(CLEARING), Optional.of(BATCH_PATTERN)))
+                Set.of(CLEARING), Optional.of(BATCH_PATTERN), Optional.empty()))
                 .isInstanceOf(InvalidSourceConfigurationException.class);
     }
 

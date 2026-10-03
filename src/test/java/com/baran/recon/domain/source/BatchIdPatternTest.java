@@ -81,10 +81,10 @@ class BatchIdPatternTest {
     @DisplayName("a bank source needs a pattern, and a PSP source cannot have one")
     void patternBelongsToBankSourcesOnly() {
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT, Set.of(),
-                Optional.empty()))
+                Optional.empty(), Optional.empty()))
                 .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("batch-id-pattern");
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("PSP_ALPHA"), SourceType.PSP_SETTLEMENT, Set.of(),
-                Optional.of(TDD_EXAMPLE)))
+                Optional.of(TDD_EXAMPLE), Optional.of(StageASettings.TDD_DEFAULTS)))
                 .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("batch-id-pattern");
     }
 

@@ -21,6 +21,9 @@ recon:
   sources:
     - code: PSP_ALPHA
       type: PSP_SETTLEMENT
+      value-date-window-days: 2
+      grace-days-ledger-unmatched: 3
+      grace-days-psp-unmatched: 1
     - code: BANK_MAIN
       type: BANK_STATEMENT
       batch-id-pattern: "BATCH[-_]?([A-Za-z0-9_-]{1,64})"

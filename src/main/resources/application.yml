@@ -88,4 +88,11 @@ recon:
     max-invalid-line-ratio-bp: 0
   # TDD 8.1. Ledger entries are stored only for accounts listed here (FR-LED-2). Empty until OQ-3
   # settles which ledger account a PSP clears through; no such account exists in any ledger yet.
+  # A PSP source's value-date-window-days, grace-days-ledger-unmatched and grace-days-psp-unmatched
+  # are 2, 3 and 1 business days unless it sets its own.
   sources: []
+  # TDD 8.1: value-date windows and grace periods count every day except these. Holidays are ISO
+  # dates. Both are snapshotted onto each run (FR-MAT-8).
+  business-calendar:
+    weekend: [ SATURDAY, SUNDAY ]
+    holidays: [ ]
