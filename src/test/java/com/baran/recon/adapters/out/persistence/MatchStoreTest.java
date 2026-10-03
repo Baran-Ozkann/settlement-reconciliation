@@ -62,10 +62,15 @@ class MatchStoreTest {
 
     private UUID runId;
 
+    /**
+     * The run the rows refer to, recorded finished: the database allows one RUNNING run per source
+     * (TDD 5.3), and every test here records a run of the same source.
+     */
     @BeforeEach
-    void startRun() {
+    void recordRun() {
         ReconciliationRun run = ReconciliationRun.start(UUID.randomUUID(), SourceCode.of("PSP_ALPHA"),
-                LocalDate.of(2026, 9, 24), LocalDate.of(2026, 9, 25), Map.of(), AT.minusSeconds(30), "system");
+                        LocalDate.of(2026, 9, 24), LocalDate.of(2026, 9, 25), Map.of(), AT.minusSeconds(30), "system")
+                .complete(Map.of(), AT.minusSeconds(30));
         runs.insert(run);
         runId = run.id();
     }
