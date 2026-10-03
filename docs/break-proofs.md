@@ -130,3 +130,16 @@ an `eclipse-temurin:21` container printed `configured=[/] PathEditor gives
 was right. `df08898` binds the property as text and makes the path with `Path.of`. The test now
 writes the root both ways: run against the old binding it failed on Windows (`/`) and on Linux, and
 it passes on both after the fix.
+
+## Phase 5, part 1a
+
+Every proof here is a permanent test. Nothing is Unproven. Two mechanisms of the run lifecycle have
+no break proof yet: the rollback of the work transaction and the startup recovery. They are owed
+in part 1b, when the work transaction writes matches and breaks (see PROGRESS.md).
+
+| Mechanism | Broken state the test builds | Proof test | What it asserts |
+|---|---|---|---|
+| TDD 11.1: no `@ConfigurationProperties` type, nor a type nested in one, has a `java.nio.file.Path` component, directly or inside a generic type (`ArchitectureRules.noPathBoundFromConfiguration`) | the fixture tree `com.baran.archfixture.configpath`: a properties record with a `Path directory` and a nested list item with a `List<Path> roots`. No application file is edited | `ArchitectureRulesCatchViolationsTest.ruleRejectsItsFixture` (`configpath: UploadProperties.directory`, `configpath: UploadProperties$Mirror.roots`) | both components are reported by name. The clean tree's properties record, which binds its directory as text, passes, and the rule selects it, so it does not pass by checking nothing |
+| TDD 5.3: one RUNNING run per source, the partial unique index `reconciliation_runs_one_running_per_source` (V11) | inside a rolled-back transaction, the index dropped | `DatabaseMechanismTest.withoutThisMechanismTheViolationGoesThrough[RECONCILIATION_RUNS_ONE_RUNNING_PER_SOURCE]` | a second RUNNING row for the source is refused by the index by name, then accepted once the index alone is gone. `PartialUniqueIndexesTest` shows what it allows: RUNNING runs of two sources, and finished runs of the same one |
+| The same index, as the only thing that refuses a second run of a source through the use case (`RunMatchingTest.twoRunsOnOneSourceOneIsRefused`) | a throwaway database, migrated as usual, then the index dropped by its owner before the context starts. No application file is edited | `OneRunningRunPerSourceBreakProofTest.withoutTheIndexBothRunsStart` | two runs of one source started together are both RUNNING inside their work at once, and both complete. With the index, the second is refused with `SOURCE_BUSY`, caused by `RunAlreadyRunningException`, and leaves no row |
+| Grants: recon_app may update only `status`, `stats` and `finished_at` of `reconciliation_runs` (V12, column-level) | the existing proofs: an extra table or column grant made inside a rolled-back transaction; and, for the withheld columns, the missing grant made | `ApplicationRoleGrantsTest.anExtraGrantIsReported`; `WithheldPrivilegeTest.theMissingGrantIsWhatRefusesIt[RECONCILIATION_RUNS_UPDATE_CONFIG_SNAPSHOT]` and `[RECONCILIATION_RUNS_UPDATE_SCOPE]` | the extra grants are reported. Updating the configuration snapshot or the value-date range is refused with 42501, and goes through once that column is granted |
