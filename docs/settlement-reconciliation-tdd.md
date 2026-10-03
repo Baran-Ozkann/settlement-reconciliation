@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.8 — Phase 4.1 outcomes, Stage A decisions for Phase 5 (run lifecycle, reference rules, item status), OQ-3 settled
+Version: 1.9 — run snapshot isolation, MATCHED_LATE scope, A2 without the window (Phase 5 part 1b outcomes)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -284,8 +284,11 @@ ArchUnit rules (Phase 1):
    One run per source at a time is enforced by the database: a partial unique index on
    `reconciliation_runs(source_code) WHERE status = 'RUNNING'`. A second run for the source fails to
    insert; a manual trigger answers `409` with the running run's id.
-2. In one transaction: Stage A (if the source type is PSP), then Stage B (Phase 6); persist matches,
-   open breaks, auto-resolve breaks (`MATCHED_LATE`), record statistics, set `COMPLETED`.
+2. In one transaction at `REPEATABLE READ`: Stage A (if the source type is PSP), then Stage B
+   (Phase 6); persist matches, open breaks, auto-resolve breaks (`MATCHED_LATE`), record statistics,
+   set `COMPLETED`. Every statement of the run reads the same snapshot, so a file or an event committed
+   while the run works is seen by none of its steps, never by some (grace breaks) and not others
+   (A1); the next run picks it up. A serialization failure fails the run like any other error.
 3. On failure: roll that transaction back and set `FAILED` in a transaction of its own. Nothing of the
    run's work remains (NFR-REL-2).
 4. At startup, a run left `RUNNING` by a stopped JVM is set `FAILED` (v1 runs one instance).
@@ -454,8 +457,14 @@ Stage A details (settled in v1.8):
   no grace break of its own.
 - **Idempotent re-runs.** Re-running the same scope with no new data writes a run row and nothing
   else: no match, no break, no event. An existing unresolved break is never opened twice (INV-7).
-- **Auto-resolution.** When a run matches an item that is the subject of an unresolved break, the
-  break is resolved in the same transaction with `MATCHED_LATE`, actor `system` (FR-BRK-5).
+- **Auto-resolution.** When a run matches an item that is the subject of an unresolved break of a
+  type the match answers, the break is resolved in the same transaction with `MATCHED_LATE`, actor
+  `system` (FR-BRK-5). A match answers `MISSING_IN_PSP`, `MISSING_IN_LEDGER` and `AMBIGUOUS_MATCH`.
+  It does not answer `DUPLICATE_LINE`, `AMOUNT_MISMATCH` or `CURRENCY_MISMATCH`: those stay open for
+  an operator, and the matched item is still `MATCHED` (status order above).
+- **A2 ignores the value-date window.** A shared reference is the transaction's own id, so a conflict
+  in amount or currency under it is a discrepancy whatever the dates; it gets its A2 break rather
+  than two grace breaks that would point at missing items. A1 and A3 keep the window.
 - **Memory.** A run never holds all of a source's items in memory: matching is set-based in SQL or
   streams in a fixed order, so NFR-PERF-2 runs under the same `-Xmx512m` as NFR-PERF-1.
 
@@ -878,3 +887,7 @@ Still open:
 1. **OQ-4** Whether Phase 8 generates ledger data through the ledger's API or publishes
    schema-valid synthetic events onto the topic.
 2. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Phase 10.
+3. **OQ-6** An item whose break an operator resolved (e.g. `WRITTEN_OFF`) and that is still
+   unmatched: a run would open the same break again. Whether runs skip it, and which status INV-1
+   gives it, is decided with Phase 7's transition endpoint, the first thing that resolves a break by
+   hand. Until then nothing does, so no run can meet the case.
