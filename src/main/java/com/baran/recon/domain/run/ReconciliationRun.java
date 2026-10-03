@@ -17,7 +17,8 @@ import com.baran.recon.domain.item.SourceCode;
  *
  * <p>The configuration it ran with is snapshotted onto it (FR-MAT-8), and a completed run carries
  * its statistics (FR-MAT-10), so a past run can be explained after the configuration and the data
- * have moved on. Both are kept as sorted key-value maps; Phase 5 fixes which keys a run records.
+ * have moved on. Both are kept as sorted key-value maps; the run use case fixes which keys a run
+ * records.
  */
 public record ReconciliationRun(
         UUID id,
@@ -33,6 +34,9 @@ public record ReconciliationRun(
 
     /** FR-MAT-10: entries with no value date, which no run's scope can include (FR-MAT-9). */
     public static final String LEDGER_ENTRIES_WITHOUT_VALUE_DATE = "ledger_entries_without_value_date";
+
+    /** The source's ledger entries with a value date in the run's range: its scope on the ledger side. */
+    public static final String LEDGER_ENTRIES_IN_SCOPE = "ledger_entries_in_scope";
 
     private static final int MAX_TRIGGERED_BY_LENGTH = 100;
 
