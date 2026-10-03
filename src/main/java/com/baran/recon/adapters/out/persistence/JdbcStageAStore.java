@@ -107,8 +107,90 @@ class JdbcStageAStore implements StageAStore {
                 RETURNING match_id
             )""";
 
+    /**
+     * After A1, each unmatched line in the range with a UUID reference: a duplicate reference, or the
+     * entries carrying its transaction id within the window. A line with exactly one exact entry
+     * was matched by A1 and is no longer unmatched; one with no entry at all is left alone.
+     */
+    private static final String REFERENCE_FINDINGS = """
+            reference_lines AS (
+                SELECT reference, count(*) AS lines FROM psp WHERE reference IS NOT NULL GROUP BY reference
+            ),
+            subject AS (
+                SELECT line.id, line.value_date, line.gross_amount, line.currency, line.reference, counted.lines
+                  FROM psp line
+                  JOIN reference_lines counted ON counted.reference = line.reference
+                 WHERE line.value_date BETWEEN :from AND :to
+            ),
+            duplicate AS (
+                SELECT subject.id AS item_id, 'DUPLICATE_LINE' AS break_type,
+                       (SELECT jsonb_agg(jsonb_build_object('side', 'PSP', 'id', other.id) ORDER BY other.id)
+                          FROM psp other
+                         WHERE other.reference = subject.reference AND other.id <> subject.id) AS related_items
+                  FROM subject
+                 WHERE subject.lines > 1
+            ),
+            carrier AS (
+                SELECT subject.id AS psp_id, entry.id AS ledger_id,
+                       entry.currency = subject.currency AS same_currency,
+                       entry.currency = subject.currency AND entry.amount = subject.gross_amount AS exact
+                  FROM subject
+                  JOIN ledger entry ON entry.transaction_id = subject.reference
+                  JOIN business_day line_day ON line_day.day = subject.value_date
+                  JOIN business_day entry_day ON entry_day.day = entry.value_date
+                 WHERE subject.lines = 1 AND abs(line_day.ordinal - entry_day.ordinal) <= :windowDays
+            ),
+            carriers AS (
+                SELECT psp_id, count(*) AS entries, count(*) FILTER (WHERE exact) AS exact_entries,
+                       bool_and(same_currency) AS same_currency,
+                       jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id) AS all_items,
+                       jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id)
+                           FILTER (WHERE exact) AS exact_items
+                  FROM carrier
+                 GROUP BY psp_id
+            ),
+            conflict AS (
+                SELECT psp_id AS item_id,
+                       CASE WHEN exact_entries > 1 OR entries > 1 THEN 'AMBIGUOUS_MATCH'
+                            WHEN same_currency THEN 'AMOUNT_MISMATCH'
+                            ELSE 'CURRENCY_MISMATCH' END AS break_type,
+                       CASE WHEN exact_entries > 1 THEN exact_items ELSE all_items END AS related_items
+                  FROM carriers
+                 WHERE exact_entries <> 1
+            ),
+            found AS (
+                SELECT 'PSP' AS item_side, item_id, break_type, related_items FROM duplicate
+                UNION ALL
+                SELECT 'PSP', item_id, break_type, related_items FROM conflict
+            )""";
+
+    /**
+     * A break per finding, OPEN, opened by this run, with its opening event (FR-BRK-6). An item that
+     * already has an unresolved break keeps it and gets no second one: the insert names INV-7's
+     * partial index as its conflict target, so that rule alone is skipped, and only the breaks
+     * actually inserted get an event.
+     */
+    private static final String BREAK_WRITES = """
+            opened AS (
+                INSERT INTO breaks (id, break_type, item_side, item_id, related_items, status, resolution_code,
+                                    opened_run_id, previous_break_id, opened_at, resolved_at)
+                SELECT gen_random_uuid(), break_type, item_side, item_id, related_items, 'OPEN', NULL,
+                       :runId, NULL, :at, NULL
+                  FROM found
+                    ON CONFLICT (item_side, item_id) WHERE status <> 'RESOLVED' DO NOTHING
+                RETURNING id
+            ),
+            opened_event AS (
+                INSERT INTO break_events (break_id, from_status, to_status, resolution_code, actor, reason, occurred_at)
+                SELECT id, NULL, 'OPEN', NULL, :actor, NULL, :at FROM opened
+                RETURNING break_id
+            )""";
+
     private static final String MATCH_BY_REFERENCE = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED, A1_PAIRS,
             MATCH_WRITES) + "\nSELECT count(*) FROM new_match_event";
+
+    private static final String OPEN_REFERENCE_BREAKS = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED,
+            REFERENCE_FINDINGS, BREAK_WRITES) + "\nSELECT count(*) FROM opened_event";
 
     private final JdbcClient jdbc;
 
@@ -120,6 +202,11 @@ class JdbcStageAStore implements StageAStore {
     public int matchByReference(StageAPass pass) {
         return Math.toIntExact(matching(MATCH_BY_REFERENCE, pass, StageARule.A1_EXACT_REFERENCE)
                 .query(Long.class).single());
+    }
+
+    @Override
+    public int openReferenceBreaks(StageAPass pass) {
+        return Math.toIntExact(pass(OPEN_REFERENCE_BREAKS, pass).query(Long.class).single());
     }
 
     private JdbcClient.StatementSpec matching(String sql, StageAPass pass, StageARule rule) {

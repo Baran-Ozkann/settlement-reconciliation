@@ -18,9 +18,15 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 
+import com.baran.recon.application.port.BreakStore;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.Transactions;
+import com.baran.recon.domain.breaks.Actor;
+import com.baran.recon.domain.breaks.Break;
+import com.baran.recon.domain.breaks.BreakType;
+import com.baran.recon.domain.item.ItemRef;
+import com.baran.recon.domain.item.ItemSide;
 import com.baran.recon.domain.item.LedgerEntry;
 import com.baran.recon.domain.item.PspLine;
 import com.baran.recon.domain.item.PspLineType;
@@ -100,6 +106,26 @@ final class StageAFixture {
         });
         assertThat(conflicts).as("every PSP line stored").isEmpty();
         return lines.stream().map(line -> "PSP " + line.lineId()).toList();
+    }
+
+    /** The stored id of the source's PSP line. */
+    UUID pspId(SourceCode source, String lineId) {
+        return jdbc.sql("SELECT id FROM psp_lines WHERE source_code = :source AND line_id = :lineId")
+                .param("source", source.value()).param("lineId", lineId).query(UUID.class).single();
+    }
+
+    /** The stored id of the ledger entry with this key. */
+    UUID ledgerId(String key) {
+        return jdbc.sql("SELECT id FROM ledger_entries WHERE event_id = :eventId")
+                .param("eventId", Long.parseLong(key.substring("LEDGER ".length()))).query(UUID.class).single();
+    }
+
+    /** An OPEN break on the PSP line, opened by an operator rather than a run, as ingestion opens one. */
+    UUID openBreak(BreakStore breaks, SourceCode source, String lineId, BreakType type) {
+        UUID id = UUID.randomUUID();
+        breaks.open(Break.open(id, type, new ItemRef(ItemSide.PSP, pspId(source, lineId)), List.of(), Optional.empty(),
+                Actor.operator("operator-001"), Optional.of("Opened by the test"), Instant.parse("2026-10-12T08:00:00Z")));
+        return id;
     }
 
     /** The source's matches, active or not. */

@@ -29,6 +29,24 @@ public interface StageAStore {
     int matchByReference(StageAPass pass);
 
     /**
+     * After A1, opens a break on each unmatched PSP line in the run's range whose reference is a
+     * UUID:
+     * <ul>
+     *   <li>DUPLICATE_LINE when another unmatched line of the source carries the same reference;
+     *       neither is matched, and each names the others as related items;</li>
+     *   <li>otherwise, among the unmatched entries with that transaction id within the window:
+     *       AMBIGUOUS_MATCH when more than one has the line's currency and amount (A1 found several),
+     *       or when none has and several conflict; CURRENCY_MISMATCH or AMOUNT_MISMATCH when exactly
+     *       one conflicts (A2). The entries are the related items.</li>
+     * </ul>
+     * A line with no such entry gets nothing here. A line that already has an unresolved break gets
+     * no second one (INV-7).
+     *
+     * @return the breaks opened
+     */
+    int openReferenceBreaks(StageAPass pass);
+
+    /**
      * What a step works on: the run, its source and value-date range, the window in business days
      * with the business days that measure it, and the time its writes are recorded at.
      */

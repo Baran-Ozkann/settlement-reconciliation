@@ -186,8 +186,10 @@ public final class RunMatching {
                         settings.valueDateWindowDays()),
                 now());
         int byReference = stageA.matchByReference(pass);
-        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1", running.id(),
-                running.source().value(), Integer.toString(byReference));
+        int referenceBreaks = stageA.openReferenceBreaks(pass);
+        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1 and opened {3} reference "
+                        + "breaks", running.id(), running.source().value(), Integer.toString(byReference),
+                Integer.toString(referenceBreaks));
     }
 
     /**

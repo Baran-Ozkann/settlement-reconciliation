@@ -1,6 +1,9 @@
 package com.baran.recon.application.run;
 
 import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -15,10 +18,13 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+import com.baran.recon.application.port.BreakStore;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.Transactions;
+import com.baran.recon.application.run.StageAFixture.BreakView;
 import com.baran.recon.application.run.StageAFixture.MatchView;
+import com.baran.recon.domain.breaks.BreakType;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.run.RunStatus;
@@ -81,6 +87,9 @@ class StageAMatchingTest {
 
     @Autowired
     private Transactions transactions;
+
+    @Autowired
+    private BreakStore breaks;
 
     @Autowired
     private JdbcClient jdbc;
@@ -173,6 +182,106 @@ class StageAMatchingTest {
         run(MONDAY, FRIDAY);
 
         assertThat(fixture.matches(source)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("A2_REFERENCE_CONFLICT: same reference, other amount: AMOUNT_MISMATCH on the PSP line, the entry related")
+    void referenceWithAnotherAmountIsAnAmountMismatch() {
+        UUID transaction = UUID.randomUUID();
+        String entry = fixture.ledger(source, transaction, 12_500, TRY, TUESDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 12_000, TRY, TUESDAY);
+
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        BreakView opened = onlyBreak();
+        assertThat(opened).isEqualTo(new BreakView(opened.id(), "AMOUNT_MISMATCH", "OPEN", Optional.empty(), run.id(),
+                "PSP L-001", Set.of(entry)));
+        assertThat(fixture.eventsOf(opened.id())).containsExactly("->OPEN:-:system");
+    }
+
+    @Test
+    @DisplayName("A2_REFERENCE_CONFLICT: same reference, other currency: CURRENCY_MISMATCH on the PSP line, the entry related")
+    void referenceWithAnotherCurrencyIsACurrencyMismatch() {
+        UUID transaction = UUID.randomUUID();
+        String entry = fixture.ledger(source, transaction, 12_500, TRY, TUESDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 12_500, "EUR", TUESDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(onlyBreak()).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactly("CURRENCY_MISMATCH", "PSP L-001", Set.of(entry));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-4: A1 finding two entries makes no match and opens AMBIGUOUS_MATCH naming both")
+    void twoExactEntriesAreAmbiguous() {
+        UUID transaction = UUID.randomUUID();
+        String first = fixture.ledger(source, transaction, 1_000, TRY, MONDAY);
+        String second = fixture.ledger(source, transaction, 1_000, TRY, TUESDAY);
+        fixture.ledger(source, transaction, 9_000, TRY, TUESDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, TUESDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(onlyBreak()).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactly("AMBIGUOUS_MATCH", "PSP L-001", Set.of(first, second));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-4: two entries with the reference, both conflicting, is AMBIGUOUS_MATCH naming both")
+    void twoConflictingEntriesAreAmbiguous() {
+        UUID transaction = UUID.randomUUID();
+        String first = fixture.ledger(source, transaction, 1_000, TRY, TUESDAY);
+        String second = fixture.ledger(source, transaction, 2_000, TRY, TUESDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 3_000, TRY, TUESDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(onlyBreak()).extracting(BreakView::type, BreakView::related)
+                .containsExactly("AMBIGUOUS_MATCH", Set.of(first, second));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: two PSP lines with one reference are neither matched; each gets DUPLICATE_LINE naming the others")
+    void duplicateReferencesAreNeverMatched() {
+        UUID transaction = UUID.randomUUID();
+        fixture.ledger(source, transaction, 1_000, TRY, TUESDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, TUESDAY);
+        fixture.psp(source, "L-002", transaction.toString().toUpperCase(), 1_000, TRY, WEDNESDAY);
+        fixture.psp(source, "L-LATER", transaction.toString(), 1_000, TRY, FRIDAY.plusDays(7));
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .as("a line outside the range is named, and gets its own break when a run covers it")
+                .containsExactlyInAnyOrder(
+                        tuple("DUPLICATE_LINE", "PSP L-001", Set.of("PSP L-002", "PSP L-LATER")),
+                        tuple("DUPLICATE_LINE", "PSP L-002", Set.of("PSP L-001", "PSP L-LATER")));
+    }
+
+    @Test
+    @DisplayName("INV-7: a line that already has an unresolved break gets no second one, and no event")
+    void anUnresolvedBreakIsNeverOpenedTwice() {
+        UUID transaction = UUID.randomUUID();
+        fixture.ledger(source, transaction, 12_500, TRY, TUESDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 12_000, TRY, TUESDAY);
+        UUID earlier = fixture.openBreak(breaks, source, "L-001", BreakType.DUPLICATE_LINE);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(onlyBreak()).extracting(BreakView::id, BreakView::type, BreakView::status)
+                .containsExactly(earlier, "DUPLICATE_LINE", "OPEN");
+        assertThat(fixture.eventsOf(earlier)).hasSize(1);
+    }
+
+    private BreakView onlyBreak() {
+        List<BreakView> found = fixture.breaks(source);
+        assertThat(found).hasSize(1);
+        return found.getFirst();
     }
 
     private ReconciliationRun run(LocalDate from, LocalDate to) {
