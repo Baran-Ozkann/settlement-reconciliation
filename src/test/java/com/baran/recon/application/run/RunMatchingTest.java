@@ -72,7 +72,7 @@ class RunMatchingTest {
     private static final LocalDate TO = LocalDate.of(2026, 9, 25);
     private static final Duration WAIT = Duration.ofSeconds(20);
     /** Event ids no other test class uses; the shared database outlives each class. */
-    private static final AtomicLong IDS = new AtomicLong(9_200_000_000L);
+    private static final AtomicLong IDS = new AtomicLong(9_600_000_000L);
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
