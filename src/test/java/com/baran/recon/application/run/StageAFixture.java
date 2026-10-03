@@ -162,6 +162,29 @@ final class StageAFixture {
                 .list();
     }
 
+    /**
+     * Every stored column of the source's matches, with their items and events, one line per match
+     * in id order: what a later run must leave exactly as it was (FR-MAT-2).
+     */
+    List<String> matchRows(SourceCode source) {
+        return jdbc.sql("""
+                        SELECT concat_ws('|', m.id, m.run_id, m.rule_id, m.rule_version, m.cardinality, m.status,
+                                         m.amount_difference, m.currency, m.low_confidence, m.created_at,
+                                         (SELECT string_agg(i.side || ':' || i.item_id || ':' || i.active, ','
+                                                            ORDER BY i.side, i.item_id)
+                                            FROM match_items i WHERE i.match_id = m.id),
+                                         (SELECT string_agg(e.event_type || ':' || e.actor || ':' || e.occurred_at, ','
+                                                            ORDER BY e.id)
+                                            FROM match_events e WHERE e.match_id = m.id))
+                          FROM matches m
+                         WHERE m.id IN (SELECT item.match_id FROM match_items item
+                                          JOIN psp_lines line ON item.side = 'PSP' AND line.id = item.item_id
+                                         WHERE line.source_code = :source)
+                         ORDER BY m.id
+                        """)
+                .param("source", source.value()).query(String.class).list();
+    }
+
     /** The breaks on the source's items, resolved or not, each named by its item's key. */
     List<BreakView> breaks(SourceCode source) {
         return jdbc.sql("""
@@ -180,6 +203,7 @@ final class StageAFixture {
                           LEFT JOIN psp_lines p ON b.item_side = 'PSP' AND p.id = b.item_id
                           LEFT JOIN ledger_entries l ON b.item_side = 'LEDGER' AND l.id = b.item_id
                          WHERE p.source_code = :source OR l.source_code = :source
+                         ORDER BY b.id
                         """)
                 .param("source", source.value())
                 .query(StageAFixture::breakView)

@@ -534,6 +534,32 @@ class StageAMatchingTest {
                         Map.entry(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 0L))));
     }
 
+    @Test
+    @DisplayName("FR-MAT-2: an active match is never altered by a later run, even when new items would contest it")
+    void laterRunNeverAltersAnActiveMatch() {
+        UUID transaction = UUID.randomUUID();
+        String entry = fixture.ledger(source, transaction, 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, FRIDAY);
+        ReconciliationRun first = run(FRIDAY, FRIDAY);
+        List<String> matchBefore = fixture.matchRows(source);
+
+        String sameTransaction = fixture.ledger(source, transaction, 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-002", transaction.toString(), 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-003", null, 1_000, TRY, FRIDAY);
+        ReconciliationRun second = run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matchRows(source)).as("the first match's row, items and event are as they were")
+                .containsAll(matchBefore);
+        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp, MatchView::runId,
+                        MatchView::status, MatchView::createdEvents)
+                .containsExactlyInAnyOrder(
+                        tuple(entry, "PSP L-001", first.id(), "ACTIVE", 1L),
+                        tuple(sameTransaction, "PSP L-002", second.id(), "ACTIVE", 1L));
+        assertThat(fixture.breaks(source))
+                .as("offered again, L-001 would have made L-002 a duplicate reference and L-003 ambiguous")
+                .isEmpty();
+    }
+
     private BreakView breakOn(String subject) {
         List<BreakView> found = fixture.breaks(source).stream().filter(view -> view.subject().equals(subject)).toList();
         assertThat(found).as("breaks on %s", subject).hasSize(1);
