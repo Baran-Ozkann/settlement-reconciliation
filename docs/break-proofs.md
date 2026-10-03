@@ -135,7 +135,8 @@ it passes on both after the fix.
 
 Every proof here is a permanent test. Nothing is Unproven. Two mechanisms of the run lifecycle have
 no break proof yet: the rollback of the work transaction and the startup recovery. They are owed
-in part 1b, when the work transaction writes matches and breaks (see PROGRESS.md).
+in part 1b, when the work transaction writes matches and breaks (see PROGRESS.md). Both are proven
+in part 1b, below.
 
 | Mechanism | Broken state the test builds | Proof test | What it asserts |
 |---|---|---|---|
@@ -143,3 +144,42 @@ in part 1b, when the work transaction writes matches and breaks (see PROGRESS.md
 | TDD 5.3: one RUNNING run per source, the partial unique index `reconciliation_runs_one_running_per_source` (V11) | inside a rolled-back transaction, the index dropped | `DatabaseMechanismTest.withoutThisMechanismTheViolationGoesThrough[RECONCILIATION_RUNS_ONE_RUNNING_PER_SOURCE]` | a second RUNNING row for the source is refused by the index by name, then accepted once the index alone is gone. `PartialUniqueIndexesTest` shows what it allows: RUNNING runs of two sources, and finished runs of the same one |
 | The same index, as the only thing that refuses a second run of a source through the use case (`RunMatchingTest.twoRunsOnOneSourceOneIsRefused`) | a throwaway database, migrated as usual, then the index dropped by its owner before the context starts. No application file is edited | `OneRunningRunPerSourceBreakProofTest.withoutTheIndexBothRunsStart` | two runs of one source started together are both RUNNING inside their work at once, and both complete. With the index, the second is refused with `SOURCE_BUSY`, caused by `RunAlreadyRunningException`, and leaves no row |
 | Grants: recon_app may update only `status`, `stats` and `finished_at` of `reconciliation_runs` (V12, column-level) | the existing proofs: an extra table or column grant made inside a rolled-back transaction; and, for the withheld columns, the missing grant made | `ApplicationRoleGrantsTest.anExtraGrantIsReported`; `WithheldPrivilegeTest.theMissingGrantIsWhatRefusesIt[RECONCILIATION_RUNS_UPDATE_CONFIG_SNAPSHOT]` and `[RECONCILIATION_RUNS_UPDATE_SCOPE]` | the extra grants are reported. Updating the configuration snapshot or the value-date range is refused with 42501, and goes through once that column is granted |
+
+## Phase 5, part 1b
+
+Stage A adds no constraint, index, trigger or grant: its statements use the grants of V8, V9 and
+V12 as they are, and `ApplicationRoleGrantsTest` is unchanged. The new mechanisms are the run's
+own: what keeps an actively matched item out of a run, what keeps a run from opening a second
+unresolved break, and the finalization check on its statistics. Part 1a's two owed proofs are here
+too. The one-off proofs were made at `19da3e9`, each a throwaway edit of `JdbcStageAStore` that was
+never committed: the file was copied aside first, copied back afterwards, `git diff` was then
+empty, and the tests named were run green again (`StageAMatchingTest` and `StageAPropertiesTest`,
+30 tests, 0 failures).
+
+### Proven by permanent tests
+
+| Mechanism | Broken state the test builds | Proof test | What it asserts |
+|---|---|---|---|
+| NFR-REL-2: the rollback of the run's work transaction removes everything Stage A wrote (`RunMatching`, TDD 5.3; owed from part 1a) | an application context of its own whose `Transactions` commit the work even when it throws (`@Primary` test bean), with `FailingRunStore` failing the run right after COMPLETED is written, so after Stage A has matched and opened. No file is edited | `WorkRollbackBreakProofTest.withoutTheRollbackTheWorkRemains` | the A1 match and the AMOUNT_MISMATCH break remain and the run stays COMPLETED. With the rollback, `RunMatchingTest.failureAfterStageAWroteLeavesNoneOfIt`: the run is FAILED, neither the match, the break nor its event exists, and a re-run makes both |
+| TDD 5.3: a run a stopped instance left RUNNING is set FAILED at startup (`MatchingConfiguration.failRunsLeftRunning`; owed from part 1a) | a throwaway database holding a RUNNING run written before the context starts, and a `BeanDefinitionRegistryPostProcessor` of the test's own context that removes the recovery bean's definition and nothing else | `StaleRunRecoveryBreakProofTest.withoutTheRecoveryTheSourceStaysBusy` | the context lacks the bean, the run is still RUNNING, the source reports it as running, and a new run is refused `SOURCE_BUSY` naming it. With the recovery, `StaleRunRecoveryTest` sees it FAILED and the source free |
+| INV-2's index `match_items_active_item_unique` stops a second active match when the run's exclusion cannot see the first | another connection matches the two items and keeps its transaction open while a run decides; the run's statement does not see the uncommitted match | `StageAMatchingTest.indexStopsAMatchTheExclusionCannotSee` | the run waits on the index and, once the other transaction commits, fails with that index's unique violation and is FAILED; the items keep the one match made elsewhere. The index itself is proven by `DatabaseMechanismTest[MATCH_ITEMS_ACTIVE_ITEM_UNIQUE]` (Phase 2) |
+| INV-1, INV-4: the run's finalization check (`ItemStatistics.conserved`) | totals by status that do not add up to the scope: an item counted twice, an item missed, amounts that differ by one minor unit, a status in a currency the scope lacks | `ItemStatisticsTest.countThatDoesNotAddUpIsRefused`, `sumThatDoesNotAddUpIsRefused`, `statusOutsideTheScopeIsRefused` | each is refused with `ScopeNotConservedException`, which fails the run inside its work transaction |
+
+### Recorded one-offs
+
+| Mechanism | Broken by | Test | What it reported |
+|---|---|---|---|
+| FR-MAT-2: each Stage A statement offers only items without an active match (`NOT EXISTS` on `match_items` in the `psp` and `ledger` CTEs of `JdbcStageAStore.UNMATCHED`) | both `NOT EXISTS` conditions replaced by `TRUE` | `StageAMatchingTest#laterRunNeverAltersAnActiveMatch+reRunWithNoNewDataWritesOnlyItsRunRow` | 2 tests, 1 failure, 1 error. `laterRunNeverAltersAnActiveMatch`: `could not find the following elements: [("LEDGER 9700000002", "PSP L-002", …)]`: the matched L-001 was counted again and made L-002 a duplicate reference. `reRunWithNoNewDataWritesOnlyItsRunRow`: the second run failed with `duplicate key value violates unique constraint "match_items_active_item_unique"`. Restored: both pass |
+| INV-7, TDD 8.2: a run never opens a second unresolved break and writes nothing for the item instead (`ON CONFLICT (item_side, item_id) WHERE status <> 'RESOLVED' DO NOTHING` in `JdbcStageAStore.BREAK_WRITES`) | the `ON CONFLICT` line deleted | `StageAMatchingTest#reRunWithNoNewDataWritesOnlyItsRunRow+anUnresolvedBreakIsNeverOpenedTwice` | 2 tests, 2 errors, 4 × `duplicate key value violates unique constraint "breaks_one_unresolved_per_item"`: the index refuses the second break and the run fails, where the clause lets it skip the item and complete. Restored: both pass |
+| INV-5, FR-MAT-4: no rule breaks a tie, so the INV-5 property must catch one that does | A1 given a tie-break: a line with several exact entries matched the one with the smallest generated id (`(array_agg(ledger_id ORDER BY ledger_id))[1]`, `HAVING bool_or(in_range)`) instead of opening AMBIGUOUS_MATCH | `StageAPropertiesTest` (both properties, seed 20261003) | INV-5 failed at try 8 of 20: `[order 1 against the order generated]`, PSP L-3 matched `LEDGER #6` in the generated order and `LEDGER #7` in the first shuffle. The INV-1/INV-4 property passed its 40 tries, as it should: a tie-break conserves the scope. Restored: both pass |
+
+### Unproven
+
+| Mechanism | Why there is no break proof | What guards it instead |
+|---|---|---|
+| MATCHED_LATE resolves a break only from the status it read, locked (`FOR UPDATE OF open_break` and `breaks.status = target.status` in `JdbcStageAStore.RESOLVE_MATCHED_LATE`) | nothing else changes a break's status until Phase 7's transition endpoint: ingestion only opens breaks, and runs of one source cannot overlap (V11). The broken state, an operator's transition committed between the run's read and its update, cannot be built yet | `StageAMatchingTest.investigatedBreakIsResolvedWhenItsItemMatches` shows the event records the status the break left; to be proven in Phase 7 against a concurrent transition, alongside the transition endpoint's own guard (TDD 14, Phase 7 exit) |
+
+The INV-1/INV-4 property also checks itself: jqwik's coverage check fails it unless every match
+rule and Stage A break type occurs in at least 5 % of its tries. Its first generator, items drawn
+independently, failed that check (`Percentage of 3.33 for true does not fulfill condition for
+label "A1_EXACT_REFERENCE"`); the committed one generates transactions as both sides see them.
