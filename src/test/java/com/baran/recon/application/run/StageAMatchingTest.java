@@ -1,12 +1,23 @@
 package com.baran.recon.application.run;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.sql.DataSource;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -14,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -32,7 +44,9 @@ import com.baran.recon.domain.run.RunStatus;
 import com.baran.recon.support.ReconPostgres;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Stage A's rules and details (TDD 8.2) through the run use case, against the application's own
@@ -93,6 +107,9 @@ class StageAMatchingTest {
 
     @Autowired
     private BreakStore breaks;
+
+    @Autowired
+    private DataSource dataSource;
 
     @Autowired
     private JdbcClient jdbc;
@@ -596,6 +613,62 @@ class StageAMatchingTest {
         assertThat(second.stats()).isEqualTo(first.stats());
         assertThat(jdbc.sql("SELECT count(*) FROM reconciliation_runs WHERE source_code = :source")
                 .param("source", source.value()).query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("INV-2: a match committed while a run decides, unseen by the run's exclusion, makes the run fail on "
+            + "the active-item index instead of matching the item twice")
+    void indexStopsAMatchTheExclusionCannotSee() throws Exception {
+        UUID transaction = UUID.randomUUID();
+        String entry = fixture.ledger(source, transaction, 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, FRIDAY);
+        ReconciliationRun earlier = run(MONDAY, MONDAY);
+        ExecutorService thread = Executors.newSingleThreadExecutor();
+        try (Connection other = dataSource.getConnection()) {
+            other.setAutoCommit(false);
+            matchElsewhere(other, earlier.id(), fixture.ledgerId(entry), fixture.pspId(source, "L-001"));
+
+            Future<ReconciliationRun> deciding = thread.submit(() -> matching.run(source.value(), FRIDAY, FRIDAY,
+                    "operator-001"));
+            await().atMost(Duration.ofSeconds(20)).until(() -> jdbc.sql(
+                            "SELECT count(*) FROM pg_locks WHERE NOT granted AND locktype = 'transactionid'")
+                    .query(Long.class).single() > 0);
+            other.commit();
+
+            assertThatThrownBy(() -> deciding.get(20, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
+                    .cause().isInstanceOf(DuplicateKeyException.class)
+                    .hasMessageContaining("match_items_active_item_unique");
+        } finally {
+            thread.shutdownNow();
+        }
+
+        assertThat(fixture.matches(source)).extracting(MatchView::runId).as("only the match made elsewhere")
+                .containsExactly(earlier.id());
+        assertThat(jdbc.sql("SELECT status FROM reconciliation_runs WHERE source_code = :source AND id <> :earlier")
+                .param("source", source.value()).param("earlier", earlier.id()).query(String.class).single())
+                .isEqualTo("FAILED");
+    }
+
+    /** An A1 match of the two items, written on another connection and not yet committed. */
+    private static void matchElsewhere(Connection other, UUID runId, UUID ledgerId, UUID pspId) throws SQLException {
+        UUID matchId = UUID.randomUUID();
+        try (PreparedStatement match = other.prepareStatement("""
+                INSERT INTO recon.matches (id, run_id, rule_id, rule_version, cardinality, status, amount_difference,
+                                           currency, low_confidence, created_at)
+                VALUES (?, ?, 'A1_EXACT_REFERENCE', 1, 'ONE_TO_ONE', 'ACTIVE', 0, 'TRY', FALSE, now())
+                """);
+             PreparedStatement items = other.prepareStatement(
+                     "INSERT INTO recon.match_items (match_id, side, item_id, active) VALUES (?, ?, ?, TRUE)")) {
+            match.setObject(1, matchId);
+            match.setObject(2, runId);
+            assertThat(match.executeUpdate()).isEqualTo(1);
+            for (Object[] item : new Object[][] {{"LEDGER", ledgerId}, {"PSP", pspId}}) {
+                items.setObject(1, matchId);
+                items.setString(2, (String) item[0]);
+                items.setObject(3, item[1]);
+                assertThat(items.executeUpdate()).isEqualTo(1);
+            }
+        }
     }
 
     private BreakView breakOn(String subject) {
