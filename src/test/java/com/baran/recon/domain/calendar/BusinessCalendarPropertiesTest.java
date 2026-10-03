@@ -44,4 +44,17 @@ class BusinessCalendarPropertiesTest {
         assertThat(CALENDAR.businessDaysBetween(first, second))
                 .isEqualTo(-CALENDAR.businessDaysBetween(second, first));
     }
+
+    @Property(seed = SEED)
+    @Label("TDD 8.2: an item is before the first day within grace exactly when more business days than the grace have passed")
+    void graceCutoffSplitsByBusinessDaysPassed(@ForAll @IntRange(max = 365) int todayOffset,
+                                               @ForAll @IntRange(max = 40) int daysBefore,
+                                               @ForAll @IntRange(max = 10) int graceDays) {
+        LocalDate today = BASE.plusDays(todayOffset);
+        LocalDate valueDate = today.minusDays(daysBefore);
+
+        boolean pastGrace = valueDate.isBefore(CALENDAR.firstDayWithinGrace(today, graceDays));
+
+        assertThat(pastGrace).isEqualTo(CALENDAR.businessDaysBetween(valueDate, today) > graceDays);
+    }
 }

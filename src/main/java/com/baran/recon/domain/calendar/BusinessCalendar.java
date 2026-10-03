@@ -53,6 +53,23 @@ public record BusinessCalendar(Set<DayOfWeek> weekend, Set<LocalDate> holidays) 
         return countBusinessDays(from, to);
     }
 
+    /**
+     * The earliest value date still inside a grace period of {@code graceDays} business days on
+     * {@code today} (TDD 8.2). An item dated before it is past its grace period: more than
+     * {@code graceDays} business days lie after its value date, up to and including today. An item
+     * dated on it or later is not, so a set of items is split by one comparison of dates.
+     */
+    public LocalDate firstDayWithinGrace(LocalDate today, int graceDays) {
+        if (graceDays < 0) {
+            throw new InvalidCalendarException("a grace period is not negative");
+        }
+        LocalDate lastBusinessDay = today;
+        while (!isBusinessDay(lastBusinessDay)) {
+            lastBusinessDay = lastBusinessDay.minusDays(1);
+        }
+        return plusBusinessDays(lastBusinessDay, -graceDays);
+    }
+
     /** Business days in the half-open range (after, upTo]. */
     private long countBusinessDays(LocalDate after, LocalDate upTo) {
         return after.plusDays(1).datesUntil(upTo.plusDays(1)).filter(this::isBusinessDay).count();

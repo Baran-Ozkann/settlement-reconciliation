@@ -85,4 +85,28 @@ class BusinessCalendarTest {
 
         assertThat(calendar.isBusinessDay(MONDAY)).isTrue();
     }
+
+    @Test
+    @DisplayName("TDD 8.2: with a grace of one business day, Friday's item is past it on Tuesday, not on Monday")
+    void graceCountsBusinessDays() {
+        assertThat(weekendOnly.firstDayWithinGrace(MONDAY, 1)).isEqualTo(FRIDAY);
+        assertThat(weekendOnly.firstDayWithinGrace(TUESDAY, 1)).isEqualTo(MONDAY);
+        assertThat(weekendOnly.firstDayWithinGrace(TUESDAY, 0)).as("no grace: only today's items are inside it")
+                .isEqualTo(TUESDAY);
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: on a weekend or holiday the grace counts from the business day before it")
+    void graceOnANonBusinessDay() {
+        assertThat(weekendOnly.firstDayWithinGrace(SATURDAY_DATE, 1)).isEqualTo(THURSDAY);
+        assertThat(mondayHoliday.firstDayWithinGrace(MONDAY, 0)).isEqualTo(FRIDAY);
+        assertThat(mondayHoliday.firstDayWithinGrace(TUESDAY, 1)).as("the Monday holiday is not counted")
+                .isEqualTo(FRIDAY);
+    }
+
+    @Test
+    @DisplayName("a negative grace period is refused")
+    void negativeGraceIsRefused() {
+        assertThatThrownBy(() -> weekendOnly.firstDayWithinGrace(MONDAY, -1)).isInstanceOf(InvalidCalendarException.class);
+    }
 }
