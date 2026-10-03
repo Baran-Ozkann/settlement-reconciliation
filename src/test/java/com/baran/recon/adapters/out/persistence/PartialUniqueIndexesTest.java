@@ -18,6 +18,7 @@ import static com.baran.recon.adapters.out.persistence.Rows.MATCH;
 import static com.baran.recon.adapters.out.persistence.Rows.MATCH_ITEM;
 import static com.baran.recon.adapters.out.persistence.Rows.RESOLVED_BREAK;
 import static com.baran.recon.adapters.out.persistence.Rows.RUN;
+import static com.baran.recon.adapters.out.persistence.Rows.RUNNING_RUN;
 import static com.baran.recon.adapters.out.persistence.Rows.SECOND_MATCH;
 import static com.baran.recon.adapters.out.persistence.Rows.STATEMENT_FILE;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -139,6 +140,30 @@ class PartialUniqueIndexesTest {
 
             assertRefusedBy(jdbc, STATEMENT_FILE.with("id", text("0a000000-0000-4000-8000-000000000002"))
                     .with("statement_reference", text("STMT-2")).insert(), "statement_files_sha256_ingested_unique");
+        });
+    }
+
+    @Test
+    @DisplayName("TDD 5.3: a source cannot have a second run while one is RUNNING")
+    void oneRunningRunPerSource() throws SQLException {
+        RolledBackTransaction.run(database, jdbc -> {
+            insert(jdbc, RUNNING_RUN);
+
+            assertRefusedBy(jdbc, RUNNING_RUN.with("id", text("c0000000-0000-4000-8000-000000000003")).insert(),
+                    "reconciliation_runs_one_running_per_source");
+        });
+    }
+
+    @Test
+    @DisplayName("TDD 5.3: two sources each have a RUNNING run, and finished runs do not block a source")
+    void runningRunsOfOtherSourcesAndFinishedRunsAreAllowed() throws SQLException {
+        RolledBackTransaction.run(database, jdbc -> {
+            insert(jdbc, RUN, RUN.with("id", text("c0000000-0000-4000-8000-000000000004")).with("status", text("FAILED"))
+                    .with("stats", "NULL"), RUNNING_RUN);
+
+            assertThatCode(() -> jdbc.execute(RUNNING_RUN.with("id", text("c0000000-0000-4000-8000-000000000003"))
+                    .with("source_code", text("PSP_BETA")).insert()))
+                    .doesNotThrowAnyException();
         });
     }
 

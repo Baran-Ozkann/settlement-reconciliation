@@ -75,6 +75,11 @@ final class Rows {
             "finished_at", text("2026-09-26T10:01:00Z"),
             "triggered_by", text("system"));
 
+    static final Row RUNNING_RUN = RUN.with("id", text("c0000000-0000-4000-8000-000000000002"))
+            .with("status", text("RUNNING"))
+            .with("stats", "NULL")
+            .with("finished_at", "NULL");
+
     static final Row SOURCE_STATE = Row.of("sources_state",
             "source_code", text("PSP_ALPHA"),
             "last_run_id", RUN.literal("id"),

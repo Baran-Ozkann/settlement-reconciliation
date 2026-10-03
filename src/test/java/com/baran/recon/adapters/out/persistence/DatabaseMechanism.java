@@ -20,6 +20,7 @@ import static com.baran.recon.adapters.out.persistence.Rows.PSP_LINE;
 import static com.baran.recon.adapters.out.persistence.Rows.RESOLVED_BREAK;
 import static com.baran.recon.adapters.out.persistence.Rows.RESOLVING_EVENT;
 import static com.baran.recon.adapters.out.persistence.Rows.RUN;
+import static com.baran.recon.adapters.out.persistence.Rows.RUNNING_RUN;
 import static com.baran.recon.adapters.out.persistence.Rows.SECOND_MATCH;
 import static com.baran.recon.adapters.out.persistence.Rows.SOURCE_STATE;
 import static com.baran.recon.adapters.out.persistence.Rows.STATEMENT_FILE;
@@ -143,6 +144,10 @@ enum DatabaseMechanism {
     RECONCILIATION_RUNS_CONFIG_SNAPSHOT_OBJECT(CHECK, "reconciliation_runs",
             "reconciliation_runs_config_snapshot_object",
             List.of(), RUN.with("config_snapshot", text("[]"))),
+    // TDD 5.3: a second RUNNING run for the source. A finished run of the source (RUN) is no obstacle.
+    RECONCILIATION_RUNS_ONE_RUNNING_PER_SOURCE(UNIQUE_INDEX, "reconciliation_runs",
+            "reconciliation_runs_one_running_per_source",
+            List.of(RUN, RUNNING_RUN), RUNNING_RUN.with("id", text("c0000000-0000-4000-8000-000000000003"))),
 
     SOURCES_STATE_PK(PRIMARY_KEY, "sources_state", "sources_state_pk",
             List.of(RUN, SOURCE_STATE), SOURCE_STATE.with("updated_at", text("2026-09-26T11:00:00Z"))),
