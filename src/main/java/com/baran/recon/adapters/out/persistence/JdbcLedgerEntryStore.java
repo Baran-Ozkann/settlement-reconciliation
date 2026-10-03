@@ -3,6 +3,7 @@ package com.baran.recon.adapters.out.persistence;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -55,6 +56,18 @@ class JdbcLedgerEntryStore implements LedgerEntryStore {
              WHERE id = :id
             """;
 
+    private static final String COUNT_IN_SCOPE = """
+            SELECT count(*)
+              FROM ledger_entries
+             WHERE source_code = :sourceCode AND value_date BETWEEN :from AND :to
+            """;
+
+    private static final String COUNT_WITHOUT_VALUE_DATE = """
+            SELECT count(*)
+              FROM ledger_entries
+             WHERE source_code = :sourceCode AND value_date IS NULL
+            """;
+
     private final JdbcClient jdbc;
     private final NamedParameterJdbcTemplate batch;
 
@@ -100,6 +113,20 @@ class JdbcLedgerEntryStore implements LedgerEntryStore {
     @Override
     public Optional<LedgerEntry> findById(UUID id) {
         return jdbc.sql(SELECT_BY_ID).param("id", id).query(JdbcLedgerEntryStore::map).optional();
+    }
+
+    @Override
+    public long countInScope(SourceCode source, LocalDate from, LocalDate to) {
+        return jdbc.sql(COUNT_IN_SCOPE)
+                .param("sourceCode", source.value())
+                .param("from", from)
+                .param("to", to)
+                .query(Long.class).single();
+    }
+
+    @Override
+    public long countWithoutValueDate(SourceCode source) {
+        return jdbc.sql(COUNT_WITHOUT_VALUE_DATE).param("sourceCode", source.value()).query(Long.class).single();
     }
 
     private static boolean violatesEntryIdIndex(DuplicateKeyException duplicate) {

@@ -1,10 +1,12 @@
 package com.baran.recon.application.port;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import com.baran.recon.domain.item.LedgerEntry;
+import com.baran.recon.domain.item.SourceCode;
 
 /** The local projection of ledger entries (TDD 5.3). */
 public interface LedgerEntryStore {
@@ -31,4 +33,13 @@ public interface LedgerEntryStore {
     List<Boolean> storeAllIfAbsent(List<LedgerEntry> entries);
 
     Optional<LedgerEntry> findById(UUID id);
+
+    /**
+     * The source's entries with a value date in {@code [from, to]}: a run's scope on the ledger side
+     * (TDD 8.2). An entry with no value date is in no run's scope (FR-MAT-9).
+     */
+    long countInScope(SourceCode source, LocalDate from, LocalDate to);
+
+    /** The source's entries with no value date (FR-MAT-10): five-field history, never in scope. */
+    long countWithoutValueDate(SourceCode source);
 }

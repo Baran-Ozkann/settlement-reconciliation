@@ -1,5 +1,6 @@
 package com.baran.recon.adapters.in.kafka;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -13,6 +14,7 @@ import org.springframework.dao.TransientDataAccessResourceException;
 
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.domain.item.LedgerEntry;
+import com.baran.recon.domain.item.SourceCode;
 
 /**
  * The application's own store, wrapped so a test can make batches fail after their insert, inside
@@ -66,6 +68,16 @@ final class FailingLedgerEntryStore implements LedgerEntryStore {
     @Override
     public Optional<LedgerEntry> findById(UUID id) {
         return delegate.findById(id);
+    }
+
+    @Override
+    public long countInScope(SourceCode source, LocalDate from, LocalDate to) {
+        return delegate.countInScope(source, from, to);
+    }
+
+    @Override
+    public long countWithoutValueDate(SourceCode source) {
+        return delegate.countWithoutValueDate(source);
     }
 
     /** Import into a test context to wrap its store. */

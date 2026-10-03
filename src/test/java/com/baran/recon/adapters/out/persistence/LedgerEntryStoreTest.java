@@ -189,6 +189,28 @@ class LedgerEntryStoreTest {
         return new TransactionTemplate(transactions).execute(status -> work.get());
     }
 
+    @Test
+    @DisplayName("FR-MAT-9, FR-MAT-10: an entry with no value date is counted apart and is in no run's scope")
+    void entriesAreCountedPerSourceInScopeOrWithoutValueDate() {
+        SourceCode counted = SourceCode.of("PSP_COUNTED");
+        store.storeIfAbsent(withSource(dated(IDS.incrementAndGet(), IDS.incrementAndGet(), "TRANSFER"), counted));
+        store.storeIfAbsent(withSource(undated(IDS.incrementAndGet()), counted));
+        store.storeIfAbsent(withSource(undated(IDS.incrementAndGet()), counted));
+        store.storeIfAbsent(withSource(undated(IDS.incrementAndGet()), SourceCode.of("PSP_NOT_COUNTED")));
+        LocalDate valueDate = LocalDate.of(2026, 9, 24);
+
+        assertThat(store.countInScope(counted, valueDate, valueDate)).isEqualTo(1);
+        assertThat(store.countInScope(counted, valueDate.minusDays(30), valueDate.plusDays(30))).isEqualTo(1);
+        assertThat(store.countInScope(counted, valueDate.plusDays(1), valueDate.plusDays(2))).isZero();
+        assertThat(store.countWithoutValueDate(counted)).isEqualTo(2);
+    }
+
+    private static LedgerEntry withSource(LedgerEntry entry, SourceCode source) {
+        return new LedgerEntry(entry.id(), entry.eventId(), entry.ledgerEntryId(), entry.transactionId(),
+                entry.accountId(), source, entry.amount(), entry.txType(), entry.createdAt(), entry.valueDate(),
+                entry.receivedAt());
+    }
+
     private static LedgerEntry redelivery(LedgerEntry original) {
         return new LedgerEntry(UUID.randomUUID(), original.eventId(), original.ledgerEntryId(),
                 original.transactionId(), original.accountId(), original.source(), original.amount(),

@@ -213,5 +213,18 @@ class ProjectLedgerEventsTest {
         public Optional<LedgerEntry> findById(UUID id) {
             return rows.values().stream().filter(row -> row.id().equals(id)).findFirst();
         }
+
+        @Override
+        public long countInScope(SourceCode source, LocalDate from, LocalDate to) {
+            return rows.values().stream().filter(row -> row.source().equals(source))
+                    .filter(row -> row.valueDate().filter(date -> !date.isBefore(from) && !date.isAfter(to)).isPresent())
+                    .count();
+        }
+
+        @Override
+        public long countWithoutValueDate(SourceCode source) {
+            return rows.values().stream().filter(row -> row.source().equals(source))
+                    .filter(row -> row.valueDate().isEmpty()).count();
+        }
     }
 }
