@@ -560,6 +560,44 @@ class StageAMatchingTest {
                 .isEmpty();
     }
 
+    @Test
+    @DisplayName("TDD 8.2: re-running the same range with no new data writes its run row and nothing else")
+    void reRunWithNoNewDataWritesOnlyItsRunRow() {
+        UUID exact = UUID.randomUUID();
+        UUID conflicting = UUID.randomUUID();
+        UUID duplicated = UUID.randomUUID();
+        fixture.ledger(source, exact, 1_000, TRY, TUESDAY);
+        fixture.psp(source, "L-EXACT", exact.toString(), 1_000, TRY, TUESDAY);
+        fixture.ledger(source, conflicting, 2_000, TRY, TUESDAY);
+        fixture.psp(source, "L-CONFLICT", conflicting.toString(), 2_100, TRY, TUESDAY);
+        fixture.psp(source, "L-DUP-1", duplicated.toString(), 3_000, TRY, TUESDAY);
+        fixture.psp(source, "L-DUP-2", duplicated.toString(), 3_000, TRY, TUESDAY);
+        fixture.ledger(source, UUID.randomUUID(), 4_000, TRY, TUESDAY);
+        fixture.ledger(source, UUID.randomUUID(), 4_000, TRY, TUESDAY);
+        fixture.psp(source, "L-AMBIGUOUS", null, 4_000, TRY, TUESDAY);
+        fixture.ledger(source, UUID.randomUUID(), 5_000, TRY, TUESDAY);
+        fixture.psp(source, "L-FALLBACK", "ORDER-5", 5_000, TRY, TUESDAY);
+        fixture.ledger(source, UUID.randomUUID(), 6_000, TRY, MONDAY);
+        fixture.psp(source, "L-MISSING", null, 7_000, TRY, MONDAY);
+        ReconciliationRun first = run(MONDAY, FRIDAY);
+        List<String> matchesBefore = fixture.matchRows(source);
+        List<BreakView> breaksBefore = fixture.breaks(source);
+        List<String> eventsBefore = breaksBefore.stream().flatMap(found -> fixture.eventsOf(found.id()).stream()).toList();
+        assertThat(matchesBefore).as("the first run matched by A1 and A3").hasSize(2);
+        assertThat(breaksBefore).extracting(BreakView::type).as("and opened a break of every Stage A kind")
+                .contains("AMOUNT_MISMATCH", "DUPLICATE_LINE", "AMBIGUOUS_MATCH", "MISSING_IN_PSP", "MISSING_IN_LEDGER");
+
+        ReconciliationRun second = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matchRows(source)).isEqualTo(matchesBefore);
+        assertThat(fixture.breaks(source)).isEqualTo(breaksBefore);
+        assertThat(fixture.breaks(source).stream().flatMap(found -> fixture.eventsOf(found.id()).stream()).toList())
+                .isEqualTo(eventsBefore);
+        assertThat(second.stats()).isEqualTo(first.stats());
+        assertThat(jdbc.sql("SELECT count(*) FROM reconciliation_runs WHERE source_code = :source")
+                .param("source", source.value()).query(Long.class).single()).isEqualTo(2);
+    }
+
     private BreakView breakOn(String subject) {
         List<BreakView> found = fixture.breaks(source).stream().filter(view -> view.subject().equals(subject)).toList();
         assertThat(found).as("breaks on %s", subject).hasSize(1);
