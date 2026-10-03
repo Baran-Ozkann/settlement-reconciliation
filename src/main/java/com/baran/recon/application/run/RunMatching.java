@@ -189,10 +189,12 @@ public final class RunMatching {
         int byReference = stageA.matchByReference(pass);
         int referenceBreaks = stageA.openReferenceBreaks(pass);
         FallbackOutcome byAmount = stageA.matchByAmount(pass);
-        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1 and {3} by A3, and opened "
-                        + "{4} reference and {5} ambiguity breaks", running.id(), running.source().value(),
-                Integer.toString(byReference), Integer.toString(byAmount.matched()), Integer.toString(referenceBreaks),
-                Integer.toString(byAmount.breaksOpened()));
+        int matchedLate = stageA.resolveMatchedLate(running.id(), "Matched by run " + running.id(), pass.at());
+        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1 and {3} by A3, opened "
+                        + "{4} reference and {5} ambiguity breaks, and resolved {6} as MATCHED_LATE", running.id(),
+                running.source().value(), Integer.toString(byReference), Integer.toString(byAmount.matched()),
+                Integer.toString(referenceBreaks), Integer.toString(byAmount.breaksOpened()),
+                Integer.toString(matchedLate));
     }
 
     /**

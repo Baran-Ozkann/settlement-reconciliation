@@ -128,6 +128,18 @@ final class StageAFixture {
         return id;
     }
 
+    /** An operator starts investigating the break, as Phase 7's transition endpoint will. */
+    void investigate(BreakStore breaks, UUID breakId) {
+        breaks.apply(breaks.findById(breakId).orElseThrow().startInvestigation(Actor.operator("operator-001"),
+                Optional.empty(), Instant.parse("2026-10-12T08:30:00Z")));
+    }
+
+    /** The reasons a break's events record, in order; none is {@code -}. */
+    List<String> reasonsOf(UUID breakId) {
+        return jdbc.sql("SELECT coalesce(reason, '-') FROM break_events WHERE break_id = :breakId ORDER BY id")
+                .param("breakId", breakId).query(String.class).list();
+    }
+
     /** The source's matches, active or not. */
     List<MatchView> matches(SourceCode source) {
         return jdbc.sql("""

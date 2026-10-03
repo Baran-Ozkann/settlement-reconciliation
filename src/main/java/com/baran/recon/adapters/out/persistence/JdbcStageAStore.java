@@ -1,5 +1,8 @@
 package com.baran.recon.adapters.out.persistence;
 
+import java.time.Instant;
+import java.util.UUID;
+
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.SqlArrayValue;
 import org.springframework.stereotype.Repository;
@@ -255,6 +258,41 @@ class JdbcStageAStore implements StageAStore {
             MATCH_WRITES, BREAK_WRITES)
             + "\nSELECT (SELECT count(*) FROM new_match_event) AS matched, (SELECT count(*) FROM opened_event) AS opened";
 
+    /**
+     * FR-BRK-5. The breaks are locked before they are read, so their status is the latest committed
+     * one, and the update still requires it: the event then records the status the break really left.
+     * Only the three columns recon_app may update change.
+     */
+    private static final String RESOLVE_MATCHED_LATE = """
+            WITH matched_item AS (
+                SELECT item.side, item.item_id
+                  FROM match_items item
+                  JOIN matches made ON made.id = item.match_id
+                 WHERE made.run_id = :runId AND item.active
+            ),
+            target AS (
+                SELECT open_break.id, open_break.status
+                  FROM breaks open_break
+                  JOIN matched_item matched
+                    ON matched.side = open_break.item_side AND matched.item_id = open_break.item_id
+                 WHERE open_break.status <> 'RESOLVED'
+                   FOR UPDATE OF open_break
+            ),
+            resolved AS (
+                UPDATE breaks
+                   SET status = 'RESOLVED', resolution_code = 'MATCHED_LATE', resolved_at = :at
+                  FROM target
+                 WHERE breaks.id = target.id AND breaks.status = target.status
+                RETURNING breaks.id, target.status AS from_status
+            ),
+            resolved_event AS (
+                INSERT INTO break_events (break_id, from_status, to_status, resolution_code, actor, reason, occurred_at)
+                SELECT id, from_status, 'RESOLVED', 'MATCHED_LATE', :actor, :reason, :at FROM resolved
+                RETURNING break_id
+            )
+            SELECT count(*) FROM resolved_event
+            """;
+
     private final JdbcClient jdbc;
 
     JdbcStageAStore(JdbcClient jdbc) {
@@ -278,6 +316,16 @@ class JdbcStageAStore implements StageAStore {
                 .query((row, n) -> new FallbackOutcome(Math.toIntExact(row.getLong("matched")),
                         Math.toIntExact(row.getLong("opened"))))
                 .single();
+    }
+
+    @Override
+    public int resolveMatchedLate(UUID runId, String reason, Instant at) {
+        return Math.toIntExact(jdbc.sql(RESOLVE_MATCHED_LATE)
+                .param("runId", runId)
+                .param("reason", reason)
+                .param("actor", Actor.SYSTEM.name())
+                .param("at", timestamp(at))
+                .query(Long.class).single());
     }
 
     private JdbcClient.StatementSpec matching(String sql, StageAPass pass, StageARule rule) {

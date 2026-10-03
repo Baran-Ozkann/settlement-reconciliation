@@ -59,6 +59,15 @@ public interface StageAStore {
      */
     FallbackOutcome matchByAmount(StageAPass pass);
 
+    /**
+     * FR-BRK-5: resolves, as MATCHED_LATE by the system, every unresolved break whose subject is an
+     * item the run matched, appending each resolution's event with the given reason. A break that
+     * merely names a matched item among its related items is left alone.
+     *
+     * @return the breaks resolved
+     */
+    int resolveMatchedLate(UUID runId, String reason, Instant at);
+
     /** What A3 did: the matches it made and the ambiguity breaks it opened. */
     record FallbackOutcome(int matched, int breaksOpened) {
     }

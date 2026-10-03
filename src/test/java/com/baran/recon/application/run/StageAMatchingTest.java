@@ -392,6 +392,71 @@ class StageAMatchingTest {
                         tuple("AMBIGUOUS_MATCH", "PSP L-002", Set.of(entry)));
     }
 
+    @Test
+    @DisplayName("FR-BRK-5: a later run that matches an item resolves its open break as MATCHED_LATE, by the system, with its event")
+    void laterMatchResolvesTheOpenBreak() {
+        UUID referenced = UUID.randomUUID();
+        String first = fixture.ledger(source, referenced, 5_000, TRY, FRIDAY);
+        String second = fixture.ledger(source, UUID.randomUUID(), 5_000, TRY, FRIDAY);
+        fixture.psp(source, "L-001", null, 5_000, TRY, FRIDAY);
+        ReconciliationRun firstRun = run(FRIDAY, FRIDAY);
+        BreakView ambiguous = breakOn("PSP L-001");
+        assertThat(ambiguous.related()).containsExactlyInAnyOrder(first, second);
+
+        fixture.psp(source, "L-002", referenced.toString(), 5_000, TRY, FRIDAY);
+        ReconciliationRun secondRun = run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp, MatchView::runId)
+                .containsExactlyInAnyOrder(
+                        tuple("A1_EXACT_REFERENCE", first, "PSP L-002", secondRun.id()),
+                        tuple("A3_FALLBACK_UNIQUE", second, "PSP L-001", secondRun.id()));
+        assertThat(breakOn("PSP L-001")).isEqualTo(new BreakView(ambiguous.id(), "AMBIGUOUS_MATCH", "RESOLVED",
+                Optional.of("MATCHED_LATE"), firstRun.id(), "PSP L-001", Set.of(first, second)));
+        assertThat(fixture.eventsOf(ambiguous.id()))
+                .containsExactly("->OPEN:-:system", "OPEN>RESOLVED:MATCHED_LATE:system");
+        assertThat(fixture.reasonsOf(ambiguous.id())).containsExactly("-", "Matched by run " + secondRun.id());
+    }
+
+    @Test
+    @DisplayName("FR-BRK-5: a break under investigation is resolved MATCHED_LATE too, and its event leaves INVESTIGATING")
+    void investigatedBreakIsResolvedWhenItsItemMatches() {
+        UUID transaction = UUID.randomUUID();
+        fixture.psp(source, "L-001", transaction.toString(), 8_000, TRY, FRIDAY);
+        UUID investigated = fixture.openBreak(breaks, source, "L-001", BreakType.MISSING_IN_LEDGER);
+        fixture.investigate(breaks, investigated);
+        fixture.ledger(source, transaction, 8_000, TRY, FRIDAY);
+
+        run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).hasSize(1);
+        assertThat(breakOn("PSP L-001")).extracting(BreakView::status, BreakView::resolutionCode)
+                .containsExactly("RESOLVED", Optional.of("MATCHED_LATE"));
+        assertThat(fixture.eventsOf(investigated)).containsExactly(
+                "->OPEN:-:operator-001", "OPEN>INVESTIGATING:-:operator-001", "INVESTIGATING>RESOLVED:MATCHED_LATE:system");
+    }
+
+    @Test
+    @DisplayName("FR-BRK-5: a break that only names a matched item among its related items stays open")
+    void breakNamingAMatchedItemStaysOpen() {
+        UUID referenced = UUID.randomUUID();
+        String first = fixture.ledger(source, referenced, 5_000, TRY, FRIDAY);
+        String second = fixture.ledger(source, UUID.randomUUID(), 5_000, TRY, FRIDAY);
+        fixture.psp(source, "L-001", null, 5_000, TRY, FRIDAY);
+        fixture.psp(source, "L-002", null, 5_000, TRY, FRIDAY);
+        run(FRIDAY, FRIDAY);
+        fixture.psp(source, "L-003", referenced.toString(), 5_000, TRY, FRIDAY);
+
+        run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple(first, "PSP L-003"));
+        assertThat(fixture.breaks(source)).extracting(BreakView::subject, BreakView::status, BreakView::related)
+                .as("each line now has one candidate, which the other line also has")
+                .containsExactlyInAnyOrder(
+                        tuple("PSP L-001", "OPEN", Set.of(first, second)),
+                        tuple("PSP L-002", "OPEN", Set.of(first, second)));
+    }
+
     private BreakView breakOn(String subject) {
         List<BreakView> found = fixture.breaks(source).stream().filter(view -> view.subject().equals(subject)).toList();
         assertThat(found).as("breaks on %s", subject).hasSize(1);
