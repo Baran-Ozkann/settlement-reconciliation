@@ -54,7 +54,14 @@ enum WithheldPrivilege {
             "DELETE FROM recon.bank_lines WHERE line_id = 'S-000001'",
             "GRANT DELETE ON recon.bank_lines TO recon_app", AfterGrant.SUCCEEDS),
 
-    // A run is never removed: its matches and breaks refer to it.
+    // A run is never removed: its matches and breaks refer to it. Its outcome is recorded in its
+    // status, stats and finish time alone; what it ran on and with is never rewritten (FR-MAT-8).
+    RECONCILIATION_RUNS_UPDATE_CONFIG_SNAPSHOT(inserts(RUN),
+            "UPDATE recon.reconciliation_runs SET config_snapshot = '{}' WHERE source_code = 'PSP_ALPHA'",
+            "GRANT UPDATE (config_snapshot) ON recon.reconciliation_runs TO recon_app", AfterGrant.SUCCEEDS),
+    RECONCILIATION_RUNS_UPDATE_SCOPE(inserts(RUN),
+            "UPDATE recon.reconciliation_runs SET value_date_to = '2026-09-30' WHERE source_code = 'PSP_ALPHA'",
+            "GRANT UPDATE (value_date_to) ON recon.reconciliation_runs TO recon_app", AfterGrant.SUCCEEDS),
     RECONCILIATION_RUNS_DELETE(inserts(RUN),
             "DELETE FROM recon.reconciliation_runs WHERE source_code = 'PSP_ALPHA'",
             "GRANT DELETE ON recon.reconciliation_runs TO recon_app", AfterGrant.SUCCEEDS),

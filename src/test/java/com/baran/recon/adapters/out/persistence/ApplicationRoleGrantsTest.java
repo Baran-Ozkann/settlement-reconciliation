@@ -40,9 +40,14 @@ class ApplicationRoleGrantsTest {
             Map.entry("break_events", Set.of("SELECT", "INSERT")),
             Map.entry("break_events_id_seq", Set.of("USAGE"))));
 
-    /** Column grants, as table.column:privilege. A break transition updates these three alone. */
+    /**
+     * Column grants, as table.column:privilege. A break transition updates its three alone, and a
+     * run's outcome its three (TDD 5.3).
+     */
     private static final Set<String> EXPECTED_COLUMNS = new TreeSet<>(Set.of(
-            "breaks.status:UPDATE", "breaks.resolution_code:UPDATE", "breaks.resolved_at:UPDATE"));
+            "breaks.status:UPDATE", "breaks.resolution_code:UPDATE", "breaks.resolved_at:UPDATE",
+            "reconciliation_runs.status:UPDATE", "reconciliation_runs.stats:UPDATE",
+            "reconciliation_runs.finished_at:UPDATE"));
 
     private static final String GRANTS = """
             SELECT c.relname, a.privilege_type
