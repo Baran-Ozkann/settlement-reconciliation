@@ -1,6 +1,7 @@
 package com.baran.recon.adapters.out.persistence;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -293,6 +294,48 @@ class JdbcStageAStore implements StageAStore {
             SELECT count(*) FROM resolved_event
             """;
 
+    /**
+     * The items named among the related items of an unresolved break: such an item is BROKEN, not
+     * pending, and gets no break of its own (TDD 8.2).
+     */
+    private static final String NAMED = """
+            named AS MATERIALIZED (
+                SELECT related.item ->> 'side' AS side, CAST(related.item ->> 'id' AS UUID) AS id
+                  FROM breaks open_break
+                 CROSS JOIN LATERAL jsonb_array_elements(open_break.related_items) AS related(item)
+                 WHERE open_break.status <> 'RESOLVED'
+            )""";
+
+    /** Pending items of the range past their side's grace period. */
+    private static final String GRACE_FINDINGS = """
+            found AS (
+                SELECT 'LEDGER' AS item_side, entry.id AS item_id, 'MISSING_IN_PSP' AS break_type,
+                       CAST('[]' AS JSONB) AS related_items
+                  FROM ledger_entries entry
+                 WHERE entry.source_code = :source AND entry.value_date BETWEEN :from AND :to
+                   AND entry.value_date < :ledgerGraceStart
+                   AND NOT EXISTS (SELECT 1 FROM match_items item
+                                    WHERE item.side = 'LEDGER' AND item.item_id = entry.id AND item.active)
+                   AND NOT EXISTS (SELECT 1 FROM breaks subject
+                                    WHERE subject.item_side = 'LEDGER' AND subject.item_id = entry.id
+                                      AND subject.status <> 'RESOLVED')
+                   AND NOT EXISTS (SELECT 1 FROM named WHERE named.side = 'LEDGER' AND named.id = entry.id)
+                UNION ALL
+                SELECT 'PSP', line.id, 'MISSING_IN_LEDGER', CAST('[]' AS JSONB)
+                  FROM psp_lines line
+                 WHERE line.source_code = :source AND line.value_date BETWEEN :from AND :to
+                   AND line.value_date < :pspGraceStart
+                   AND NOT EXISTS (SELECT 1 FROM match_items item
+                                    WHERE item.side = 'PSP' AND item.item_id = line.id AND item.active)
+                   AND NOT EXISTS (SELECT 1 FROM breaks subject
+                                    WHERE subject.item_side = 'PSP' AND subject.item_id = line.id
+                                      AND subject.status <> 'RESOLVED')
+                   AND NOT EXISTS (SELECT 1 FROM named WHERE named.side = 'PSP' AND named.id = line.id)
+            )""";
+
+    private static final String OPEN_GRACE_BREAKS = "WITH " + String.join(",\n", NAMED, GRACE_FINDINGS, BREAK_WRITES)
+            + "\nSELECT count(*) FROM opened_event";
+
     private final JdbcClient jdbc;
 
     JdbcStageAStore(JdbcClient jdbc) {
@@ -325,6 +368,20 @@ class JdbcStageAStore implements StageAStore {
                 .param("reason", reason)
                 .param("actor", Actor.SYSTEM.name())
                 .param("at", timestamp(at))
+                .query(Long.class).single());
+    }
+
+    @Override
+    public int openGraceBreaks(StageAPass pass, LocalDate ledgerGraceStart, LocalDate pspGraceStart) {
+        return Math.toIntExact(jdbc.sql(OPEN_GRACE_BREAKS)
+                .param("runId", pass.runId())
+                .param("source", pass.source().value())
+                .param("from", pass.valueDateFrom())
+                .param("to", pass.valueDateTo())
+                .param("ledgerGraceStart", ledgerGraceStart)
+                .param("pspGraceStart", pspGraceStart)
+                .param("actor", Actor.SYSTEM.name())
+                .param("at", timestamp(pass.at()))
                 .query(Long.class).single());
     }
 

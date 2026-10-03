@@ -457,6 +457,51 @@ class StageAMatchingTest {
                         tuple("PSP L-002", "OPEN", Set.of(first, second)));
     }
 
+    @Test
+    @DisplayName("TDD 8.2: a ledger entry unmatched past 3 business days is MISSING_IN_PSP; inside them it is pending")
+    void ledgerEntryPastItsGraceIsMissingInPsp() {
+        String late = fixture.ledger(source, UUID.randomUUID(), 1_000, TRY, TUESDAY);
+        fixture.ledger(source, UUID.randomUUID(), 2_000, TRY, WEDNESDAY);
+
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        BreakView missing = onlyBreak();
+        assertThat(missing).isEqualTo(new BreakView(missing.id(), "MISSING_IN_PSP", "OPEN", Optional.empty(), run.id(),
+                late, Set.of()));
+        assertThat(fixture.eventsOf(missing.id())).containsExactly("->OPEN:-:system");
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a PSP line unmatched past 1 business day is MISSING_IN_LEDGER; inside it it is pending")
+    void pspLinePastItsGraceIsMissingInLedger() {
+        fixture.psp(source, "L-THURSDAY", null, 1_000, TRY, FRIDAY.minusDays(1));
+        fixture.psp(source, "L-FRIDAY", null, 2_000, TRY, FRIDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(onlyBreak()).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactly("MISSING_IN_LEDGER", "PSP L-THURSDAY", Set.of());
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: an item named by a break, an item with a break, and an item outside the range get no grace break")
+    void graceBreaksOnlyForPendingItemsInRange() {
+        UUID transaction = UUID.randomUUID();
+        String named = fixture.ledger(source, transaction, 1_000, TRY, MONDAY);
+        fixture.psp(source, "L-CONFLICT", transaction.toString(), 1_500, TRY, MONDAY);
+        fixture.psp(source, "L-FLAGGED", null, 3_000, TRY, MONDAY);
+        UUID flagged = fixture.openBreak(breaks, source, "L-FLAGGED", BreakType.DUPLICATE_LINE);
+        fixture.ledger(source, UUID.randomUUID(), 4_000, TRY, FRIDAY_BEFORE);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactlyInAnyOrder(
+                        tuple("AMOUNT_MISMATCH", "PSP L-CONFLICT", Set.of(named)),
+                        tuple("DUPLICATE_LINE", "PSP L-FLAGGED", Set.of()));
+        assertThat(fixture.eventsOf(flagged)).hasSize(1);
+    }
+
     private BreakView breakOn(String subject) {
         List<BreakView> found = fixture.breaks(source).stream().filter(view -> view.subject().equals(subject)).toList();
         assertThat(found).as("breaks on %s", subject).hasSize(1);

@@ -68,6 +68,16 @@ public interface StageAStore {
      */
     int resolveMatchedLate(UUID runId, String reason, Instant at);
 
+    /**
+     * The grace-period breaks, last (TDD 8.2): MISSING_IN_PSP on each ledger entry and
+     * MISSING_IN_LEDGER on each PSP line in the run's range that is still pending - in no active
+     * match, the subject of no unresolved break and named among the related items of none - and
+     * whose value date is before the first day still inside its side's grace period.
+     *
+     * @return the breaks opened
+     */
+    int openGraceBreaks(StageAPass pass, LocalDate ledgerGraceStart, LocalDate pspGraceStart);
+
     /** What A3 did: the matches it made and the ambiguity breaks it opened. */
     record FallbackOutcome(int matched, int breaksOpened) {
     }

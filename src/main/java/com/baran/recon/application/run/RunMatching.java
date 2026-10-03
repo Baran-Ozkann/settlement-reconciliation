@@ -190,11 +190,15 @@ public final class RunMatching {
         int referenceBreaks = stageA.openReferenceBreaks(pass);
         FallbackOutcome byAmount = stageA.matchByAmount(pass);
         int matchedLate = stageA.resolveMatchedLate(running.id(), "Matched by run " + running.id(), pass.at());
+        LocalDate today = LocalDate.ofInstant(pass.at(), valueDateZone);
+        int graceBreaks = stageA.openGraceBreaks(pass,
+                calendar.firstDayWithinGrace(today, settings.graceDaysLedgerUnmatched()),
+                calendar.firstDayWithinGrace(today, settings.graceDaysPspUnmatched()));
         LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1 and {3} by A3, opened "
-                        + "{4} reference and {5} ambiguity breaks, and resolved {6} as MATCHED_LATE", running.id(),
-                running.source().value(), Integer.toString(byReference), Integer.toString(byAmount.matched()),
-                Integer.toString(referenceBreaks), Integer.toString(byAmount.breaksOpened()),
-                Integer.toString(matchedLate));
+                        + "{4} reference, {5} ambiguity and {6} grace breaks, and resolved {7} as MATCHED_LATE",
+                running.id(), running.source().value(), Integer.toString(byReference),
+                Integer.toString(byAmount.matched()), Integer.toString(referenceBreaks),
+                Integer.toString(byAmount.breaksOpened()), Integer.toString(graceBreaks), Integer.toString(matchedLate));
     }
 
     /**
