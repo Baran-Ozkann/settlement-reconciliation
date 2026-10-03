@@ -21,12 +21,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * empty in Phase 1, so this is the evidence that each rule rejects what it names and accepts what
  * it does not.
  */
-@DisplayName("TDD 5.2, INV-8, INV-9: each architecture rule rejects its violation")
+@DisplayName("TDD 5.2, TDD 11.1, INV-8, INV-9: each architecture rule rejects its violation")
 class ArchitectureRulesCatchViolationsTest {
 
     private static final String FIXTURES = "com.baran.archfixture.";
 
-    @ParameterizedTest(name = "{0}")
+    @ParameterizedTest(name = "{0}: {2}")
     @MethodSource("violations")
     void ruleRejectsItsFixture(String fixture, Function<ArchitectureRules, ArchRule> rule, String offender) {
         EvaluationResult result = rule.apply(ArchitectureRules.forRoot(FIXTURES + fixture))
@@ -55,12 +55,16 @@ class ArchitectureRulesCatchViolationsTest {
                 violation("rawproducer", ArchitectureRules::kafkaProducersOnlyInTheKafkaAdapter, "LedgerWriter"),
                 violation("ledgercode", ArchitectureRules::nothingDependsOnTheLedgersCode, "Mirror"),
                 violation("filenamepath", ArchitectureRules::noFilesystemWhereTheUploadIsHandled, "UploadStore"),
-                violation("usecasefile", ArchitectureRules::noFilesystemWhereTheUploadIsHandled, "SpoolUpload"));
+                violation("usecasefile", ArchitectureRules::noFilesystemWhereTheUploadIsHandled, "SpoolUpload"),
+                violation("configpath", ArchitectureRules::noPathBoundFromConfiguration, "UploadProperties.directory"),
+                violation("configpath", ArchitectureRules::noPathBoundFromConfiguration, "UploadProperties$Mirror.roots"));
     }
 
     /**
      * The clean tree has a class in every layer, including BigDecimal in the file adapter and
-     * JdbcClient and the PostgreSQL driver in persistence, a KafkaTemplate in the Kafka adapter, so each rule has something to check and something it must allow.
+     * JdbcClient and the PostgreSQL driver in persistence, a KafkaTemplate in the Kafka adapter and a
+     * configuration properties record that binds a directory as text, so each rule has something to
+     * check and something it must allow.
      * Empty selections are refused here, unlike in the application run: a rule whose selection
      * matched nothing in a tree that fills every layer would be checking nothing anywhere.
      */

@@ -1,18 +1,22 @@
 package com.baran.recon.architecture;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
+import com.tngtech.archunit.core.domain.JavaConstructor;
 import com.tngtech.archunit.core.domain.JavaField;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
+import com.tngtech.archunit.core.domain.JavaType;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
@@ -56,6 +60,10 @@ final class ArchitectureRules {
                             java.io.RandomAccessFile.class))
                     .as("the filesystem API");
 
+    /** A {@code @ConfigurationProperties} type, or a type nested in one at any depth. */
+    private static final DescribedPredicate<JavaClass> BOUND_FROM_CONFIGURATION =
+            DescribedPredicate.describe("are bound from configuration", ArchitectureRules::boundFromConfiguration);
+
     private final String root;
 
     private ArchitectureRules(String root) {
@@ -77,7 +85,8 @@ final class ArchitectureRules {
                 postgresDriverOnlyInPersistence(),
                 kafkaProducersOnlyInTheKafkaAdapter(),
                 nothingDependsOnTheLedgersCode(),
-                noFilesystemWhereTheUploadIsHandled());
+                noFilesystemWhereTheUploadIsHandled(),
+                noPathBoundFromConfiguration());
     }
 
     /**
@@ -91,6 +100,20 @@ final class ArchitectureRules {
                         pkg("adapters.in.file.."))
                 .should().dependOnClassesThat(FILESYSTEM_API)
                 .because("an uploaded file name must never become a path (FR-ING-9)")
+                .allowEmptyShould(true);
+    }
+
+    /**
+     * TDD 11.1: a filesystem path in configuration is bound as text and made a {@code Path} with
+     * {@code Path.of}. Bound as a {@code Path}, Spring's editor first tries the text as a resource
+     * location, and Phase 4.1 found a configured {@code /} bound as the classpath root. A type
+     * nested in a {@code @ConfigurationProperties} type is bound the same way, so it is held to the
+     * same rule, and a {@code Path} inside a collection or an optional counts as one.
+     */
+    ArchRule noPathBoundFromConfiguration() {
+        return classes().that().resideInAPackage(pkg("..")).and(BOUND_FROM_CONFIGURATION)
+                .should(notHaveAPathComponent())
+                .because("a configured path is bound as text and made a Path with Path.of (TDD 11.1)")
                 .allowEmptyShould(true);
     }
 
@@ -206,6 +229,44 @@ final class ArchitectureRules {
                 }
             }
         };
+    }
+
+    private static boolean boundFromConfiguration(JavaClass javaClass) {
+        for (Optional<JavaClass> type = Optional.of(javaClass); type.isPresent(); type = type.get().getEnclosingClass()) {
+            if (type.get().isAnnotatedWith(ConfigurationProperties.class)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Fields carry a record's components and a bean's properties; constructors carry what is bound through them. */
+    private static ArchCondition<JavaClass> notHaveAPathComponent() {
+        return new ArchCondition<>("not have a java.nio.file.Path component") {
+            @Override
+            public void check(JavaClass javaClass, ConditionEvents events) {
+                for (JavaField field : javaClass.getFields()) {
+                    reportIfPath(field.getType(), field.getFullName(), javaClass, events);
+                }
+                for (JavaConstructor constructor : javaClass.getConstructors()) {
+                    for (JavaType parameter : constructor.getParameterTypes()) {
+                        reportIfPath(parameter, constructor.getFullName() + " takes", javaClass, events);
+                    }
+                }
+            }
+        };
+    }
+
+    private static void reportIfPath(JavaType type, String where, JavaClass owner, ConditionEvents events) {
+        for (JavaClass involved : type.getAllInvolvedRawTypes()) {
+            JavaClass base = involved;
+            while (base.isArray()) {
+                base = base.getComponentType();
+            }
+            if (base.isAssignableTo(java.nio.file.Path.class)) {
+                events.add(SimpleConditionEvent.violated(owner, where + " binds " + type.getName()));
+            }
+        }
     }
 
     private static void reportIfFloating(JavaClass type, String where, ConditionEvents events) {
