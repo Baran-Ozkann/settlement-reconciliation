@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Configuration;
 
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunStore;
+import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.application.run.RunMatching;
 import com.baran.recon.domain.calendar.BusinessCalendar;
@@ -25,10 +26,10 @@ class MatchingConfiguration {
 
     /** {@code recon.value-date-zone} and the business calendar are snapshotted onto a run (FR-MAT-8). */
     @Bean
-    RunMatching runMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries,
+    RunMatching runMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries, StageAStore stageA,
                             Transactions transactions, Clock clock,
                             @Value("${recon.value-date-zone}") ZoneId valueDateZone, BusinessCalendar calendar) {
-        return new RunMatching(sources, runs, ledgerEntries, transactions, clock, valueDateZone, calendar);
+        return new RunMatching(sources, runs, ledgerEntries, stageA, transactions, clock, valueDateZone, calendar);
     }
 
     /**

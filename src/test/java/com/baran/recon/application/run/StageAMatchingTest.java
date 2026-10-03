@@ -1,0 +1,183 @@
+package com.baran.recon.application.run;
+
+import java.time.LocalDate;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+
+import com.baran.recon.application.port.LedgerEntryStore;
+import com.baran.recon.application.port.StatementStore;
+import com.baran.recon.application.port.Transactions;
+import com.baran.recon.application.run.StageAFixture.MatchView;
+import com.baran.recon.domain.item.SourceCode;
+import com.baran.recon.domain.run.ReconciliationRun;
+import com.baran.recon.domain.run.RunStatus;
+import com.baran.recon.support.ReconPostgres;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.groups.Tuple.tuple;
+
+/**
+ * Stage A's rules and details (TDD 8.2) through the run use case, against the application's own
+ * database as recon_app. Every test takes a source of its own, so tests never see each other's items
+ * in the shared database. Runs are at {@link FixedRunClock#NOW}, Monday 2026-10-12; each source has a
+ * window of 2 business days and grace periods of 3 (ledger) and 1 (PSP), and Thursday 2026-10-29 is
+ * a holiday.
+ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@ActiveProfiles("test")
+@Import(FixedRunClock.class)
+@DisplayName("TDD 8.2: Stage A matches ledger entries and PSP lines by its rules, in their order")
+class StageAMatchingTest {
+
+    /** Event ids and source codes no other test class uses; the shared database outlives each class. */
+    private static final long FIRST_EVENT_ID = 9_700_000_000L;
+    private static final String SOURCE_PREFIX = "PSP_STAGE_A_";
+    private static final int SOURCES = 40;
+    private static final AtomicInteger NEXT_SOURCE = new AtomicInteger();
+
+    // A week with a weekend after it: 2026-10-05 is a Monday.
+    private static final LocalDate FRIDAY_BEFORE = LocalDate.of(2026, 10, 2);
+    private static final LocalDate MONDAY = LocalDate.of(2026, 10, 5);
+    private static final LocalDate TUESDAY = LocalDate.of(2026, 10, 6);
+    private static final LocalDate WEDNESDAY = LocalDate.of(2026, 10, 7);
+    private static final LocalDate FRIDAY = LocalDate.of(2026, 10, 9);
+
+    private static final String TRY = "TRY";
+
+    @DynamicPropertySource
+    static void configure(DynamicPropertyRegistry registry) {
+        ReconPostgres.register(registry);
+        registry.add("recon.business-calendar.holidays[0]", () -> "2026-10-29");
+        for (int i = 0; i < SOURCES; i++) {
+            String source = "recon.sources[" + i + "].";
+            String code = String.format("%s%03d", SOURCE_PREFIX, i);
+            registry.add(source + "code", () -> code);
+            registry.add(source + "type", () -> "PSP_SETTLEMENT");
+            registry.add(source + "value-date-window-days", () -> "2");
+            registry.add(source + "grace-days-ledger-unmatched", () -> "3");
+            registry.add(source + "grace-days-psp-unmatched", () -> "1");
+        }
+    }
+
+    @Autowired
+    private RunMatching matching;
+
+    @Autowired
+    private LedgerEntryStore ledgerEntries;
+
+    @Autowired
+    private StatementStore statements;
+
+    @Autowired
+    private Transactions transactions;
+
+    @Autowired
+    private JdbcClient jdbc;
+
+    private StageAFixture fixture;
+    private SourceCode source;
+
+    @BeforeEach
+    void takeASourceOfItsOwn() {
+        fixture = new StageAFixture(ledgerEntries, statements, transactions, jdbc,
+                FIRST_EVENT_ID + 1_000L * NEXT_SOURCE.get());
+        source = SourceCode.of(String.format("%s%03d", SOURCE_PREFIX, NEXT_SOURCE.getAndIncrement()));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-6, A1_EXACT_REFERENCE: same reference, currency and amount within the window is a match, recorded in full")
+    void exactReferenceMatches() {
+        UUID transaction = UUID.randomUUID();
+        String entry = fixture.ledger(source, transaction, 12_500, TRY, TUESDAY);
+        String line = fixture.psp(source, "L-001", transaction.toString(), 12_500, TRY, WEDNESDAY);
+
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).containsExactly(
+                new MatchView("A1_EXACT_REFERENCE", 1, "ONE_TO_ONE", "ACTIVE", 0, TRY, false, run.id(), entry, line, 1));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: references are compared as UUIDs, so case and formatting do not matter")
+    void referencesAreComparedAsUuids() {
+        UUID upper = UUID.randomUUID();
+        UUID bare = UUID.randomUUID();
+        UUID braced = UUID.randomUUID();
+        String upperEntry = fixture.ledger(source, upper, 1_000, TRY, TUESDAY);
+        String bareEntry = fixture.ledger(source, bare, 2_000, TRY, TUESDAY);
+        String bracedEntry = fixture.ledger(source, braced, 3_000, TRY, TUESDAY);
+        fixture.psp(source, "L-UPPER", upper.toString().toUpperCase(), 1_000, TRY, TUESDAY);
+        fixture.psp(source, "L-BARE", bare.toString().replace("-", ""), 2_000, TRY, TUESDAY);
+        fixture.psp(source, "L-BRACED", "{" + braced + "}", 3_000, TRY, TUESDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactlyInAnyOrder(
+                        tuple("A1_EXACT_REFERENCE", upperEntry, "PSP L-UPPER"),
+                        tuple("A1_EXACT_REFERENCE", bareEntry, "PSP L-BARE"),
+                        tuple("A1_EXACT_REFERENCE", bracedEntry, "PSP L-BRACED"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a candidate outside the run's range is matched within the window, in business days, and not beyond it")
+    void candidatesOutsideTheRangeWithinTheWindow() {
+        UUID twoDaysBack = UUID.randomUUID();
+        UUID threeDaysBack = UUID.randomUUID();
+        UUID lineAfterRange = UUID.randomUUID();
+        String earlierEntry = fixture.ledger(source, twoDaysBack, 1_000, TRY, MONDAY);
+        fixture.psp(source, "L-TWO-BACK", twoDaysBack.toString(), 1_000, TRY, WEDNESDAY);
+        fixture.ledger(source, threeDaysBack, 2_000, TRY, FRIDAY_BEFORE);
+        fixture.psp(source, "L-THREE-BACK", threeDaysBack.toString(), 2_000, TRY, WEDNESDAY);
+        String entryInRange = fixture.ledger(source, lineAfterRange, 3_000, TRY, WEDNESDAY);
+        fixture.psp(source, "L-AFTER", lineAfterRange.toString(), 3_000, TRY, FRIDAY);
+
+        run(WEDNESDAY, WEDNESDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp).containsExactlyInAnyOrder(
+                tuple(earlierEntry, "PSP L-TWO-BACK"),
+                tuple(entryInRange, "PSP L-AFTER"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: a configured holiday is not counted in the window")
+    void holidayIsNotCountedInTheWindow() {
+        UUID acrossHoliday = UUID.randomUUID();
+        String entry = fixture.ledger(source, acrossHoliday, 1_000, TRY, LocalDate.of(2026, 10, 28));
+        fixture.psp(source, "L-HOLIDAY", acrossHoliday.toString(), 1_000, TRY, LocalDate.of(2026, 11, 2));
+
+        run(LocalDate.of(2026, 10, 26), LocalDate.of(2026, 10, 30));
+
+        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple(entry, "PSP L-HOLIDAY"));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-9: an entry without a value date is never a candidate")
+    void entryWithoutValueDateIsNeverACandidate() {
+        UUID transaction = UUID.randomUUID();
+        fixture.undatedLedger(source, transaction, 1_000, TRY);
+        fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, TUESDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+    }
+
+    private ReconciliationRun run(LocalDate from, LocalDate to) {
+        ReconciliationRun run = matching.run(source.value(), from, to, "operator-001");
+        assertThat(run.status()).isEqualTo(RunStatus.COMPLETED);
+        return run;
+    }
+}

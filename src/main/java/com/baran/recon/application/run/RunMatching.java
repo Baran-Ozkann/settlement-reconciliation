@@ -17,14 +17,17 @@ import java.util.stream.Collectors;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunAlreadyRunningException;
 import com.baran.recon.application.port.RunStore;
+import com.baran.recon.application.port.StageAStore;
+import com.baran.recon.application.port.StageAStore.StageAPass;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
+import com.baran.recon.domain.calendar.BusinessDayIndex;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.StageARule;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.source.ConfiguredSources;
 import com.baran.recon.domain.source.SourceDefinition;
-import com.baran.recon.domain.source.SourceType;
+import com.baran.recon.domain.source.StageASettings;
 
 /**
  * Runs matching for one source and value-date range (TDD 5.3). In order:
@@ -61,19 +64,24 @@ public final class RunMatching {
 
     private static final Pattern SOURCE_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
 
+    /** The JDK's logger, so the application layer stays on java.* (TDD 5.2); it reaches the application's log. */
+    private static final System.Logger LOG = System.getLogger(RunMatching.class.getName());
+
     private final ConfiguredSources sources;
     private final RunStore runs;
     private final LedgerEntryStore ledgerEntries;
+    private final StageAStore stageA;
     private final Transactions transactions;
     private final Clock clock;
     private final ZoneId valueDateZone;
     private final BusinessCalendar calendar;
 
-    public RunMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries,
+    public RunMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries, StageAStore stageA,
                        Transactions transactions, Clock clock, ZoneId valueDateZone, BusinessCalendar calendar) {
         this.sources = Objects.requireNonNull(sources, "sources");
         this.runs = Objects.requireNonNull(runs, "runs");
         this.ledgerEntries = Objects.requireNonNull(ledgerEntries, "ledgerEntries");
+        this.stageA = Objects.requireNonNull(stageA, "stageA");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.valueDateZone = Objects.requireNonNull(valueDateZone, "valueDateZone");
@@ -155,9 +163,7 @@ public final class RunMatching {
     }
 
     private ReconciliationRun work(SourceDefinition source, ReconciliationRun running) {
-        if (source.type() == SourceType.PSP_SETTLEMENT) {
-            matchStageA(running);
-        }
+        source.stageA().ifPresent(stageA -> matchStageA(running, stageA));
         long inScope = ledgerEntries.countInScope(running.source(), running.valueDateFrom(), running.valueDateTo());
         long withoutValueDate = ledgerEntries.countWithoutValueDate(running.source());
         ReconciliationRun completed = running.complete(Map.of(
@@ -168,11 +174,20 @@ public final class RunMatching {
     }
 
     /**
-     * Stage A (TDD 8.2) runs here, inside the work transaction, so whatever it matches and opens
-     * commits with the run's COMPLETED or not at all. Its rules are not built yet, so a run matches
-     * nothing and opens no break.
+     * Stage A (TDD 8.2) for a PSP source, inside the work transaction, so whatever it matches and
+     * opens commits with the run's COMPLETED or not at all. Its rules run in their fixed order
+     * (FR-MAT-3), each a statement over the source's unmatched items, and each sees what the ones
+     * before it wrote. Only ids and counts are logged.
      */
-    private void matchStageA(ReconciliationRun running) {
+    private void matchStageA(ReconciliationRun running, StageASettings settings) {
+        StageAPass pass = new StageAPass(running.id(), running.source(), running.valueDateFrom(), running.valueDateTo(),
+                settings.valueDateWindowDays(),
+                BusinessDayIndex.forRange(calendar, running.valueDateFrom(), running.valueDateTo(),
+                        settings.valueDateWindowDays()),
+                now());
+        int byReference = stageA.matchByReference(pass);
+        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1", running.id(),
+                running.source().value(), Integer.toString(byReference));
     }
 
     /**
