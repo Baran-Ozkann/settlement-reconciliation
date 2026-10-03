@@ -69,7 +69,12 @@ final class StageAFixture {
 
     /** A dated ledger entry; returns its key, {@code LEDGER <event id>}. */
     String ledger(SourceCode source, UUID transactionId, long amount, String currency, LocalDate valueDate) {
-        long eventId = eventIds.incrementAndGet();
+        return ledger(source, eventIds.incrementAndGet(), transactionId, amount, currency, valueDate);
+    }
+
+    /** As {@link #ledger(SourceCode, UUID, long, String, LocalDate)}, under an event id the caller chose. */
+    String ledger(SourceCode source, long eventId, UUID transactionId, long amount, String currency,
+                  LocalDate valueDate) {
         Instant createdAt = valueDate.atStartOfDay(ISTANBUL).plusHours(10).toInstant();
         LedgerEntry entry = new LedgerEntry(UUID.randomUUID(), eventId, Optional.of(eventId), transactionId,
                 UUID.randomUUID(), source, Money.of(amount, CurrencyCode.of(currency)), "TRANSFER",
