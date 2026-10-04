@@ -18,6 +18,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 
 import com.baran.recon.application.port.StatementFileAlreadyIngestedException;
 import com.baran.recon.application.port.TooManyLinesException;
+import com.baran.recon.application.run.RunRefusedException;
 import com.baran.recon.application.statement.UploadRefusedException;
 
 /**
@@ -59,6 +60,30 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 "A file with the same content or statement reference was ingested first.");
     }
 
+    /**
+     * FR-MAT-1, TDD 5.3: a run refused before it was recorded. A busy source is 409 with the id of
+     * the run that holds it, unless that run finished between the refusal and the look-up.
+     */
+    @ExceptionHandler(RunRefusedException.class)
+    ProblemDetail runRefused(RunRefusedException refused) {
+        ProblemDetail problem = switch (refused.reason()) {
+            case UNKNOWN_SOURCE -> ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+                    "No configured source has this code.");
+            case INVALID_DATE_RANGE -> ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+                    "valueDateFrom is after valueDateTo.");
+            case SOURCE_BUSY -> ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
+                    "The source already has a running run.");
+        };
+        refused.runningRunId().ifPresent(running -> problem.setProperty("runningRunId", running));
+        return problem;
+    }
+
+    @ExceptionHandler(MalformedRunRequestException.class)
+    ProblemDetail malformedRunRequest(MalformedRunRequestException malformed) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+                "valueDateFrom and valueDateTo are required, as ISO dates (YYYY-MM-DD).");
+    }
+
     /** FR-ING-8: refused like a file over the size limit, and, like it, never recorded. */
     @ExceptionHandler(TooManyLinesException.class)
     ProblemDetail tooManyLines(TooManyLinesException tooMany) {
@@ -79,7 +104,8 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     /**
      * Anything else is the application's failure, not the request's. The log names it by its
      * exception classes only: a database error's message can quote a row, and a file system error's
-     * a path. The ingestion that failed was rolled back whole (FR-ING-6), so a retry is safe.
+     * a path. The ingestion that failed was rolled back whole (FR-ING-6), and so was a run's work,
+     * the run being set FAILED (NFR-REL-2), so a retry is safe.
      */
     @ExceptionHandler(Exception.class)
     ProblemDetail unexpected(Exception failure, HttpServletRequest request) {
