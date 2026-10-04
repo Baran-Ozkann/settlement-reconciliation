@@ -219,3 +219,39 @@ at REPEATABLE READ it never reaches the guard: the `FOR UPDATE` fails the run fi
 | Mechanism | Why there is no break proof | What guards it instead |
 |---|---|---|
 | `breaks.status = target.status` in `JdbcStageAStore.RESOLVE_MATCHED_LATE` | unreachable at REPEATABLE READ. A transition committed before the snapshot is read as the break's status; one committed after it, or still open when the run locks the row, fails the `FOR UPDATE` with a serialization failure. Within the statement the lock holds the row, so the status cannot change between the read and the update | the snapshot, proven above (`RunSnapshotTest.serializationFailureFailsTheRun`); the condition stays as defence in depth, to be looked at again with Phase 7's transition endpoint |
+
+## Phase 5, part 2a
+
+Part 2a adds no constraint, index, trigger or grant: the run endpoints and the automatic trigger use
+`RunMatching` and `RunStore` as part 1 left them, and `ApplicationRoleGrantsTest` is unchanged. The
+new mechanisms are A1 without the value-date window (owner decision 1), two role rules, and the
+automatic trigger's wait and bounded queue. What keeps a triggered run from running alongside
+another run of its source is the running-run index, whose proofs are part 1a's
+(`DatabaseMechanismTest`, `OneRunningRunPerSourceBreakProofTest`); the trigger's own part is to wait
+when the index refuses it, and that is what is proven here.
+
+### Proven by permanent tests
+
+| Mechanism | Broken state the test builds | Proof test | What it asserts |
+|---|---|---|---|
+| FR-MAT-1, TDD 5.3: a triggered run whose source is busy waits and tries again (`AutomaticRunTrigger`, its `BusyWait`) | an application context of its own whose trigger is the same class built not to wait: its `BusyWait` answers "do not try again" at the first refusal (`@Primary` test bean). A run of the source is held inside its work (`HeldLedgerEntryStore`) while a file is uploaded. No file is edited | `TriggerWithoutWaitBreakProofTest.withoutTheWaitTheRunIsRefused` | the upload is 201, its run is refused by the running-run index and logged at WARN with the file's id ("was not started: its source was busy"), and once the held run completes the source has that run alone. With the wait, `RunAfterUploadTest.triggeredRunWaitsForTheRunningRun`: the same upload's run logs that it waits, is not recorded while the other runs, and completes after it, its start no earlier than the other's finish |
+| FR-MAT-1: a full queue refuses the next file's run rather than holding the upload (`ThreadPoolExecutor.AbortPolicy` in `AutomaticRunTrigger.onOneThread`) | an application context of its own whose trigger is the same class on one thread and a queue of one whose overflow runs on the submitting thread (`CallerRunsPolicy`, `@Primary` test bean). A run of the source is held; a first upload's run waits on the thread, a second fills the queue. No file is edited | `BlockingTriggerQueueBreakProofTest.withACallerRunsQueueTheUploadWaits` | the third upload's request thread runs its run itself and waits with it for the busy source: its response is not done while the run waits, and arrives (201) only after the held run is released. With refusal, `RunAfterUploadTest.fullQueueRefusesTheTrigger`: the third upload is answered 201 while the thread is still held, its run is logged at WARN with the file's id ("was not queued"), and the two queued runs complete |
+| TDD 11.1: only an OPERATOR starts a run (`requestMatchers(HttpMethod.POST, "/api/v1/runs").hasRole(OPERATOR)`) | the same request as the operator | `RunApiTest.viewerStartIs403` against `operatorStartsARun`; `RunRolesTest.viewerStartingARunIs403` against `operatorPassesTheRoleRule` | the viewer's request is 403 and records no run; the operator's is 201 and records one. The recorded one-off below removes the rule |
+
+### Recorded one-offs
+
+Each was made at `4f21985` by a throwaway edit that was never committed: the file was copied aside
+first and copied back afterwards, `git status` was then clean, and `StageAMatchingTest`, `RunApiTest`
+and `RunRolesTest` passed again (61 tests, 0 failures).
+
+| Rule | Broken by | Test | What it reported |
+|---|---|---|---|
+| Owner decision 1 (TDD v1.10, 8.2): A1 matches an exact pair whatever the value dates, and several exact entries are ambiguous whatever their dates (`A1_PAIRS` and `REFERENCE_FINDINGS` in `JdbcStageAStore`) | the file as it was before `a927608` (`git show a927608^:`), the window applied to A1's candidates and to the exact entries counted for ambiguity | `StageAMatchingTest#exactReferenceMatchesOutsideTheRangeWhateverTheDates+exactReferenceOutsideTheWindowIsAMatch+exactEntriesAreAmbiguousWhateverTheirDates+fallbackCandidatesOutsideTheRangeWithinTheWindow+holidayIsNotCountedInTheWindow` | 5 tests, 3 failures: the pairs three business days and two months apart unmatched (only the two within the window matched); the exact pair beyond the window not matched (`[]`); and, for two exact entries one beyond the window, the near one matched where AMBIGUOUS_MATCH was expected. The two A3 tests passed, as they should. Restored: all five pass |
+| A3 keeps the window (`abs(line_day.ordinal - entry_day.ordinal) <= :windowDays` in `A3_FINDINGS`) | that condition replaced by `TRUE` | `StageAMatchingTest#fallbackCandidatesOutsideTheRangeWithinTheWindow+holidayIsNotCountedInTheWindow+exactReferenceOutsideTheWindowIsAMatch` | 3 tests, 1 failure: the line three business days from its only candidate matched A3 as well. The holiday test passed, as it must: it shows the calendar inside a window, and with no window there is nothing for the holiday to change. Restored: all three pass |
+| TDD 11.1: only an OPERATOR starts a run (`requestMatchers(HttpMethod.POST, "/api/v1/runs").hasRole(OPERATOR)`) | that line deleted from `SecurityConfiguration` | `RunApiTest#viewerStartIs403+operatorStartsARun`, `RunRolesTest#viewerStartingARunIs403` | 3 tests, 2 failures: the viewer's run was started (`expected: 403 but was: 201`), and `RunRolesTest`'s request, which names a source that context lacks, reached the controller (`but was: 400`). Restored: all pass |
+
+### Unproven
+
+| Mechanism | Why there is no break proof | What guards it instead |
+|---|---|---|
+| TDD 11: reading a run needs a VIEWER (`requestMatchers(HttpMethod.GET, "/api/v1/runs/*").hasRole(VIEWER)`) | every configured user is a VIEWER (the operator through the role hierarchy), so the rule and the catch-all `authenticated()` answer every user alike; no request can tell them apart. `GET /api/v1/statements/*` has the same rule for the same reason | `RunRolesTest.readingARunNeedsAViewer` pins what can be seen: both users pass, an anonymous request is 401. Phase 9 adds a METRICS user without VIEWER, which makes the rule testable |
