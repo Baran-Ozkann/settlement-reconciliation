@@ -269,9 +269,11 @@ class JdbcStageAStore implements StageAStore {
             + "\nSELECT (SELECT count(*) FROM new_match_event) AS matched, (SELECT count(*) FROM opened_event) AS opened";
 
     /**
-     * FR-BRK-5. The breaks are locked before they are read, so their status is the latest committed
-     * one, and the update still requires it: the event then records the status the break really left.
-     * Only the three columns recon_app may update change.
+     * FR-BRK-5, for the break types a match answers (TDD 8.2): a missing item, or a choice among
+     * candidates. A duplicate line or a reference conflict is not explained by the match and stays
+     * open for an operator. The breaks are locked before they are read, so their status is the latest
+     * committed one, and the update still requires it: the event then records the status the break
+     * really left. Only the three columns recon_app may update change.
      */
     private static final String RESOLVE_MATCHED_LATE = """
             WITH matched_item AS (
@@ -286,6 +288,7 @@ class JdbcStageAStore implements StageAStore {
                   JOIN matched_item matched
                     ON matched.side = open_break.item_side AND matched.item_id = open_break.item_id
                  WHERE open_break.status <> 'RESOLVED'
+                   AND open_break.break_type IN ('MISSING_IN_PSP', 'MISSING_IN_LEDGER', 'AMBIGUOUS_MATCH')
                    FOR UPDATE OF open_break
             ),
             resolved AS (

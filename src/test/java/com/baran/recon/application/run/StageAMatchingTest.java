@@ -1,5 +1,8 @@
 package com.baran.recon.application.run;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -37,10 +40,13 @@ import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.application.run.StageAFixture.BreakView;
 import com.baran.recon.application.run.StageAFixture.MatchView;
+import com.baran.recon.application.statement.IngestStatement;
+import com.baran.recon.application.statement.UploadedStatement;
 import com.baran.recon.domain.breaks.BreakType;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.run.RunStatus;
+import com.baran.recon.domain.statement.StatementFile;
 import com.baran.recon.support.ReconPostgres;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -107,6 +113,9 @@ class StageAMatchingTest {
 
     @Autowired
     private BreakStore breaks;
+
+    @Autowired
+    private IngestStatement ingest;
 
     @Autowired
     private DataSource dataSource;
@@ -454,6 +463,85 @@ class StageAMatchingTest {
     }
 
     @Test
+    @DisplayName("FR-BRK-5: MISSING_IN_PSP and MISSING_IN_LEDGER opened by a run are resolved MATCHED_LATE when "
+            + "their items match, each with its event")
+    void missingItemBreaksAreResolvedWhenTheirItemsMatch() {
+        UUID entryFirst = UUID.randomUUID();
+        UUID lineFirst = UUID.randomUUID();
+        String lonelyEntry = fixture.ledger(source, entryFirst, 1_000, TRY, MONDAY);
+        fixture.psp(source, "L-LONELY", lineFirst.toString(), 2_000, TRY, MONDAY);
+        ReconciliationRun firstRun = run(MONDAY, FRIDAY);
+        BreakView missingInPsp = breakOn(lonelyEntry);
+        BreakView missingInLedger = breakOn("PSP L-LONELY");
+        assertThat(List.of(missingInPsp.type(), missingInLedger.type()))
+                .containsExactly("MISSING_IN_PSP", "MISSING_IN_LEDGER");
+
+        fixture.psp(source, "L-LATE", entryFirst.toString(), 1_000, TRY, MONDAY);
+        String lateEntry = fixture.ledger(source, lineFirst, 2_000, TRY, MONDAY);
+        ReconciliationRun secondRun = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp, MatchView::runId)
+                .containsExactlyInAnyOrder(
+                        tuple(lonelyEntry, "PSP L-LATE", secondRun.id()),
+                        tuple(lateEntry, "PSP L-LONELY", secondRun.id()));
+        assertThat(fixture.breaks(source)).extracting(BreakView::id, BreakView::status, BreakView::resolutionCode,
+                        BreakView::openedRunId)
+                .containsExactlyInAnyOrder(
+                        tuple(missingInPsp.id(), "RESOLVED", Optional.of("MATCHED_LATE"), firstRun.id()),
+                        tuple(missingInLedger.id(), "RESOLVED", Optional.of("MATCHED_LATE"), firstRun.id()));
+        for (BreakView resolved : List.of(missingInPsp, missingInLedger)) {
+            assertThat(fixture.eventsOf(resolved.id()))
+                    .containsExactly("->OPEN:-:system", "OPEN>RESOLVED:MATCHED_LATE:system");
+        }
+    }
+
+    @Test
+    @DisplayName("FR-BRK-5, TDD 8.2: a match does not answer DUPLICATE_LINE, AMOUNT_MISMATCH or CURRENCY_MISMATCH; "
+            + "the break stays open and its item is MATCHED")
+    void duplicateAndConflictBreaksStayOpenWhenTheirItemMatches() throws IOException {
+        UUID duplicated = UUID.randomUUID();
+        UUID amountConflict = UUID.randomUUID();
+        UUID currencyConflict = UUID.randomUUID();
+        String duplicatedEntry = fixture.ledger(source, duplicated, 1_000, TRY, FRIDAY);
+        fixture.psp(source, "L-DUPLICATED", duplicated.toString(), 1_000, TRY, FRIDAY);
+        StatementFile repeating = ingest.ingest(new UploadedStatement(source.value(), "STMT-" + UUID.randomUUID(),
+                "repeat.csv", csv("L-DUPLICATED," + duplicated + ",B-002,2026-10-09,2026-10-09,PAYMENT,10.00,0.00,10.00,TRY"),
+                "operator-001"));
+        assertThat(repeating.lines().duplicateLineCount()).as("ingestion opened DUPLICATE_LINE on the stored line")
+                .isEqualTo(1);
+        String amountEntry = fixture.ledger(source, amountConflict, 2_000, TRY, FRIDAY);
+        fixture.psp(source, "L-AMOUNT", amountConflict.toString(), 2_500, TRY, FRIDAY);
+        String currencyEntry = fixture.ledger(source, currencyConflict, 3_000, TRY, FRIDAY);
+        fixture.psp(source, "L-CURRENCY", currencyConflict.toString(), 3_000, "EUR", FRIDAY);
+        ReconciliationRun firstRun = run(FRIDAY, FRIDAY);
+        List<BreakView> opened = fixture.breaks(source);
+
+        String exactAmount = fixture.ledger(source, amountConflict, 2_500, TRY, FRIDAY);
+        String exactCurrency = fixture.ledger(source, currencyConflict, 3_000, "EUR", FRIDAY);
+        ReconciliationRun secondRun = run(FRIDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp, MatchView::runId)
+                .containsExactlyInAnyOrder(
+                        tuple(duplicatedEntry, "PSP L-DUPLICATED", firstRun.id()),
+                        tuple(exactAmount, "PSP L-AMOUNT", secondRun.id()),
+                        tuple(exactCurrency, "PSP L-CURRENCY", secondRun.id()));
+        assertThat(fixture.breaks(source)).as("as they were opened").isEqualTo(opened)
+                .extracting(BreakView::type, BreakView::status, BreakView::subject, BreakView::related)
+                .containsExactlyInAnyOrder(
+                        tuple("DUPLICATE_LINE", "OPEN", "PSP L-DUPLICATED", Set.of()),
+                        tuple("AMOUNT_MISMATCH", "OPEN", "PSP L-AMOUNT", Set.of(amountEntry)),
+                        tuple("CURRENCY_MISMATCH", "OPEN", "PSP L-CURRENCY", Set.of(currencyEntry)));
+        for (BreakView kept : opened) {
+            assertThat(fixture.eventsOf(kept.id())).as("%s has only its opening event", kept.type()).hasSize(1);
+        }
+        assertThat(secondRun.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "psp.TRY.matched.count", 2L, "psp.EUR.matched.count", 1L,
+                "psp.TRY.broken.count", 0L, "psp.EUR.broken.count", 0L,
+                "ledger.TRY.matched.count", 2L, "ledger.EUR.matched.count", 1L,
+                "ledger.TRY.broken.count", 2L)));
+    }
+
+    @Test
     @DisplayName("FR-BRK-5: a break that only names a matched item among its related items stays open")
     void breakNamingAMatchedItemStaysOpen() {
         UUID referenced = UUID.randomUUID();
@@ -681,6 +769,14 @@ class StageAMatchingTest {
         List<BreakView> found = fixture.breaks(source);
         assertThat(found).hasSize(1);
         return found.getFirst();
+    }
+
+    /** A PSP settlement report holding the given data lines, as an upload's content (TDD 7.1). */
+    private static UploadedStatement.Content csv(String... lines) {
+        byte[] bytes = (String.join("\n", "line_id,transaction_reference,batch_id,transaction_date,value_date,type,"
+                + "gross_amount,fee_amount,net_amount,currency", String.join("\n", lines)) + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+        return () -> new ByteArrayInputStream(bytes);
     }
 
     private ReconciliationRun run(LocalDate from, LocalDate to) {

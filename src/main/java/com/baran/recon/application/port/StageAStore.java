@@ -62,9 +62,11 @@ public interface StageAStore {
     FallbackOutcome matchByAmount(StageAPass pass);
 
     /**
-     * FR-BRK-5: resolves, as MATCHED_LATE by the system, every unresolved break whose subject is an
-     * item the run matched, appending each resolution's event with the given reason. A break that
-     * merely names a matched item among its related items is left alone.
+     * FR-BRK-5: resolves, as MATCHED_LATE by the system, every unresolved break of a type a match
+     * answers - MISSING_IN_PSP, MISSING_IN_LEDGER or AMBIGUOUS_MATCH - whose subject is an item the
+     * run matched, appending each resolution's event with the given reason (TDD 8.2). DUPLICATE_LINE,
+     * AMOUNT_MISMATCH and CURRENCY_MISMATCH stay open for an operator; the item is still MATCHED. A
+     * break that merely names a matched item among its related items is left alone.
      *
      * @return the breaks resolved
      */
