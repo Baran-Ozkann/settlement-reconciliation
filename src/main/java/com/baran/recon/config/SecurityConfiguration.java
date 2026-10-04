@@ -35,13 +35,14 @@ import org.springframework.security.web.csrf.CsrfFilter;
  * The v1 security baseline (TDD 11.1): HTTP Basic over loopback, one user per role, each user's name
  * and bcrypt hash from the environment and none in the repository. OPERATOR includes VIEWER.
  *
- * <p>Every request needs an authenticated user except the health endpoint, an upload needs an
- * OPERATOR, and reading a statement file a VIEWER, which an OPERATOR also is. A request without valid credentials is 401 with a Basic challenge, one whose user lacks
- * the role is 403, each as Problem Details like every other error (FR-API-2). Sessions are never
- * created, so each request carries its credentials. Spring's session CSRF token has no session to
- * live in; {@link CrossSiteRequestFilter} takes its place, and is not a Spring bean so the servlet
- * container does not register it a second time outside the chain. A production deployment would
- * use an OAuth2 resource server instead.
+ * <p>Every request needs an authenticated user except the health endpoint. Uploading a statement
+ * file and starting a run need an OPERATOR; reading a statement file or a run needs a VIEWER, which
+ * an OPERATOR also is (TDD 11). A request without valid credentials is 401 with a Basic challenge,
+ * one whose user lacks the role is 403, each as Problem Details like every other error (FR-API-2).
+ * Sessions are never created, so each request carries its credentials. Spring's session CSRF token
+ * has no session to live in; {@link CrossSiteRequestFilter} takes its place, and is not a Spring
+ * bean so the servlet container does not register it a second time outside the chain. A production
+ * deployment would use an OAuth2 resource server instead.
  *
  * <p>Only a servlet application has requests to secure. A test context without a web server has no
  * {@link HttpSecurity} to build a chain from, and no user who could log in.
@@ -75,6 +76,8 @@ class SecurityConfiguration {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/statements").hasRole(OPERATOR)
                         .requestMatchers(HttpMethod.GET, "/api/v1/statements/*").hasRole(VIEWER)
+                        .requestMatchers(HttpMethod.POST, "/api/v1/runs").hasRole(OPERATOR)
+                        .requestMatchers(HttpMethod.GET, "/api/v1/runs/*").hasRole(VIEWER)
                         .anyRequest().authenticated())
                 .httpBasic(basic -> basic.realmName(REALM).authenticationEntryPoint(CHALLENGE))
                 .exceptionHandling(errors -> errors.authenticationEntryPoint(CHALLENGE).accessDeniedHandler(DENIED))
