@@ -135,7 +135,7 @@ class StageAMatchingTest {
     }
 
     @Test
-    @DisplayName("FR-MAT-6, A1_EXACT_REFERENCE: same reference, currency and amount within the window is a match, recorded in full")
+    @DisplayName("FR-MAT-6, A1_EXACT_REFERENCE: same reference, currency and amount is a match, recorded in full")
     void exactReferenceMatches() {
         UUID transaction = UUID.randomUUID();
         String entry = fixture.ledger(source, transaction, 12_500, TRY, TUESDAY);
@@ -170,36 +170,56 @@ class StageAMatchingTest {
     }
 
     @Test
-    @DisplayName("TDD 8.2: a candidate outside the run's range is matched within the window, in business days, and not beyond it")
-    void candidatesOutsideTheRangeWithinTheWindow() {
+    @DisplayName("TDD 8.2: A1_EXACT_REFERENCE matches a candidate outside the run's range, however far apart the value dates")
+    void exactReferenceMatchesOutsideTheRangeWhateverTheDates() {
         UUID twoDaysBack = UUID.randomUUID();
         UUID threeDaysBack = UUID.randomUUID();
+        UUID twoMonthsBack = UUID.randomUUID();
         UUID lineAfterRange = UUID.randomUUID();
-        String earlierEntry = fixture.ledger(source, twoDaysBack, 1_000, TRY, MONDAY);
+        String twoBackEntry = fixture.ledger(source, twoDaysBack, 1_000, TRY, MONDAY);
         fixture.psp(source, "L-TWO-BACK", twoDaysBack.toString(), 1_000, TRY, WEDNESDAY);
-        fixture.ledger(source, threeDaysBack, 2_000, TRY, FRIDAY_BEFORE);
+        String threeBackEntry = fixture.ledger(source, threeDaysBack, 2_000, TRY, FRIDAY_BEFORE);
         fixture.psp(source, "L-THREE-BACK", threeDaysBack.toString(), 2_000, TRY, WEDNESDAY);
+        String farEntry = fixture.ledger(source, twoMonthsBack, 4_000, TRY, LocalDate.of(2026, 8, 5));
+        fixture.psp(source, "L-FAR", twoMonthsBack.toString(), 4_000, TRY, WEDNESDAY);
         String entryInRange = fixture.ledger(source, lineAfterRange, 3_000, TRY, WEDNESDAY);
         fixture.psp(source, "L-AFTER", lineAfterRange.toString(), 3_000, TRY, FRIDAY);
 
         run(WEDNESDAY, WEDNESDAY);
 
-        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp).containsExactlyInAnyOrder(
-                tuple(earlierEntry, "PSP L-TWO-BACK"),
-                tuple(entryInRange, "PSP L-AFTER"));
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactlyInAnyOrder(
+                        tuple("A1_EXACT_REFERENCE", twoBackEntry, "PSP L-TWO-BACK"),
+                        tuple("A1_EXACT_REFERENCE", threeBackEntry, "PSP L-THREE-BACK"),
+                        tuple("A1_EXACT_REFERENCE", farEntry, "PSP L-FAR"),
+                        tuple("A1_EXACT_REFERENCE", entryInRange, "PSP L-AFTER"));
     }
 
     @Test
-    @DisplayName("TDD 8.1: a configured holiday is not counted in the window")
+    @DisplayName("TDD 8.2: A3_FALLBACK_UNIQUE keeps the window: a candidate outside the run's range is matched within it, "
+            + "in business days, and not beyond it")
+    void fallbackCandidatesOutsideTheRangeWithinTheWindow() {
+        String earlierEntry = fixture.ledger(source, UUID.randomUUID(), 1_000, TRY, MONDAY);
+        fixture.psp(source, "L-TWO-BACK", null, 1_000, TRY, WEDNESDAY);
+        fixture.ledger(source, UUID.randomUUID(), 2_000, TRY, FRIDAY_BEFORE);
+        fixture.psp(source, "L-THREE-BACK", null, 2_000, TRY, WEDNESDAY);
+
+        run(WEDNESDAY, WEDNESDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple("A3_FALLBACK_UNIQUE", earlierEntry, "PSP L-TWO-BACK"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: a configured holiday is not counted in A3's window")
     void holidayIsNotCountedInTheWindow() {
-        UUID acrossHoliday = UUID.randomUUID();
-        String entry = fixture.ledger(source, acrossHoliday, 1_000, TRY, LocalDate.of(2026, 10, 28));
-        fixture.psp(source, "L-HOLIDAY", acrossHoliday.toString(), 1_000, TRY, LocalDate.of(2026, 11, 2));
+        String entry = fixture.ledger(source, UUID.randomUUID(), 1_000, TRY, LocalDate.of(2026, 10, 28));
+        fixture.psp(source, "L-HOLIDAY", null, 1_000, TRY, LocalDate.of(2026, 11, 2));
 
-        run(LocalDate.of(2026, 10, 26), LocalDate.of(2026, 10, 30));
+        run(LocalDate.of(2026, 10, 26), LocalDate.of(2026, 11, 2));
 
-        assertThat(fixture.matches(source)).extracting(MatchView::ledger, MatchView::psp)
-                .containsExactly(tuple(entry, "PSP L-HOLIDAY"));
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple("A3_FALLBACK_UNIQUE", entry, "PSP L-HOLIDAY"));
     }
 
     @Test
@@ -273,18 +293,37 @@ class StageAMatchingTest {
     }
 
     @Test
-    @DisplayName("A1_EXACT_REFERENCE keeps the window: the line's reference, currency and amount beyond it is no match "
-            + "and no A2 break; both items reach their grace breaks")
-    void exactReferenceOutsideTheWindowIsNeitherAMatchNorAConflict() {
+    @DisplayName("A1_EXACT_REFERENCE ignores the window: the line's reference, currency and amount beyond it is a match, "
+            + "and neither item gets a grace break")
+    void exactReferenceOutsideTheWindowIsAMatch() {
         UUID transaction = UUID.randomUUID();
         String entry = fixture.ledger(source, transaction, 1_000, TRY, MONDAY);
         fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, THURSDAY);
 
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple("A1_EXACT_REFERENCE", entry, "PSP L-001"));
+        assertThat(fixture.breaks(source)).as("three business days apart, both past their grace periods").isEmpty();
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "ledger.TRY.matched.count", 1L, "ledger.TRY.pending.count", 0L, "ledger.TRY.broken.count", 0L,
+                "psp.TRY.matched.count", 1L, "psp.TRY.pending.count", 0L, "psp.TRY.broken.count", 0L)));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-4: two entries with the line's reference, currency and amount, one beyond the window, is "
+            + "AMBIGUOUS_MATCH naming both")
+    void exactEntriesAreAmbiguousWhateverTheirDates() {
+        UUID transaction = UUID.randomUUID();
+        String near = fixture.ledger(source, transaction, 1_000, TRY, TUESDAY);
+        String far = fixture.ledger(source, transaction, 1_000, TRY, LocalDate.of(2026, 8, 4));
+        fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, TUESDAY);
+
         run(MONDAY, FRIDAY);
 
         assertThat(fixture.matches(source)).isEmpty();
-        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject)
-                .containsExactlyInAnyOrder(tuple("MISSING_IN_PSP", entry), tuple("MISSING_IN_LEDGER", "PSP L-001"));
+        assertThat(onlyBreak()).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactly("AMBIGUOUS_MATCH", "PSP L-001", Set.of(near, far));
     }
 
     @Test

@@ -70,9 +70,11 @@ class JdbcStageAStore implements StageAStore {
 
     /**
      * A1: a reference no other unmatched line carries, and exactly one entry with its transaction
-     * id, currency and amount within the window. The count runs over every candidate, in the range
-     * or not, before the range is applied, so an item outside the range never makes a pair look
-     * unique. A transaction id is named by one unmatched line at most, so an entry is in one pair.
+     * id, currency and amount, whatever the two value dates: the reference is the transaction's own
+     * id, so it identifies the pair and the window has nothing to add (TDD 8.2). The count runs over
+     * every candidate, in the range or not, before the range is applied, so an item outside the
+     * range never makes a pair look unique. A transaction id is named by one unmatched line at most,
+     * so an entry is in one pair.
      */
     private static final String A1_PAIRS = """
             single_reference AS (
@@ -85,9 +87,6 @@ class JdbcStageAStore implements StageAStore {
                   JOIN single_reference single ON single.reference = line.reference
                   JOIN ledger entry ON entry.transaction_id = line.reference
                                    AND entry.currency = line.currency AND entry.amount = line.gross_amount
-                  JOIN business_day line_day ON line_day.day = line.value_date
-                  JOIN business_day entry_day ON entry_day.day = entry.value_date
-                 WHERE abs(line_day.ordinal - entry_day.ordinal) <= :windowDays
             ),
             pair AS MATERIALIZED (
                 SELECT gen_random_uuid() AS match_id, psp_id, (array_agg(ledger_id))[1] AS ledger_id,
@@ -122,13 +121,10 @@ class JdbcStageAStore implements StageAStore {
 
     /**
      * After A1, each unmatched line in the range with a UUID reference: a duplicate reference, or the
-     * entries carrying its transaction id. Exact entries count within the window only, as in A1: a
-     * line with several is ambiguous, and one with exactly one was matched by A1 and is no longer
-     * unmatched. Entries with another currency or amount count whatever their dates, since the
-     * shared reference is the transaction's own id (A2, TDD 8.2): one is a mismatch, several are
-     * ambiguous. A line with neither is left alone, an exact entry outside the window included.
-     * The business-day index covers the range and the window around it, so an entry dated beyond
-     * it is outside the window.
+     * entries carrying its transaction id, whatever their dates, since the shared reference is the
+     * transaction's own id (TDD 8.2). A line with several exact entries is ambiguous, and one with
+     * exactly one was matched by A1 and is no longer unmatched. Entries with another currency or
+     * amount are A2's: one is a mismatch, several are ambiguous.
      */
     private static final String REFERENCE_FINDINGS = """
             reference_lines AS (
@@ -151,21 +147,18 @@ class JdbcStageAStore implements StageAStore {
             carrier AS (
                 SELECT subject.id AS psp_id, entry.id AS ledger_id,
                        entry.currency = subject.currency AS same_currency,
-                       entry.currency = subject.currency AND entry.amount = subject.gross_amount AS exact,
-                       coalesce(abs(line_day.ordinal - entry_day.ordinal) <= :windowDays, FALSE) AS within_window
+                       entry.currency = subject.currency AND entry.amount = subject.gross_amount AS exact
                   FROM subject
                   JOIN ledger entry ON entry.transaction_id = subject.reference
-                  LEFT JOIN business_day line_day ON line_day.day = subject.value_date
-                  LEFT JOIN business_day entry_day ON entry_day.day = entry.value_date
                  WHERE subject.lines = 1
             ),
             carriers AS (
                 SELECT psp_id,
-                       count(*) FILTER (WHERE exact AND within_window) AS exact_entries,
+                       count(*) FILTER (WHERE exact) AS exact_entries,
                        count(*) FILTER (WHERE NOT exact) AS conflicting_entries,
                        bool_and(same_currency) FILTER (WHERE NOT exact) AS same_currency,
                        jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id)
-                           FILTER (WHERE exact AND within_window) AS exact_items,
+                           FILTER (WHERE exact) AS exact_items,
                        jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id)
                            FILTER (WHERE NOT exact) AS conflicting_items
                   FROM carrier
@@ -267,11 +260,11 @@ class JdbcStageAStore implements StageAStore {
                  WHERE NOT unique_pair
             )""";
 
-    private static final String MATCH_BY_REFERENCE = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED, A1_PAIRS,
-            MATCH_WRITES) + "\nSELECT count(*) FROM new_match_event";
+    private static final String MATCH_BY_REFERENCE = "WITH " + String.join(",\n", UNMATCHED, A1_PAIRS, MATCH_WRITES)
+            + "\nSELECT count(*) FROM new_match_event";
 
-    private static final String OPEN_REFERENCE_BREAKS = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED,
-            REFERENCE_FINDINGS, BREAK_WRITES) + "\nSELECT count(*) FROM opened_event";
+    private static final String OPEN_REFERENCE_BREAKS = "WITH " + String.join(",\n", UNMATCHED, REFERENCE_FINDINGS,
+            BREAK_WRITES) + "\nSELECT count(*) FROM opened_event";
 
     private static final String MATCH_BY_AMOUNT = "WITH " + String.join(",\n", BUSINESS_DAYS, UNMATCHED, A3_FINDINGS,
             MATCH_WRITES, BREAK_WRITES)
