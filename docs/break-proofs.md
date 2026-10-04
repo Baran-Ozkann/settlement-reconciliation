@@ -183,3 +183,39 @@ The INV-1/INV-4 property also checks itself: jqwik's coverage check fails it unl
 rule and Stage A break type occurs in at least 5 % of its tries. Its first generator, items drawn
 independently, failed that check (`Percentage of 3.33 for true does not fulfill condition for
 label "A1_EXACT_REFERENCE"`); the committed one generates transactions as both sides see them.
+
+## Phase 5, part 1c
+
+TDD v1.9 settled three points of part 1b's Stage A: MATCHED_LATE resolves only the break types a
+match answers, the run's work transaction runs at REPEATABLE READ, and A2 ignores the value-date
+window. The new mechanism is the isolation level of the work transaction (`SpringTransactions`,
+`Transactions.inSnapshotTransaction`, used by `RunMatching`). No constraint, index, trigger or grant
+changed, and `ApplicationRoleGrantsTest` is unchanged.
+
+### Proven by permanent tests
+
+| Mechanism | Broken state the test builds | Proof test | What it asserts |
+|---|---|---|---|
+| TDD 5.3: every statement of a run reads the snapshot its work transaction took (REPEATABLE READ) | an application context of its own whose `Transactions` runs the snapshot transaction at READ COMMITTED (`@Primary` test bean), with `HeldStageAStore` holding the run after A1, its first statement, while an entry and a line that A1 would pair, both past their grace periods, are committed. No file is edited | `RunSnapshotBreakProofTest.withoutTheSnapshotALaterStatementSeesTheCommit` | A1 left the pair unmatched, and the same run's grace statement opened MISSING_IN_PSP on the entry and MISSING_IN_LEDGER on the line, counting both as broken; the next run matches the pair and resolves both breaks MATCHED_LATE. At REPEATABLE READ, `RunSnapshotTest.itemsCommittedDuringTheRunAreSeenByNoneOfItsStatements`: no match, no break and no count for the pair, and the next run matches it |
+| TDD 5.3: a serialization failure fails the run like any other failure | the same hold, while an operator's transition (`BreakStore.apply`, OPEN to INVESTIGATING) is committed on the MISSING_IN_LEDGER break of the line A1 has just matched | `RunSnapshotTest.serializationFailureFailsTheRun` | MATCHED_LATE's `FOR UPDATE` meets a row changed after the snapshot: `could not serialize access due to concurrent update`, the run is FAILED, A1's match is gone, and the break keeps its two operator events. The next run matches the line and resolves the break |
+
+### Recorded one-offs
+
+Each was made on the tree of its commit, by a throwaway edit of `JdbcStageAStore` that was never
+committed: the file was copied aside first and copied back afterwards, `git diff` then showed only
+the intended change, and the tests named passed again.
+
+| Rule | Broken by | Test | What it reported |
+|---|---|---|---|
+| FR-BRK-5 as settled in v1.9: MATCHED_LATE resolves only MISSING_IN_PSP, MISSING_IN_LEDGER and AMBIGUOUS_MATCH (`break_type IN (...)` in `RESOLVE_MATCHED_LATE`) | that condition deleted | `StageAMatchingTest#duplicateAndConflictBreaksStayOpenWhenTheirItemMatches` | 1 test, 1 failure, `[as they were opened]`: the matched lines' DUPLICATE_LINE, AMOUNT_MISMATCH and CURRENCY_MISMATCH breaks were resolved. Restored: it passes |
+| A2 ignores the window (`REFERENCE_FINDINGS`, v1.9) | the statement as part 1b left it, window applied to every carrier (`git show HEAD:` of the file, before the change was committed) | `StageAMatchingTest#referenceConflictOutsideTheWindowIsStillAConflict+exactReferenceOutsideTheWindowIsNeitherAMatchNorAConflict+conflictingEntriesAreAmbiguousWhateverTheirDates` | 3 tests, 2 failures: `[three business days apart, and an entry two months before its line]` (no A2 breaks, grace breaks instead) and `conflictingEntriesAreAmbiguousWhateverTheirDates` (AMOUNT_MISMATCH naming the near entry only). The exact pair beyond the window behaves the same both ways, as it should: A1 keeps the window. Restored: all three pass |
+
+### Unproven
+
+Part 1b listed MATCHED_LATE's status guard as Unproven because no concurrent transition could be
+built. One can now be built in a test, through the store operation Phase 7's endpoint will use, and
+at REPEATABLE READ it never reaches the guard: the `FOR UPDATE` fails the run first (above).
+
+| Mechanism | Why there is no break proof | What guards it instead |
+|---|---|---|
+| `breaks.status = target.status` in `JdbcStageAStore.RESOLVE_MATCHED_LATE` | unreachable at REPEATABLE READ. A transition committed before the snapshot is read as the break's status; one committed after it, or still open when the run locks the row, fails the `FOR UPDATE` with a serialization failure. Within the statement the lock holds the row, so the status cannot change between the read and the update | the snapshot, proven above (`RunSnapshotTest.serializationFailureFailsTheRun`); the condition stays as defence in depth, to be looked at again with Phase 7's transition endpoint |
