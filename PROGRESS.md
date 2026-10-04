@@ -1,14 +1,15 @@
 # Progress
 
-**Current phase:** 5 — Stage A matching, parts 1a and 1b done (part 2 not started)
+**Current phase:** 5 — Stage A matching, parts 1a, 1b and 1c done (part 2 not started)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
-**Last updated:** 2026-10-03
+**Last updated:** 2026-10-04
 
-## Phase 5 — parts 1a and 1b done; 2 to come
+## Phase 5 — parts 1a, 1b and 1c done; 2 to come
 
-Phase 5 runs in three sessions: 1a (the ArchUnit configuration rule, the schema and the run
-lifecycle, no matching rule), 1b (Stage A rules, item statuses, property tests) and 2 (HTTP,
-automatic trigger, NFR-PERF-2, verification, report).
+Phase 5 runs in four sessions: 1a (the ArchUnit configuration rule, the schema and the run
+lifecycle, no matching rule), 1b (Stage A rules, item statuses, property tests), 1c (three
+changes to 1b that TDD v1.9 settled) and 2 (HTTP, automatic trigger, NFR-PERF-2, verification,
+report).
 
 ### Done in 1a
 
@@ -142,6 +143,10 @@ No `ORDER BY ... LIMIT` decides anything: `(array_agg(id))[1]` appears only wher
 
 ### Open questions for the owner (1b)
 
+Settled by the owner in TDD v1.9 (`137ded2`) and built in 1c: 1 (MATCHED_LATE limited to the types a
+match answers), 3 (REPEATABLE READ) and 4 (A2 whatever the dates). 2 is OQ-6, which waits for
+Phase 7.
+
 1. Decision 6 of the prompt resolves every unresolved break of a matched item as MATCHED_LATE. That
    includes a DUPLICATE_LINE break ingestion opened on a stored line because a later file repeated
    its line id: matching the stored line then closes the duplicate as MATCHED_LATE, though the
@@ -162,7 +167,78 @@ No `ORDER BY ... LIMIT` decides anything: `(array_agg(id))[1]` appears only wher
 
 ### Verification (1b)
 
+This heading was committed empty in `b558a22`, and the 1b numbers were not recorded anywhere else.
+Section G above says the suite ran in both orders; the 1c verification below covers the tree with
+1b and 1c together.
 
+### Done in 1c
+
+- [x] A. MATCHED_LATE resolves only MISSING_IN_PSP, MISSING_IN_LEDGER and AMBIGUOUS_MATCH
+  (`5fc5ea4`). `StageAMatchingTest.duplicateAndConflictBreaksStayOpenWhenTheirItemMatches`: a line
+  with ingestion's DUPLICATE_LINE (through `IngestStatement`, a second file repeating its line id)
+  and lines with run-opened AMOUNT_MISMATCH and CURRENCY_MISMATCH are matched, their breaks stay as
+  opened with one event each, and the stats count them MATCHED (the entries the A2 breaks name stay
+  BROKEN). `missingItemBreaksAreResolvedWhenTheirItemsMatch`: run-opened MISSING_IN_PSP and
+  MISSING_IN_LEDGER are resolved MATCHED_LATE with their events; AMBIGUOUS_MATCH and the
+  INVESTIGATING case were already covered
+- [x] B. The work transaction runs at REPEATABLE READ (`814869c`): `Transactions` gains
+  `inSnapshotTransaction`, which `SpringTransactions` runs at that level, and `RunMatching` uses it
+  for the work alone (RUNNING and FAILED keep their own READ COMMITTED transactions).
+  `SpringTransactionsTest` reads `transaction_isolation` in both. `HeldStageAStore` holds a run right
+  after A1, its first statement. `RunSnapshotTest`: an entry and a line committed during the hold get
+  no match, no grace break and no count, and the next run matches them; an operator's transition
+  committed during the hold on a break the run would resolve fails the run with `could not
+  serialize access due to concurrent update` (FAILED, A1's match gone), and the next run resolves
+  it. The three test doubles of `Transactions` gained the method: the two commit-despite-failure
+  beans apply it to both methods, and the ledger projection's fake refuses it
+- [x] B, break proof (`46fdaf7`): `RunSnapshotBreakProofTest`, a context of its own whose snapshot
+  transaction is READ COMMITTED: A1 misses the pair and the same run's grace statement opens
+  MISSING_IN_PSP and MISSING_IN_LEDGER on it. Built, so nothing Unproven for the snapshot
+- [x] C. A2 ignores the window (`c662cd3`). Tests: another amount and another currency three
+  business days apart, and another amount two months apart, each give their A2 break and no grace
+  break; an exact pair beyond the window is neither a match nor a conflict and both items get
+  their grace breaks; two conflicting entries, one beyond the window, give AMBIGUOUS_MATCH naming
+  both. Inside the window the existing A2 and ambiguity tests are unchanged and pass
+- [x] D. `StageAPropertiesTest` passes unchanged after each of A, B and C (seed 20261003, coverage
+  check included). No generator changed: the properties assert invariants, not outcomes, and every
+  outcome they require still occurs
+- [x] E. `docs/break-proofs.md` part 1c (`9f8713c`), and this file
+- [x] F. Verification below
+
+### Decisions in 1c (for the phase report)
+
+1. The snapshot is a second method on the `Transactions` port rather than an isolation argument:
+   the run's work is the only caller, and the name says what it guarantees
+2. A2's conflicting entries count whatever their dates, and so does its ambiguity: two entries
+   with the line's reference that both conflict give AMBIGUOUS_MATCH naming both, even when only
+   one is within the window (1b decision 3 extended, since the dates no longer say which one the
+   line conflicts with). A1's ambiguity keeps the window: several exact entries within it
+3. An entry with the line's reference, currency and amount beyond the window is neither an A1
+   candidate nor an A2 conflict, as v1.9 reads ("A1 and A3 keep the window"). The line and the
+   entry each reach their grace break. With a conflicting entry as well, the line gets that
+   entry's A2 break
+4. 1b decision 2 (every pair a rule looks at is within the window, A2's included) is replaced by 2
+   and 3 above
+5. The 1b Unproven entry for MATCHED_LATE's status guard is restated: the concurrent transition
+   can now be built in a test, and at REPEATABLE READ it fails the run before the guard is reached
+
+### Verification (1c)
+
+At `9f8713c` (the last code and docs commit of 1c; this file changes nothing the build reads):
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0, 1062 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 %, overall 96.7 %
+- `.\mvnw.cmd -q -B clean verify -Dsurefire.runOrder=reversealphabetical`: exit 0, the same
+  1062 / 0 / 0 / 3, and the same coverage
+- `& "C:\Program Files\Gitinash.exe" ci/check-rules.sh`: exit 0
+
+Each 1c commit also passed the tests it touches before it was committed (`StageAMatchingTest`,
+`StageAPropertiesTest`, `RunMatchingTest`, `WorkRollbackBreakProofTest` and, from B on,
+`RunSnapshotTest`, `RunSnapshotBreakProofTest`, `SpringTransactionsTest`,
+`FailureAfterFileRowBreakProofTest`, `ProjectLedgerEventsTest`); the full build was not run per
+commit (left for part 2, as for 1a and 1b). Docker Desktop was not running at the start of the
+session and was started for Testcontainers; no setting was changed
 
 ### Left for 2
 
@@ -174,7 +250,7 @@ No `ORDER BY ... LIMIT` decides anything: `(array_agg(id))[1]` appears only wher
 - NFR-PERF-2 measured three times under `-Xmx512m`, with indexes added only if the measurement
   calls for them; each match costs one row in `matches`, two in `match_items` and one in
   `match_events`, with immediate foreign-key checks on the last three
-- Per-commit verification of part 1a and 1b commits; the phase report
+- Per-commit verification of part 1a, 1b and 1c commits; the phase report
 
 ### Carried
 
@@ -195,7 +271,12 @@ No `ORDER BY ... LIMIT` decides anything: `(array_agg(id))[1]` appears only wher
   1b: event ids 9_700_000_000 (`StageAMatchingTest`), 9_750_000_000 (`StageAPropertiesTest`, a
   block of 1,000 per source), 9_800_000_000 (`WorkRollbackBreakProofTest`), 9_600_500_000
   (`RunMatchingTest`'s fixture); sources `PSP_STAGE_A_*`, `PSP_PROPERTY_*`, `PSP_RUN_ROLLBACK`,
-  `PSP_RUN_NO_ROLLBACK`, `PSP_STALE_KEPT`
+  `PSP_RUN_NO_ROLLBACK`, `PSP_STALE_KEPT`. Taken in 1c: 9_850_000_000 (`RunSnapshotTest`, a block of
+  1,000 per test) and 9_870_000_000 (`RunSnapshotBreakProofTest`); sources `PSP_SNAPSHOT_UNSEEN`,
+  `PSP_SNAPSHOT_SERIAL`, `PSP_SNAPSHOT_READ_COMMITTED`. `StageAMatchingTest` uses 33 of its 40
+  sources
+- `HeldStageAStore.runHeldWhile` holds a run after A1 while a test commits something, then lets it
+  finish; it holds inside the work transaction after the snapshot was taken
 - jqwik runs `StageAPropertiesTest`; a `TestContextManager` prepares its Spring context. A new
   jqwik class needing the application can do the same
 - A mistake in the 1a session: two build logs were written to the system temp directory (`/tmp`
