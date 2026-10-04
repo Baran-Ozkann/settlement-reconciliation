@@ -15,8 +15,10 @@ import org.springframework.context.annotation.Configuration;
 
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunStore;
+import com.baran.recon.application.port.RunTrigger;
 import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.Transactions;
+import com.baran.recon.application.run.AutomaticRunTrigger;
 import com.baran.recon.application.run.RunMatching;
 import com.baran.recon.application.run.ViewRun;
 import com.baran.recon.domain.calendar.BusinessCalendar;
@@ -40,6 +42,19 @@ class MatchingConfiguration {
     @Bean
     ViewRun viewRun(RunStore runs) {
         return new ViewRun(runs);
+    }
+
+    /**
+     * FR-MAT-1: the run after each ingestion, on one background thread, unless switched off. The
+     * context closes the trigger before the run use case and the database it needs.
+     */
+    @Bean
+    RunTrigger runTrigger(RunMatching runMatching, AutomaticTriggerProperties properties) {
+        if (!properties.enabled()) {
+            return RunTrigger.NONE;
+        }
+        return AutomaticRunTrigger.onOneThread(runMatching::run, properties.queueCapacity(),
+                properties.busyRetryInterval());
     }
 
     /**

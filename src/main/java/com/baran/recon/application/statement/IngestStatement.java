@@ -19,12 +19,15 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 import com.baran.recon.application.port.BreakStore;
+import com.baran.recon.application.port.RunTrigger;
+import com.baran.recon.application.port.RunTrigger.IngestedFile;
 import com.baran.recon.application.port.StatementContext;
 import com.baran.recon.application.port.StatementFileAlreadyIngestedException;
 import com.baran.recon.application.port.StatementParser;
 import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.TooManyLinesException;
 import com.baran.recon.application.port.Transactions;
+import com.baran.recon.application.statement.LineCollector.StoredValueDates;
 import com.baran.recon.domain.breaks.Actor;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.source.ConfiguredSources;
@@ -49,7 +52,11 @@ import com.baran.recon.domain.statement.StatementFileStatus;
  *       last, INGESTED, once its summary is known (FR-ING-6);</li>
  *   <li>if the file breaks its header or the invalid-line threshold (FR-ING-7), that transaction is
  *       rolled back, so none of its lines and no break remain, and the file is recorded REJECTED with
- *       its line errors in a transaction of its own.</li>
+ *       its line errors in a transaction of its own;</li>
+ *   <li>once an INGESTED file has committed, its source and the earliest and latest value dates of
+ *       the lines it stored go to the run trigger (FR-MAT-1, TDD 5.3), which does not make the
+ *       upload wait. A file that stored no line, a rejected file, a refusal and a failure trigger
+ *       nothing.</li>
  * </ol>
  *
  * <p>Nothing else is recorded. A file over the line limit is refused as a file over the size limit
@@ -68,9 +75,11 @@ public final class IngestStatement {
     private final Transactions transactions;
     private final Clock clock;
     private final IngestionLimits limits;
+    private final RunTrigger runTrigger;
 
     public IngestStatement(ConfiguredSources sources, List<StatementParser> parsers, StatementStore store,
-                           BreakStore breaks, Transactions transactions, Clock clock, IngestionLimits limits) {
+                           BreakStore breaks, Transactions transactions, Clock clock, IngestionLimits limits,
+                           RunTrigger runTrigger) {
         this.sources = Objects.requireNonNull(sources, "sources");
         this.parsers = new EnumMap<>(SourceType.class);
         for (StatementParser parser : parsers) {
@@ -88,6 +97,7 @@ public final class IngestStatement {
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.limits = Objects.requireNonNull(limits, "limits");
+        this.runTrigger = Objects.requireNonNull(runTrigger, "runTrigger");
     }
 
     /**
@@ -112,16 +122,20 @@ public final class IngestStatement {
                 hashed.sha256(), SanitizedFilename.of(upload.originalFilename()), hashed.size(), status, lines,
                 upload.uploadedBy(), receivedAt);
         try {
-            return transactions.inTransaction(() -> {
+            Ingested ingested = transactions.inTransaction(() -> {
                 store.checkLineFilesAtCommit();
-                LineSummary lines = parse(upload.content(), fileId, source, uploader, receivedAt);
+                Parsed parsed = parse(upload.content(), fileId, source, uploader, receivedAt);
+                LineSummary lines = parsed.lines();
                 if (lines.headerError().isPresent() || limits.rejects(lines.invalidLineCount(), lines.lineCount())) {
                     throw new Rejected(lines);
                 }
                 StatementFile file = recorder.record(StatementFileStatus.INGESTED, lines);
                 store.storeFile(file);
-                return file;
+                return new Ingested(file, parsed.storedValueDates());
             });
+            ingested.storedValueDates().ifPresent(dates -> runTrigger.fileIngested(
+                    new IngestedFile(fileId, source.code(), dates.first(), dates.last())));
+            return ingested.file();
         } catch (Rejected rejected) {
             StatementFile file = recorder.record(StatementFileStatus.REJECTED, rejected.withoutDuplicates());
             transactions.inTransaction(() -> {
@@ -157,13 +171,14 @@ public final class IngestStatement {
         }
     }
 
-    private LineSummary parse(UploadedStatement.Content content, UUID fileId, SourceDefinition source, Actor uploader,
-                              Instant at) {
+    private Parsed parse(UploadedStatement.Content content, UUID fileId, SourceDefinition source, Actor uploader,
+                         Instant at) {
         LineCollector collector = new LineCollector(fileId, store, breaks, uploader, at);
         try (InputStream in = content.open()) {
             Optional<LineError> headerError = parsers.get(source.type())
                     .parse(in, new StatementContext(fileId, source), collector);
-            return headerError.map(LineSummary::headerRejected).orElseGet(collector::finish);
+            LineSummary lines = headerError.map(LineSummary::headerRejected).orElseGet(collector::finish);
+            return new Parsed(lines, collector.storedValueDates());
         } catch (IOException unreadable) {
             throw new UncheckedIOException(unreadable);
         }
@@ -198,6 +213,12 @@ public final class IngestStatement {
     }
 
     private record Hashed(String sha256, long size) {
+    }
+
+    private record Parsed(LineSummary lines, Optional<StoredValueDates> storedValueDates) {
+    }
+
+    private record Ingested(StatementFile file, Optional<StoredValueDates> storedValueDates) {
     }
 
     @FunctionalInterface

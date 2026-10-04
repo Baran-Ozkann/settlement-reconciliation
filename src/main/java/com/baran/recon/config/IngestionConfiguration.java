@@ -15,6 +15,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.util.unit.DataSize;
 
 import com.baran.recon.application.port.BreakStore;
+import com.baran.recon.application.port.RunTrigger;
 import com.baran.recon.application.port.StatementParser;
 import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.Transactions;
@@ -87,8 +88,9 @@ class IngestionConfiguration {
 
     @Bean
     IngestStatement ingestStatement(ConfiguredSources sources, List<StatementParser> parsers, StatementStore store,
-                                    BreakStore breaks, Transactions transactions, Clock clock, IngestionLimits limits) {
-        return new IngestStatement(sources, parsers, store, breaks, transactions, clock, limits);
+                                    BreakStore breaks, Transactions transactions, Clock clock, IngestionLimits limits,
+                                    RunTrigger runTrigger) {
+        return new IngestStatement(sources, parsers, store, breaks, transactions, clock, limits, runTrigger);
     }
 
     @Bean

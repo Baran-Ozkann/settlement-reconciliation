@@ -25,7 +25,7 @@ import com.baran.recon.domain.item.SourceCode;
  * the test releases it. A test can then see what a second run does while the first is running.
  * Every wait is bounded, so a test that forgets to release fails instead of hanging.
  */
-final class HeldLedgerEntryStore implements LedgerEntryStore {
+public final class HeldLedgerEntryStore implements LedgerEntryStore {
 
     private static final Duration LONGEST_HOLD = Duration.ofSeconds(30);
 
@@ -37,17 +37,17 @@ final class HeldLedgerEntryStore implements LedgerEntryStore {
         this.delegate = delegate;
     }
 
-    static HeldLedgerEntryStore of(LedgerEntryStore injected) {
+    public static HeldLedgerEntryStore of(LedgerEntryStore injected) {
         return (HeldLedgerEntryStore) injected;
     }
 
     /** From now on, a run's work on the source waits inside its transaction until released. */
-    void hold(SourceCode source) {
+    public void hold(SourceCode source) {
         entered.drainPermits();
         held.put(source, new CountDownLatch(1));
     }
 
-    void release(SourceCode source) {
+    public void release(SourceCode source) {
         CountDownLatch latch = held.remove(source);
         if (latch != null) {
             latch.countDown();
@@ -55,7 +55,7 @@ final class HeldLedgerEntryStore implements LedgerEntryStore {
     }
 
     /** True once this many runs are waiting inside their work, each counted once. */
-    boolean awaitEntered(int runs, Duration timeout) throws InterruptedException {
+    public boolean awaitEntered(int runs, Duration timeout) throws InterruptedException {
         return entered.tryAcquire(runs, timeout.toMillis(), TimeUnit.MILLISECONDS);
     }
 
@@ -102,7 +102,7 @@ final class HeldLedgerEntryStore implements LedgerEntryStore {
 
     /** Import into a test context to wrap its store. */
     @TestConfiguration(proxyBeanMethods = false)
-    static class Injection {
+    public static class Injection {
 
         @Bean
         static BeanPostProcessor holdLedgerEntryStore() {

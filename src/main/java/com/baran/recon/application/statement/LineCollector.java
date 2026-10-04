@@ -1,6 +1,7 @@
 package com.baran.recon.application.statement;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -11,6 +12,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import com.baran.recon.application.port.BreakStore;
 import com.baran.recon.application.port.ParsedLine;
@@ -66,6 +68,9 @@ final class LineCollector implements Consumer<ParsedLine> {
     private final List<LineError> errors = new ArrayList<>();
     private long duplicateLineCount;
     private final List<DuplicateLine> duplicates = new ArrayList<>();
+    /** Null until a line is stored; read through {@link #storedValueDates}. */
+    private LocalDate firstStoredValueDate;
+    private LocalDate lastStoredValueDate;
 
     LineCollector(UUID fileId, StatementStore store, BreakStore breaks, Actor uploader, Instant at) {
         this.fileId = fileId;
@@ -100,17 +105,31 @@ final class LineCollector implements Consumer<ParsedLine> {
         return new LineSummary(Optional.empty(), lineCount, invalidLineCount, errors, duplicateLineCount, duplicates);
     }
 
+    /**
+     * The earliest and latest value dates among the lines stored so far; empty while none was. A
+     * line skipped as a duplicate does not count: it is the stored line's, not this file's.
+     */
+    Optional<StoredValueDates> storedValueDates() {
+        return firstStoredValueDate == null
+                ? Optional.empty()
+                : Optional.of(new StoredValueDates(firstStoredValueDate, lastStoredValueDate));
+    }
+
     private void flush() {
         List<DuplicateLine> batchDuplicates = new ArrayList<>();
         if (!pspLines.isEmpty()) {
             Map<UUID, String> lineIds = new HashMap<>();
             pspLines.forEach(line -> lineIds.put(line.id(), line.lineId()));
-            resolve(store.storePspLinesIfAbsent(pspLines), ItemSide.PSP, lineIds, batchDuplicates);
+            List<LineConflict> conflicts = store.storePspLinesIfAbsent(pspLines);
+            countStoredValueDates(pspLines.stream().map(line -> new DatedLine(line.id(), line.valueDate())), conflicts);
+            resolve(conflicts, ItemSide.PSP, lineIds, batchDuplicates);
         }
         if (!bankLines.isEmpty()) {
             Map<UUID, String> lineIds = new HashMap<>();
             bankLines.forEach(line -> lineIds.put(line.id(), line.lineId()));
-            resolve(store.storeBankLinesIfAbsent(bankLines), ItemSide.BANK, lineIds, batchDuplicates);
+            List<LineConflict> conflicts = store.storeBankLinesIfAbsent(bankLines);
+            countStoredValueDates(bankLines.stream().map(line -> new DatedLine(line.id(), line.valueDate())), conflicts);
+            resolve(conflicts, ItemSide.BANK, lineIds, batchDuplicates);
         }
         batchErrors.sort(Comparator.comparingLong(LineError::lineNumber));
         batchErrors.forEach(this::countError);
@@ -143,6 +162,19 @@ final class LineCollector implements Consumer<ParsedLine> {
         return new DuplicateLine(lineNumber, opening.breakId(), opening.opened());
     }
 
+    private void countStoredValueDates(Stream<DatedLine> batch, List<LineConflict> conflicts) {
+        Set<UUID> skipped = new HashSet<>();
+        conflicts.forEach(conflict -> skipped.add(conflict.lineId()));
+        batch.filter(line -> !skipped.contains(line.id())).map(DatedLine::valueDate).forEach(valueDate -> {
+            if (firstStoredValueDate == null || valueDate.isBefore(firstStoredValueDate)) {
+                firstStoredValueDate = valueDate;
+            }
+            if (lastStoredValueDate == null || valueDate.isAfter(lastStoredValueDate)) {
+                lastStoredValueDate = valueDate;
+            }
+        });
+    }
+
     private void countError(LineError error) {
         invalidLineCount++;
         if (errors.size() < LineSummary.MAX_LISTED) {
@@ -155,5 +187,12 @@ final class LineCollector implements Consumer<ParsedLine> {
         if (duplicates.size() < LineSummary.MAX_LISTED) {
             duplicates.add(duplicate);
         }
+    }
+
+    /** The earliest and latest value dates of a file's stored lines. */
+    record StoredValueDates(LocalDate first, LocalDate last) {
+    }
+
+    private record DatedLine(UUID id, LocalDate valueDate) {
     }
 }
