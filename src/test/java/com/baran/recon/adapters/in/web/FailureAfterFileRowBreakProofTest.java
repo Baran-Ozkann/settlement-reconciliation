@@ -21,6 +21,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baran.recon.application.port.StatementStore;
@@ -104,24 +105,35 @@ class FailureAfterFileRowBreakProofTest {
         @Primary
         Transactions commitDespiteFailure(PlatformTransactionManager transactionManager) {
             TransactionTemplate template = new TransactionTemplate(transactionManager);
+            TransactionTemplate snapshotTemplate = new TransactionTemplate(transactionManager);
+            snapshotTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
             return new Transactions() {
                 @Override
                 public <T> T inTransaction(Supplier<T> work) {
-                    RuntimeException[] failure = new RuntimeException[1];
-                    T result = template.execute(status -> {
-                        try {
-                            return work.get();
-                        } catch (RuntimeException thrown) {
-                            failure[0] = thrown;
-                            return null;
-                        }
-                    });
-                    if (failure[0] != null) {
-                        throw failure[0];
-                    }
-                    return result;
+                    return commitDespiteFailure(template, work);
+                }
+
+                @Override
+                public <T> T inSnapshotTransaction(Supplier<T> work) {
+                    return commitDespiteFailure(snapshotTemplate, work);
                 }
             };
+        }
+
+        private static <T> T commitDespiteFailure(TransactionTemplate template, Supplier<T> work) {
+            RuntimeException[] failure = new RuntimeException[1];
+            T result = template.execute(status -> {
+                try {
+                    return work.get();
+                } catch (RuntimeException thrown) {
+                    failure[0] = thrown;
+                    return null;
+                }
+            });
+            if (failure[0] != null) {
+                throw failure[0];
+            }
+            return result;
         }
     }
 }

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -42,6 +43,9 @@ class SpringTransactionsTest {
     @Autowired
     private LedgerEntryStore store;
 
+    @Autowired
+    private JdbcClient jdbc;
+
     @Test
     @DisplayName("work that returns is committed")
     void completedWorkCommits() {
@@ -62,6 +66,30 @@ class SpringTransactionsTest {
             throw failure;
         })).isSameAs(failure);
         assertThat(store.findById(entry.id())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("TDD 5.3: a snapshot transaction runs at REPEATABLE READ, any other at READ COMMITTED")
+    void snapshotTransactionsAreRepeatableRead() {
+        assertThat(transactions.inSnapshotTransaction(this::isolation)).isEqualTo("repeatable read");
+        assertThat(transactions.inTransaction(this::isolation)).isEqualTo("read committed");
+    }
+
+    @Test
+    @DisplayName("work in a snapshot transaction that throws is rolled back, and the exception reaches the caller unchanged")
+    void failedSnapshotWorkRollsBack() {
+        LedgerEntry entry = entry();
+        IllegalStateException failure = new IllegalStateException("after the insert");
+
+        assertThatThrownBy(() -> transactions.inSnapshotTransaction(() -> {
+            store.storeIfAbsent(entry);
+            throw failure;
+        })).isSameAs(failure);
+        assertThat(store.findById(entry.id())).isEmpty();
+    }
+
+    private String isolation() {
+        return jdbc.sql("SHOW transaction_isolation").query(String.class).single();
     }
 
     private static LedgerEntry entry() {

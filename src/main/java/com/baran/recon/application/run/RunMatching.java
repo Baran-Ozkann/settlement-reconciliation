@@ -39,10 +39,13 @@ import com.baran.recon.domain.source.StageASettings;
  *   <li>the run is recorded RUNNING with its configuration snapshot (FR-MAT-8), in a transaction of
  *       its own. The database allows one RUNNING run per source, so a run of a busy source is
  *       refused here, naming the run that holds it;</li>
- *   <li>in one transaction: Stage A for a PSP source, the run's statistics (FR-MAT-10), and the run
- *       set COMPLETED;</li>
+ *   <li>in one transaction at REPEATABLE READ: Stage A for a PSP source, the run's statistics
+ *       (FR-MAT-10), and the run set COMPLETED. Every statement reads the snapshot the first one
+ *       took, so an item committed while the run works is seen by none of its steps, never by
+ *       some and not others; the next run takes it up;</li>
  *   <li>if that transaction fails it is rolled back, so nothing of the run's work remains
- *       (NFR-REL-2), and the run is set FAILED in a transaction of its own.</li>
+ *       (NFR-REL-2), and the run is set FAILED in a transaction of its own. A serialization
+ *       failure is such a failure.</li>
  * </ol>
  *
  * <p>A run's scope is its source's items with a value date in the range. A ledger entry with no
@@ -104,7 +107,7 @@ public final class RunMatching {
         }
         ReconciliationRun running = start(source, valueDateFrom, valueDateTo, triggeredBy);
         try {
-            return transactions.inTransaction(() -> work(source, running));
+            return transactions.inSnapshotTransaction(() -> work(source, running));
         } catch (RuntimeException failure) {
             recordFailure(running, failure);
             throw failure;

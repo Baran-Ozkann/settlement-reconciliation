@@ -162,6 +162,12 @@ class ProjectLedgerEventsTest {
                 open = false;
             }
         }
+
+        /** The projection's transactions are plain ones; a snapshot would be a change worth a test. */
+        @Override
+        public <T> T inSnapshotTransaction(Supplier<T> work) {
+            throw new UnsupportedOperationException("the projection takes no snapshot transaction");
+        }
     }
 
     /** Atomic per call, as a transaction around it makes the real store: a refused batch keeps nothing. */
