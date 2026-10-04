@@ -231,7 +231,7 @@ At `9f8713c` (the last code and docs commit of 1c; this file changes nothing the
   domain 99.4 %, overall 96.7 %
 - `.\mvnw.cmd -q -B clean verify -Dsurefire.runOrder=reversealphabetical`: exit 0, the same
   1062 / 0 / 0 / 3, and the same coverage
-- `& "C:\Program Files\Gitinash.exe" ci/check-rules.sh`: exit 0
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0
 
 Each 1c commit also passed the tests it touches before it was committed (`StageAMatchingTest`,
 `StageAPropertiesTest`, `RunMatchingTest`, `WorkRollbackBreakProofTest` and, from B on,
