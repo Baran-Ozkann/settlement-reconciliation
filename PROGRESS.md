@@ -1,15 +1,116 @@
 # Progress
 
-**Current phase:** 5 — Stage A matching, parts 1a, 1b and 1c done (part 2 not started)
+**Current phase:** 5 — Stage A matching, parts 1a, 1b, 1c and 2a done (2b not started)
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
 **Last updated:** 2026-10-04
 
-## Phase 5 — parts 1a, 1b and 1c done; 2 to come
+## Phase 5 — parts 1a, 1b, 1c and 2a done; 2b to come
 
-Phase 5 runs in four sessions: 1a (the ArchUnit configuration rule, the schema and the run
+Phase 5 runs in five sessions: 1a (the ArchUnit configuration rule, the schema and the run
 lifecycle, no matching rule), 1b (Stage A rules, item statuses, property tests), 1c (three
-changes to 1b that TDD v1.9 settled) and 2 (HTTP, automatic trigger, NFR-PERF-2, verification,
-report).
+changes to 1b that TDD v1.9 settled), 2a (A1 as reference identity, the run endpoints, the
+automatic trigger) and 2b (NFR-PERF-2, the break-proofs record, per-commit verification, the
+phase report).
+
+### Done in 2a
+
+- [x] A. Owner decision 1 (`a927608`): references are identity. A1 matches an exact pair whatever
+  the value dates; several exact entries with the line's reference are AMBIGUOUS_MATCH whatever
+  their dates; only A3 uses the window. `StageAMatchingTest`: pairs three business days and two
+  months apart are A1 matches with no grace break (stats all MATCHED); two exact entries, one beyond
+  the window, are AMBIGUOUS_MATCH naming both; the window and holiday tests now use A3 lines (no
+  reference), which still match within the window and not beyond it. `StageAPropertiesTest` passes
+  unchanged (seed 20261003, coverage check included): no generator changed, since the properties
+  assert invariants, not outcomes, and every outcome they require still occurs
+- [x] B. Role rules (`4a6a981`, `RunRolesTest`), then `GET /api/v1/runs/{id}` (`4c8b56c`) and
+  `POST /api/v1/runs` (`6ffe304`). GET (VIEWER): 200 with source, range, status, config snapshot,
+  stats (none while RUNNING or FAILED), start and finish, trigger; 404 for an unknown id, 400 for a
+  malformed one. POST (OPERATOR, JSON `source`, `valueDateFrom`, `valueDateTo`): synchronous, 201
+  with Location and the run; 409 with `runningRunId` when the index refuses the RUNNING row; 400 for
+  an unknown or malformed source, a reversed range, a missing or non-ISO date (parsed strictly, so
+  2026-02-30 is refused) and a body that is not JSON. `RunApiTest` covers every status, 401, 403,
+  the cross-site rule, LeakCheck on every error body, and that no refused request records a run
+- [x] C. Configuration first (`4594dca`): `recon.matching.automatic-trigger.enabled` (true; false in
+  the test profile, decision 1 below), `queue-capacity` (100), `busy-retry-interval` (5 s); an
+  impossible value stops startup (`AutomaticTriggerConfigurationTest`). The trigger (`5e45e7c`):
+  `IngestStatement` hands a `RunTrigger` port the file's id, source and the earliest and latest value
+  dates of the lines it stored (`LineCollector` keeps them per batch, repeats excluded), after the
+  INGESTED file has committed. `AutomaticRunTrigger`: one daemon thread, a bounded queue
+  (`AbortPolicy`), runs in file order as `system`; on SOURCE_BUSY it logs once that it waits and
+  retries every interval; a run it cannot start, whose work fails, or still queued at shutdown is
+  WARNed with the file id; a full queue is WARNed with the file id and the upload answered as usual.
+  Tests: `AutomaticRunTriggerTest` (8, no Spring), `IngestionRunTriggerTest` (6: the range, bank
+  files, repeats, nothing for a file that stored no line, a rejected file or a refused upload),
+  `RunAfterUploadTest` (6, over HTTP with a held run: a COMPLETED run for the source and range, PSP
+  and bank; none for a rejected file; a wait for a held run, its start no earlier than the other's
+  finish; a full queue's WARN while the queued runs still complete; a response that arrives while
+  its run is held)
+- [x] D. Break proofs, permanent: `TriggerWithoutWaitBreakProofTest` (`23c9c7c`, a trigger that does
+  not wait has its run refused and WARNed, never run) and `BlockingTriggerQueueBreakProofTest`
+  (`4f21985`, a caller-runs queue holds the upload until the run has run). Recorded one-offs: A1 with
+  the window back, A3 without it, the POST role rule deleted. Unproven: the GET role rule (every
+  user is a VIEWER until Phase 9). All in `docs/break-proofs.md` part 2a (`4958686`)
+- [x] E. Verification below
+
+### Decisions in 2a (for the phase report)
+
+1. **Deviation:** `recon.matching.automatic-trigger.enabled` is a switch the TDD does not ask for.
+   The test profile turns the trigger off: test classes share sources and one database, most of
+   their files repeat one reference, and a run started behind a test's back would race the runs the
+   test starts and open breaks it does not expect. The alternative is the application's trigger
+   replaced by a test bean in every class that ingests, which a new class could forget. Open
+   question 1
+2. The automatic run's range is the earliest and latest value date among the lines the file stored.
+   A line skipped as a repeat of another file's is not counted, and a file that stored no line
+   triggers no run (logged nowhere: it has nothing new to match)
+3. Automatic runs are recorded as triggered by `system`; the uploader is in the file's
+   `uploaded_by`, and the trigger's log lines name the file id
+4. A bank file triggers a run too (FR-MAT-1 names no type); until Phase 6 it only counts its scope
+5. A run whose work fails answers POST with 500, like any failure of the application; the FAILED
+   run is readable through GET but its id is not in the 500 body. Open question 4
+6. "Several entries carrying a line's reference are ambiguous" is read as several *exact* entries
+   (A1's candidates), as `twoExactEntriesAreAmbiguous` already had it: a line with one exact entry
+   and one conflicting entry is still matched to the exact one by A1. Open question 5
+7. The trigger checks nothing itself before starting a run: the running-run index refuses a busy
+   source, and the trigger waits on that refusal. Each retry is one refused insert, which
+   PostgreSQL logs on its side; 5 s keeps that to 24 a run of the 120 s target
+8. While a source stays busy the trigger waits without limit, holding its one thread. A run left
+   RUNNING by an `Error` (part 1a decision 3) would hold every later triggered run until restart,
+   when startup recovery frees the source. Known risk, open question 3
+9. `HeldLedgerEntryStore` became public, so the web tests can hold a run; `StatementFiles` gained a
+   PSP line and a bank line on a given value date (a shared fixture: the full build ran before the
+   commit)
+
+### Open questions for the owner (2a)
+
+1. Keep `recon.matching.automatic-trigger.enabled` (off in the test profile), or replace it with a
+   test bean in each class that ingests?
+2. The TDD on disk is v1.9: no v1.10 is committed. Decision 1 was built as the prompt states it.
+   §8.2's A1 row still says "value dates within window", and its Stage A details say "A1 and A3
+   keep the window"; both need the v1.10 text
+3. Should the trigger give up on a source busy for longer than some bound (WARN with the file id),
+   so one stuck run cannot hold every later triggered run?
+4. Should a POST whose run failed answer with the FAILED run's id (500 or another status)?
+5. Decision 6: confirm that one exact entry plus a conflicting one under the same reference is an A1
+   match, not AMBIGUOUS_MATCH
+
+### Verification (2a)
+
+At `4958686` (the last code and docs commit of 2a; this file changes nothing the build reads):
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0, 1116 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 %, overall 96.7 %
+- `.\mvnw.cmd -q -B clean verify -Dsurefire.runOrder=reversealphabetical`: exit 0, the same
+  1116 / 0 / 0 / 3, and the same coverage
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0
+
+Each 2a commit passed the tests it touches before it was committed; `5e45e7c` also passed the full
+`clean verify` (1114 / 0 / 0 / 3) because it changes a shared fixture. Its first full build failed
+once, before the commit: `IngestionRunTriggerTest` ingested a header-only file, whose content (and
+hash) another class had already ingested in the shared database (409). That case was dropped, since
+a header-only file cannot carry content of its own; the all-repeated file still covers "stored no
+line". The full build was not run per commit for the other 2a commits (left for 2b, as for part 1).
 
 ### Done in 1a
 
@@ -240,17 +341,14 @@ Each 1c commit also passed the tests it touches before it was committed (`StageA
 commit (left for part 2, as for 1a and 1b). Docker Desktop was not running at the start of the
 session and was started for Testcontainers; no setting was changed
 
-### Left for 2
+### Left for 2b
 
-- `POST /api/v1/runs` (OPERATOR; synchronous; 201 with status and stats; 409 with
-  `RunRefusedException.runningRunId()`; 400 for `UNKNOWN_SOURCE` and `INVALID_DATE_RANGE`) and
-  `GET /api/v1/runs/{id}` (VIEWER), each with its role rule in `SecurityConfiguration`
-- The automatic trigger (FR-MAT-1): a single-thread executor after an ingestion commits; it retries
-  while the source is busy and is never dropped silently (WARN with the file id)
 - NFR-PERF-2 measured three times under `-Xmx512m`, with indexes added only if the measurement
   calls for them; each match costs one row in `matches`, two in `match_items` and one in
-  `match_events`, with immediate foreign-key checks on the last three
-- Per-commit verification of part 1a, 1b and 1c commits; the phase report
+  `match_events`, with immediate foreign-key checks on the last three. A1 no longer joins the
+  business-day index, so its plan changes from the one part 1 had
+- `docs/break-proofs.md`: the record for the phase as a whole (parts 1a-2a are each in it)
+- Per-commit verification of the part 1a, 1b, 1c and 2a commits; the phase report
 
 ### Carried
 
@@ -273,8 +371,16 @@ session and was started for Testcontainers; no setting was changed
   (`RunMatchingTest`'s fixture); sources `PSP_STAGE_A_*`, `PSP_PROPERTY_*`, `PSP_RUN_ROLLBACK`,
   `PSP_RUN_NO_ROLLBACK`, `PSP_STALE_KEPT`. Taken in 1c: 9_850_000_000 (`RunSnapshotTest`, a block of
   1,000 per test) and 9_870_000_000 (`RunSnapshotBreakProofTest`); sources `PSP_SNAPSHOT_UNSEEN`,
-  `PSP_SNAPSHOT_SERIAL`, `PSP_SNAPSHOT_READ_COMMITTED`. `StageAMatchingTest` uses 33 of its 40
-  sources
+  `PSP_SNAPSHOT_SERIAL`, `PSP_SNAPSHOT_READ_COMMITTED`. `StageAMatchingTest` uses 35 of its 40
+  sources. Taken in 2a (sources only, no event ids): `PSP_RUN_API` (`RunApiTest`; `PSP_ROLES` is
+  only named in `RunRolesTest`'s requests), `PSP_TRIGGER_RANGE`, `BANK_TRIGGER_RANGE`,
+  `PSP_AFTER_UPLOAD_*`, `BANK_AFTER_UPLOAD_DONE`, `PSP_TRIGGER_NO_WAIT`, `PSP_TRIGGER_CALLER_RUNS`
+- The automatic trigger is off in the test profile. A class that tests it sets
+  `recon.matching.automatic-trigger.enabled=true` in its own properties, with a short
+  `busy-retry-interval`; `HeldLedgerEntryStore` (now public) holds a run inside its work for any
+  source type
+- Every header-only file has the same hash, so only one can ever be ingested in the shared test
+  database
 - `HeldStageAStore.runHeldWhile` holds a run after A1 while a test commits something, then lets it
   finish; it holds inside the work transaction after the snapshot was taken
 - jqwik runs `StageAPropertiesTest`; a `TestContextManager` prepares its Spring context. A new
