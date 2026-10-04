@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Technical Design Document
 
-Version: 1.9 — run snapshot isolation, MATCHED_LATE scope, A2 without the window (Phase 5 part 1b outcomes)
+Version: 1.11 — references are identity (A1 and A2 without the window); automatic trigger bounds and switch (Phase 5 parts 1c and 2a outcomes)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -431,7 +431,7 @@ recon:
 
 | Order | Rule id | Condition | Outcome |
 |---|---|---|---|
-| 1 | `A1_EXACT_REFERENCE` | same non-empty reference, same currency, `ledger.amount == psp.gross_amount`, value dates within window | Match 1:1 |
+| 1 | `A1_EXACT_REFERENCE` | same non-empty reference, same currency, `ledger.amount == psp.gross_amount` (no value-date window: see below) | Match 1:1 |
 | 2 | `A2_REFERENCE_CONFLICT` | same non-empty reference but currency or amount differs | No match. Break `CURRENCY_MISMATCH` or `AMOUNT_MISMATCH` on the PSP line, related item = ledger entry |
 | 3 | `A3_FALLBACK_UNIQUE` | PSP line with empty/unknown reference; exactly one unmatched ledger entry with same currency, same amount, value date within window | Match 1:1, flagged `low_confidence = true` |
 | — | ambiguity | A1 or A3 finds > 1 candidate | No match. Break `AMBIGUOUS_MATCH` on the PSP line, related items = all candidates |
@@ -450,7 +450,7 @@ Stage A details (settled in v1.8):
   `[valueDateFrom, valueDateTo]` (FR-MAT-9 excludes entries with none). A candidate on the other side
   may lie outside that range, as long as it is within the value-date window of the item.
 - **Window.** "Value dates within window" means the two value dates are at most
-  `value-date-window-days` business days apart (§8.1 calendar).
+  `value-date-window-days` business days apart (§8.1 calendar). It applies to A3 only (v1.10).
 - **Item status after a run (INV-1).** An item is `MATCHED` if it is in an active match; otherwise
   `BROKEN` if it is the subject of an unresolved break **or named in the related items** of one;
   otherwise `PENDING`. A ledger entry named by an A2 or ambiguity break is therefore `BROKEN` and gets
@@ -462,9 +462,15 @@ Stage A details (settled in v1.8):
   `system` (FR-BRK-5). A match answers `MISSING_IN_PSP`, `MISSING_IN_LEDGER` and `AMBIGUOUS_MATCH`.
   It does not answer `DUPLICATE_LINE`, `AMOUNT_MISMATCH` or `CURRENCY_MISMATCH`: those stay open for
   an operator, and the matched item is still `MATCHED` (status order above).
-- **A2 ignores the value-date window.** A shared reference is the transaction's own id, so a conflict
-  in amount or currency under it is a discrepancy whatever the dates; it gets its A2 break rather
-  than two grace breaks that would point at missing items. A1 and A3 keep the window.
+- **References are identity; the window bounds guesses.** A shared reference is the transaction's
+  own id. A1 matches an exact pair whatever the value dates (v1.10), and A2 opens its conflict break
+  whatever the dates (v1.9): two grace breaks pointing at "missing" items that both exist would be
+  wrong in either case. Several *exact* entries carrying the line's reference are ambiguous whatever their
+  dates. Only A3, which matches without a reference, uses the window, because there the dates are
+  part of the evidence. A late settlement is still visible: the match keeps both items' value dates.
+  One exact entry beside a conflicting one is an A1 match with the exact entry; the conflicting entry
+  stays unmatched and reaches `MISSING_IN_PSP` through its grace period. Several conflicting entries and
+  no exact one are `AMBIGUOUS_MATCH`.
 - **Memory.** A run never holds all of a source's items in memory: matching is set-based in SQL or
   streams in a fixed order, so NFR-PERF-2 runs under the same `-Xmx512m` as NFR-PERF-1.
 
@@ -829,6 +835,13 @@ write technique is settled here first.
   range is submitted to a single-thread background executor. If the source is busy it waits and tries
   again until the running run ends; it never runs alongside it and is never dropped silently (a run it
   cannot start is logged WARN with the file id). The upload's response does not wait for it.
+  Configuration under `recon.matching.automatic-trigger.*`: `enabled` (true; the test profile sets
+  false and a class that tests the trigger turns it on, so no background run races a test's own runs),
+  `queue-capacity`, `busy-retry-interval`, and `busy-give-up-after` (30 minutes by default): a source
+  still busy after that is given up on, WARN with the file id, and the run can be started by hand, so
+  one stuck run cannot hold every later triggered run.
+- A `POST /api/v1/runs` whose run fails answers `500` Problem Details carrying the FAILED run's id
+  (`runId`), so the operator can read it with `GET /api/v1/runs/{id}`; nothing else of the failure.
 - Exit: FR-MAT-1…6, FR-MAT-8…10 for Stage A, FR-BRK-5; INV-1, INV-4, INV-5 property tests (shuffled
   inputs, fixed seed); an existing active match is never altered by a later run; a re-run with no new
   data writes nothing but its run row; a concurrent run on the same source is refused by the index
