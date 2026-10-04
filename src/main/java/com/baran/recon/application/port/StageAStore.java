@@ -36,13 +36,15 @@ public interface StageAStore {
      * <ul>
      *   <li>DUPLICATE_LINE when another unmatched line of the source carries the same reference;
      *       neither is matched, and each names the others as related items;</li>
-     *   <li>otherwise, among the unmatched entries with that transaction id within the window:
-     *       AMBIGUOUS_MATCH when more than one has the line's currency and amount (A1 found several),
-     *       or when none has and several conflict; CURRENCY_MISMATCH or AMOUNT_MISMATCH when exactly
-     *       one conflicts (A2). The entries are the related items.</li>
+     *   <li>otherwise, among the unmatched entries with that transaction id: AMBIGUOUS_MATCH when more
+     *       than one has the line's currency and amount within the window (A1 found several), or when
+     *       none has and several conflict; CURRENCY_MISMATCH or AMOUNT_MISMATCH when exactly one
+     *       conflicts (A2). A conflicting entry counts whatever its value date: A2 ignores the window.
+     *       The entries are the related items.</li>
      * </ul>
-     * A line with no such entry gets nothing here. A line that already has an unresolved break gets
-     * no second one (INV-7).
+     * A line with no such entry gets nothing here, nor one whose only entries have its currency and
+     * amount outside the window. A line that already has an unresolved break gets no second one
+     * (INV-7).
      *
      * @return the breaks opened
      */

@@ -122,8 +122,13 @@ class JdbcStageAStore implements StageAStore {
 
     /**
      * After A1, each unmatched line in the range with a UUID reference: a duplicate reference, or the
-     * entries carrying its transaction id within the window. A line with exactly one exact entry
-     * was matched by A1 and is no longer unmatched; one with no entry at all is left alone.
+     * entries carrying its transaction id. Exact entries count within the window only, as in A1: a
+     * line with several is ambiguous, and one with exactly one was matched by A1 and is no longer
+     * unmatched. Entries with another currency or amount count whatever their dates, since the
+     * shared reference is the transaction's own id (A2, TDD 8.2): one is a mismatch, several are
+     * ambiguous. A line with neither is left alone, an exact entry outside the window included.
+     * The business-day index covers the range and the window around it, so an entry dated beyond
+     * it is outside the window.
      */
     private static final String REFERENCE_FINDINGS = """
             reference_lines AS (
@@ -146,30 +151,34 @@ class JdbcStageAStore implements StageAStore {
             carrier AS (
                 SELECT subject.id AS psp_id, entry.id AS ledger_id,
                        entry.currency = subject.currency AS same_currency,
-                       entry.currency = subject.currency AND entry.amount = subject.gross_amount AS exact
+                       entry.currency = subject.currency AND entry.amount = subject.gross_amount AS exact,
+                       coalesce(abs(line_day.ordinal - entry_day.ordinal) <= :windowDays, FALSE) AS within_window
                   FROM subject
                   JOIN ledger entry ON entry.transaction_id = subject.reference
-                  JOIN business_day line_day ON line_day.day = subject.value_date
-                  JOIN business_day entry_day ON entry_day.day = entry.value_date
-                 WHERE subject.lines = 1 AND abs(line_day.ordinal - entry_day.ordinal) <= :windowDays
+                  LEFT JOIN business_day line_day ON line_day.day = subject.value_date
+                  LEFT JOIN business_day entry_day ON entry_day.day = entry.value_date
+                 WHERE subject.lines = 1
             ),
             carriers AS (
-                SELECT psp_id, count(*) AS entries, count(*) FILTER (WHERE exact) AS exact_entries,
-                       bool_and(same_currency) AS same_currency,
-                       jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id) AS all_items,
+                SELECT psp_id,
+                       count(*) FILTER (WHERE exact AND within_window) AS exact_entries,
+                       count(*) FILTER (WHERE NOT exact) AS conflicting_entries,
+                       bool_and(same_currency) FILTER (WHERE NOT exact) AS same_currency,
                        jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id)
-                           FILTER (WHERE exact) AS exact_items
+                           FILTER (WHERE exact AND within_window) AS exact_items,
+                       jsonb_agg(jsonb_build_object('side', 'LEDGER', 'id', ledger_id) ORDER BY ledger_id)
+                           FILTER (WHERE NOT exact) AS conflicting_items
                   FROM carrier
                  GROUP BY psp_id
             ),
             conflict AS (
                 SELECT psp_id AS item_id,
-                       CASE WHEN exact_entries > 1 OR entries > 1 THEN 'AMBIGUOUS_MATCH'
+                       CASE WHEN exact_entries > 1 OR conflicting_entries > 1 THEN 'AMBIGUOUS_MATCH'
                             WHEN same_currency THEN 'AMOUNT_MISMATCH'
                             ELSE 'CURRENCY_MISMATCH' END AS break_type,
-                       CASE WHEN exact_entries > 1 THEN exact_items ELSE all_items END AS related_items
+                       CASE WHEN exact_entries > 1 THEN exact_items ELSE conflicting_items END AS related_items
                   FROM carriers
-                 WHERE exact_entries <> 1
+                 WHERE exact_entries > 1 OR (exact_entries = 0 AND conflicting_entries > 0)
             ),
             found AS (
                 SELECT 'PSP' AS item_side, item_id, break_type, related_items FROM duplicate

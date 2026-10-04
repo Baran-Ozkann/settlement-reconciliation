@@ -78,6 +78,7 @@ class StageAMatchingTest {
     private static final LocalDate MONDAY = LocalDate.of(2026, 10, 5);
     private static final LocalDate TUESDAY = LocalDate.of(2026, 10, 6);
     private static final LocalDate WEDNESDAY = LocalDate.of(2026, 10, 7);
+    private static final LocalDate THURSDAY = LocalDate.of(2026, 10, 8);
     private static final LocalDate FRIDAY = LocalDate.of(2026, 10, 9);
     /** Monday 2026-10-12, the day every run of this class is made on. */
     private static final LocalDate TODAY = FixedRunClock.TODAY;
@@ -241,6 +242,64 @@ class StageAMatchingTest {
         assertThat(fixture.matches(source)).isEmpty();
         assertThat(onlyBreak()).extracting(BreakView::type, BreakView::subject, BreakView::related)
                 .containsExactly("CURRENCY_MISMATCH", "PSP L-001", Set.of(entry));
+    }
+
+    @Test
+    @DisplayName("A2_REFERENCE_CONFLICT ignores the window: another amount or currency beyond it opens AMOUNT_MISMATCH "
+            + "or CURRENCY_MISMATCH, and neither item gets a grace break")
+    void referenceConflictOutsideTheWindowIsStillAConflict() {
+        UUID amountConflict = UUID.randomUUID();
+        UUID currencyConflict = UUID.randomUUID();
+        UUID farConflict = UUID.randomUUID();
+        String amountEntry = fixture.ledger(source, amountConflict, 2_000, TRY, MONDAY);
+        fixture.psp(source, "L-AMOUNT", amountConflict.toString(), 2_500, TRY, THURSDAY);
+        String currencyEntry = fixture.ledger(source, currencyConflict, 3_000, TRY, MONDAY);
+        fixture.psp(source, "L-CURRENCY", currencyConflict.toString(), 3_000, "EUR", THURSDAY);
+        String farEntry = fixture.ledger(source, farConflict, 4_100, TRY, LocalDate.of(2026, 8, 3));
+        fixture.psp(source, "L-FAR", farConflict.toString(), 4_000, TRY, MONDAY);
+
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .as("three business days apart, and an entry two months before its line")
+                .containsExactlyInAnyOrder(
+                        tuple("AMOUNT_MISMATCH", "PSP L-AMOUNT", Set.of(amountEntry)),
+                        tuple("CURRENCY_MISMATCH", "PSP L-CURRENCY", Set.of(currencyEntry)),
+                        tuple("AMOUNT_MISMATCH", "PSP L-FAR", Set.of(farEntry)));
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "ledger.TRY.broken.count", 2L, "ledger.TRY.pending.count", 0L,
+                "psp.TRY.broken.count", 2L, "psp.EUR.broken.count", 1L, "psp.TRY.pending.count", 0L)));
+    }
+
+    @Test
+    @DisplayName("A1_EXACT_REFERENCE keeps the window: the line's reference, currency and amount beyond it is no match "
+            + "and no A2 break; both items reach their grace breaks")
+    void exactReferenceOutsideTheWindowIsNeitherAMatchNorAConflict() {
+        UUID transaction = UUID.randomUUID();
+        String entry = fixture.ledger(source, transaction, 1_000, TRY, MONDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 1_000, TRY, THURSDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).isEmpty();
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject)
+                .containsExactlyInAnyOrder(tuple("MISSING_IN_PSP", entry), tuple("MISSING_IN_LEDGER", "PSP L-001"));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-4: two entries with the reference that both conflict, one beyond the window, is AMBIGUOUS_MATCH "
+            + "naming both")
+    void conflictingEntriesAreAmbiguousWhateverTheirDates() {
+        UUID transaction = UUID.randomUUID();
+        String near = fixture.ledger(source, transaction, 4_000, TRY, THURSDAY);
+        String far = fixture.ledger(source, transaction, 6_000, TRY, MONDAY);
+        fixture.psp(source, "L-001", transaction.toString(), 5_000, TRY, THURSDAY);
+
+        run(MONDAY, FRIDAY);
+
+        assertThat(onlyBreak()).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactly("AMBIGUOUS_MATCH", "PSP L-001", Set.of(near, far));
     }
 
     @Test
