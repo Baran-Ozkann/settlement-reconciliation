@@ -1,12 +1,15 @@
 package com.baran.recon.config;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.ZoneId;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -21,6 +24,7 @@ import com.baran.recon.domain.source.ConfiguredSources;
 
 /** The matching run use cases, built from the ports they need (TDD 5.3). */
 @Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties(MatchingConfiguration.AutomaticTriggerProperties.class)
 class MatchingConfiguration {
 
     private static final Logger LOG = LoggerFactory.getLogger(MatchingConfiguration.class);
@@ -48,5 +52,31 @@ class MatchingConfiguration {
     SmartInitializingSingleton failRunsLeftRunning(RunMatching runMatching) {
         return () -> runMatching.failRunsLeftRunning()
                 .forEach(id -> LOG.warn("Run {} was left RUNNING by a stopped instance and is now FAILED", id));
+    }
+
+    /**
+     * {@code recon.matching.automatic-trigger} (FR-MAT-1): the run started after each ingestion, on a
+     * single background thread. A value that cannot hold stops startup.
+     *
+     * @param enabled           whether an ingested file starts a run at all. On in the application;
+     *                          off in the test profile, whose classes share sources and would race a
+     *                          background run they did not ask for
+     * @param queueCapacity     ingested files whose runs may wait for the thread. One more is refused
+     *                          and logged, never held: the upload does not wait for a place
+     * @param busyRetryInterval how long a run waits before trying again while its source has a
+     *                          running run; each try is one refused insert
+     */
+    @ConfigurationProperties("recon.matching.automatic-trigger")
+    record AutomaticTriggerProperties(boolean enabled, int queueCapacity, Duration busyRetryInterval) {
+
+        AutomaticTriggerProperties {
+            if (queueCapacity < 1) {
+                throw new IllegalArgumentException("recon.matching.automatic-trigger.queue-capacity must be positive");
+            }
+            if (busyRetryInterval == null || busyRetryInterval.isNegative() || busyRetryInterval.isZero()) {
+                throw new IllegalArgumentException(
+                        "recon.matching.automatic-trigger.busy-retry-interval must be a positive duration");
+            }
+        }
     }
 }

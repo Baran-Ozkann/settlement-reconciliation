@@ -34,3 +34,9 @@ recon:
   ingestion:
     # Under the build's own output, so a test run writes nothing to the system's temp directory.
     temp-directory: target/test-uploads
+  matching:
+    automatic-trigger:
+      # Test classes share sources and the database; a run started behind a test's back would race
+      # the runs it starts itself and open breaks it does not expect. The classes that test the
+      # trigger switch it on in their own contexts.
+      enabled: false

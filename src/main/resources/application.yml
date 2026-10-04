@@ -91,6 +91,17 @@ recon:
   # A PSP source's value-date-window-days, grace-days-ledger-unmatched and grace-days-psp-unmatched
   # are 2, 3 and 1 business days unless it sets its own.
   sources: []
+  # FR-MAT-1: after a file is ingested, a run for its source and the value-date range of the lines it
+  # stored goes to one background thread, and the upload does not wait for it. While the source has a
+  # running run it waits and tries again; it never runs alongside one.
+  matching:
+    automatic-trigger:
+      enabled: true
+      # Ingested files whose runs may wait for the thread. One more is refused and logged with the
+      # file's id, and its run can be started with POST /api/v1/runs.
+      queue-capacity: 100
+      # Each try while the source is busy is one insert the database refuses.
+      busy-retry-interval: 5s
   # TDD 8.1: value-date windows and grace periods count every day except these. Holidays are ISO
   # dates. Both are snapshotted onto each run (FR-MAT-8).
   business-calendar:
