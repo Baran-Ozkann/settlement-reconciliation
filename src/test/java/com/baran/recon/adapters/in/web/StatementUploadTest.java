@@ -22,6 +22,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.baran.recon.application.port.RunTrigger;
 import com.baran.recon.support.Multipart;
 import com.baran.recon.support.ReconPostgres;
 import com.baran.recon.support.ReconUsers;
@@ -62,6 +63,9 @@ class StatementUploadTest {
     @Autowired
     private ApplicationContext context;
 
+    @Autowired
+    private RunTrigger runTrigger;
+
     private StatementApi api;
 
     @DynamicPropertySource
@@ -77,6 +81,13 @@ class StatementUploadTest {
     @AfterAll
     void closeClient() {
         api.close();
+    }
+
+    @Test
+    @DisplayName("FR-MAT-1: the test profile switches the automatic trigger off, so no upload here starts a run behind "
+            + "a test's back")
+    void testProfileSwitchesTheAutomaticTriggerOff() {
+        assertThat(runTrigger).isSameAs(RunTrigger.NONE);
     }
 
     @Test

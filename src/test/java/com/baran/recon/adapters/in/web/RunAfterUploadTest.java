@@ -30,6 +30,8 @@ import org.springframework.test.context.DynamicPropertySource;
 
 import com.baran.recon.adapters.in.web.StatementApi.Response;
 import com.baran.recon.application.port.LedgerEntryStore;
+import com.baran.recon.application.port.RunTrigger;
+import com.baran.recon.application.run.AutomaticRunTrigger;
 import com.baran.recon.application.run.HeldLedgerEntryStore;
 import com.baran.recon.application.run.RunMatching;
 import com.baran.recon.domain.item.SourceCode;
@@ -92,6 +94,9 @@ class RunAfterUploadTest {
     @Autowired
     private JdbcClient jdbc;
 
+    @Autowired
+    private RunTrigger runTrigger;
+
     private StatementApi api;
 
     @DynamicPropertySource
@@ -107,6 +112,13 @@ class RunAfterUploadTest {
     @AfterAll
     void closeClient() {
         api.close();
+    }
+
+    @Test
+    @DisplayName("FR-MAT-1: with recon.matching.automatic-trigger.enabled=true the context's run trigger is the automatic "
+            + "one; StatementUploadTest sees the test profile's NONE")
+    void switchedOnTheTriggerIsTheAutomaticOne() {
+        assertThat(runTrigger).isInstanceOf(AutomaticRunTrigger.class);
     }
 
     @Test
