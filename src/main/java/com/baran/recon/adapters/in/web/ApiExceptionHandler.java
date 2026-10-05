@@ -18,6 +18,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 
 import com.baran.recon.application.port.StatementFileAlreadyIngestedException;
 import com.baran.recon.application.port.TooManyLinesException;
+import com.baran.recon.application.run.RunFailedException;
 import com.baran.recon.application.run.RunRefusedException;
 import com.baran.recon.application.statement.UploadRefusedException;
 
@@ -75,6 +76,21 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                     "The source already has a running run.");
         };
         refused.runningRunId().ifPresent(running -> problem.setProperty("runningRunId", running));
+        return problem;
+    }
+
+    /**
+     * TDD 14 Phase 5: a run whose work failed was rolled back and recorded FAILED. The answer is 500
+     * with the run's id, so the operator can read the run; nothing of the failure itself. The log
+     * names the failure by its exception classes, as for any other failure.
+     */
+    @ExceptionHandler(RunFailedException.class)
+    ProblemDetail runFailed(RunFailedException failed, HttpServletRequest request) {
+        LOG.error("{} {} failed: run {} is FAILED, caused by {}", request.getMethod(), request.getRequestURI(),
+                failed.runId(), causes(failed.getCause()));
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR,
+                "The run failed and was recorded FAILED.");
+        problem.setProperty("runId", failed.runId());
         return problem;
     }
 

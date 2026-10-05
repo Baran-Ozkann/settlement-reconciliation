@@ -822,6 +822,7 @@ class StageAMatchingTest {
             other.commit();
 
             assertThatThrownBy(() -> deciding.get(20, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
+                    .cause().isInstanceOf(RunFailedException.class)
                     .cause().isInstanceOf(DuplicateKeyException.class)
                     .hasMessageContaining("match_items_active_item_unique");
         } finally {

@@ -42,6 +42,7 @@ import com.baran.recon.support.ReconPostgres;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.assertj.core.groups.Tuple.tuple;
 import static org.awaitility.Awaitility.await;
 
@@ -162,13 +163,14 @@ class RunMatchingTest {
         int failedBefore = failing.completionsWrittenThenFailed();
         failing.failTheNextCompletionOf(source);
 
-        assertThatThrownBy(() -> matching.run(source.value(), FROM, TO, "operator-001"))
-                .isInstanceOf(IllegalStateException.class).hasMessage(FailingRunStore.FAILURE);
+        RunFailedException thrown = catchThrowableOfType(RunFailedException.class,
+                () -> matching.run(source.value(), FROM, TO, "operator-001"));
 
+        assertThat(thrown.getCause()).isInstanceOf(IllegalStateException.class).hasMessage(FailingRunStore.FAILURE);
         assertThat(failing.completionsWrittenThenFailed()).as("COMPLETED was written before the failure")
                 .isEqualTo(failedBefore + 1);
         List<UUID> ids = runIds(source);
-        assertThat(ids).hasSize(1);
+        assertThat(ids).as("TDD 14 Phase 5: the failure names the FAILED run").containsExactly(thrown.runId());
         ReconciliationRun failed = runs.findById(ids.getFirst()).orElseThrow();
         assertThat(failed.status()).isEqualTo(RunStatus.FAILED);
         assertThat(failed.stats()).as("the statistics written with COMPLETED were rolled back").isEmpty();
@@ -240,6 +242,7 @@ class RunMatchingTest {
         FailingRunStore.of(runs).failTheNextCompletionOf(source);
 
         assertThatThrownBy(() -> matching.run(source.value(), FROM, TO, "operator-001"))
+                .isInstanceOf(RunFailedException.class).cause()
                 .isInstanceOf(IllegalStateException.class).hasMessage(FailingRunStore.FAILURE);
 
         UUID failedId = runIds(source).getFirst();

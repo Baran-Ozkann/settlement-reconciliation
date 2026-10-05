@@ -196,6 +196,11 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
                         notStarted(file, "its source was busy");
                         return;
                     }
+                } catch (RunFailedException failed) {
+                    LOG.log(System.Logger.Level.WARNING, "Run {0} for statement file {1} on source {2} failed and is "
+                            + "FAILED, caused by {3}" + BY_HAND, failed.runId(), file.fileId(), file.source().value(),
+                            causes(failed.getCause()));
+                    return;
                 } catch (RuntimeException failure) {
                     LOG.log(System.Logger.Level.WARNING, "Run for statement file {0} on source {1} failed, caused by {2}"
                             + BY_HAND, file.fileId(), file.source().value(), causes(failure));

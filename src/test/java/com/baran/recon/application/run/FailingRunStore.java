@@ -23,9 +23,9 @@ import com.baran.recon.domain.run.RunStatus;
  * crash before the commit would. Armed per source and for one run, so other tests sharing the
  * context are not touched.
  */
-final class FailingRunStore implements RunStore {
+public final class FailingRunStore implements RunStore {
 
-    static final String FAILURE = "injected after the run was written COMPLETED";
+    public static final String FAILURE = "injected after the run was written COMPLETED";
 
     private final RunStore delegate;
     private final Set<SourceCode> armed = ConcurrentHashMap.newKeySet();
@@ -35,11 +35,11 @@ final class FailingRunStore implements RunStore {
         this.delegate = delegate;
     }
 
-    static FailingRunStore of(RunStore injected) {
+    public static FailingRunStore of(RunStore injected) {
         return (FailingRunStore) injected;
     }
 
-    void failTheNextCompletionOf(SourceCode source) {
+    public void failTheNextCompletionOf(SourceCode source) {
         armed.add(source);
     }
 
@@ -78,7 +78,7 @@ final class FailingRunStore implements RunStore {
 
     /** Import into a test context to wrap its store. */
     @TestConfiguration(proxyBeanMethods = false)
-    static class Injection {
+    public static class Injection {
 
         @Bean
         static BeanPostProcessor failRunStore() {

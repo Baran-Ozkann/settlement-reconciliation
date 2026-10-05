@@ -6,6 +6,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.StreamSupport;
 
 import tools.jackson.databind.JsonNode;
 
@@ -19,6 +20,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -26,6 +28,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 import com.baran.recon.adapters.in.web.StatementApi.Response;
 import com.baran.recon.application.port.RunStore;
+import com.baran.recon.application.run.FailingRunStore;
 import com.baran.recon.application.run.RunMatching;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.run.ReconciliationRun;
@@ -40,8 +43,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "recon.sources[0].code=PSP_RUN_API",
-        "recon.sources[0].type=PSP_SETTLEMENT"})
+        "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[1].code=PSP_RUN_API_FAILS",
+        "recon.sources[1].type=PSP_SETTLEMENT"})
 @ActiveProfiles("test")
+@Import(FailingRunStore.Injection.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("FR-MAT-1, TDD 11: an OPERATOR starts a run and waits for it; a VIEWER reads a run's status and stats")
 class RunApiTest {
@@ -223,6 +229,30 @@ class RunApiTest {
         assertThat(body.get("startedAt").asString()).isEqualTo(run.startedAt().toString());
         assertThat(body.get("finishedAt").asString()).isEqualTo(run.finishedAt().orElseThrow().toString());
         assertThat(body.get("triggeredBy").asString()).isEqualTo(ReconUsers.OPERATOR);
+    }
+
+    @Test
+    @DisplayName("TDD 14 Phase 5, FR-API-2: a run whose work fails is 500 Problem Details carrying the FAILED run's id "
+            + "as runId and nothing else of the failure; the run reads back FAILED")
+    void failedRunIs500WithItsId() throws Exception {
+        String source = "PSP_RUN_API_FAILS";
+        FailingRunStore.of(runStore).failTheNextCompletionOf(SourceCode.of(source));
+
+        Response failed = runs.start(source, "2026-09-21", "2026-09-25");
+
+        assertThat(failed.status()).isEqualTo(500);
+        assertThat(failed.contentType()).startsWith("application/problem+json");
+        JsonNode body = failed.json();
+        assertThat(StreamSupport.stream(body.propertyNames().spliterator(), false).toList()).contains("runId")
+                .isSubsetOf("type", "title", "status", "detail", "instance", "runId");
+        assertThat(failed.body()).doesNotContain(FailingRunStore.FAILURE).doesNotContain("IllegalStateException");
+        LeakCheck.assertLeaksNothing(failed.body(), StatementApi.FILENAME);
+        UUID runId = failed.id("runId");
+        assertThat(jdbc.sql("SELECT id FROM reconciliation_runs WHERE source_code = :source")
+                .param("source", source).query(UUID.class).list()).containsExactly(runId);
+        JsonNode read = runs.get(VIEWER, runId.toString()).json();
+        assertThat(read.get("status").asString()).isEqualTo("FAILED");
+        assertThat(read.get("stats").isNull()).isTrue();
     }
 
     @Test

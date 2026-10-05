@@ -97,8 +97,10 @@ public final class RunMatching {
     /**
      * @return the COMPLETED run, with its statistics
      * @throws RunRefusedException if the run was refused before it was recorded
-     * @throws RuntimeException    whatever made the run's work fail. The run is then FAILED, unless
-     *                             recording that failed too, which is attached as suppressed
+     * @throws RunFailedException  if the run's work failed and the run was recorded FAILED; the
+     *                             failure is its cause
+     * @throws RuntimeException    whatever made the run's work fail, when recording FAILED failed too
+     *                             (attached as suppressed): the run is then still RUNNING
      */
     public ReconciliationRun run(String sourceCode, LocalDate valueDateFrom, LocalDate valueDateTo, String triggeredBy) {
         SourceDefinition source = sourceNamed(sourceCode);
@@ -109,7 +111,9 @@ public final class RunMatching {
         try {
             return transactions.inSnapshotTransaction(() -> work(source, running));
         } catch (RuntimeException failure) {
-            recordFailure(running, failure);
+            if (recordFailure(running, failure)) {
+                throw new RunFailedException(running.id(), failure);
+            }
             throw failure;
         }
     }
@@ -220,15 +224,19 @@ public final class RunMatching {
      * The work transaction was rolled back; the run is set FAILED in one of its own. If that fails
      * too, the run stays RUNNING until the next startup sets it FAILED, and the caller still sees
      * the failure that stopped the run.
+     *
+     * @return whether the run was recorded FAILED
      */
-    private void recordFailure(ReconciliationRun running, RuntimeException failure) {
+    private boolean recordFailure(ReconciliationRun running, RuntimeException failure) {
         try {
             transactions.inTransaction(() -> {
                 runs.recordOutcome(running.fail(now()));
                 return null;
             });
+            return true;
         } catch (RuntimeException notRecorded) {
             failure.addSuppressed(notRecorded);
+            return false;
         }
     }
 

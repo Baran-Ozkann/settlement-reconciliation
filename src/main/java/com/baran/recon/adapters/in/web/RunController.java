@@ -27,7 +27,7 @@ import com.baran.recon.domain.run.ReconciliationRun;
  * The authenticated user is recorded as the run's trigger (TDD 11.1). A refused run is answered by
  * {@link ApiExceptionHandler}: 400 for an unknown source or a range that ends before it starts, 409
  * naming the running run when the source is busy. A run whose work failed is FAILED, and the
- * request is answered 500 like any other failure of the application.
+ * request is answered 500 with the FAILED run's id and nothing else of the failure.
  *
  * <p>{@code GET /api/v1/runs/{id}}, for a VIEWER, shows a run's status and statistics.
  */

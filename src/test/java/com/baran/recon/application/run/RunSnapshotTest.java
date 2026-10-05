@@ -131,6 +131,7 @@ class RunSnapshotTest {
 
         assertThatThrownBy(() -> HeldStageAStore.of(stageA).runHeldWhile(SERIAL, () -> run(SERIAL),
                 () -> fixture.investigate(breaks, missing)))
+                .isInstanceOf(RunFailedException.class).cause()
                 .isInstanceOf(ConcurrencyFailureException.class)
                 .hasMessageContaining("could not serialize access due to concurrent update");
 
