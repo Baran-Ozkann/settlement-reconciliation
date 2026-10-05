@@ -49,12 +49,12 @@ class MatchingConfiguration {
      * context closes the trigger before the run use case and the database it needs.
      */
     @Bean
-    RunTrigger runTrigger(RunMatching runMatching, AutomaticTriggerProperties properties) {
+    RunTrigger runTrigger(RunMatching runMatching, AutomaticTriggerProperties properties, Clock clock) {
         if (!properties.enabled()) {
             return RunTrigger.NONE;
         }
         return AutomaticRunTrigger.onOneThread(runMatching::run, properties.queueCapacity(),
-                properties.busyRetryInterval());
+                properties.busyRetryInterval(), properties.busyGiveUpAfter(), clock);
     }
 
     /**

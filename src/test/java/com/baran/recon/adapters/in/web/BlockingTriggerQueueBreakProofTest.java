@@ -4,6 +4,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -153,7 +154,8 @@ class BlockingTriggerQueueBreakProofTest {
             ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
                     new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.CallerRunsPolicy());
             return new AutomaticRunTrigger(matching::run, executor,
-                    AutomaticRunTrigger.BusyWait.sleeping(Duration.ofMillis(50)));
+                    AutomaticRunTrigger.BusyWait.sleeping(Duration.ofMillis(50)), Clock.systemUTC(),
+                    Duration.ofMinutes(30));
         }
     }
 }

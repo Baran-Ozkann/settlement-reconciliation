@@ -1,6 +1,8 @@
 package com.baran.recon.application.run;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
@@ -21,10 +23,11 @@ import com.baran.recon.domain.run.ReconciliationRun;
  * ingested, and recorded as triggered by the system.
  *
  * <p>While the file's source has a running run, the run is refused when it tries to record itself
- * RUNNING, by the database's one-running-run index; it then waits and tries again until it starts.
- * So it never runs alongside another run of its source, and it is never dropped silently: a run that
- * cannot be started, or whose work fails, is logged at WARN with the file's id, so an operator can
- * start it by hand.
+ * RUNNING, by the database's one-running-run index; it then waits and tries again until it starts,
+ * or until the source has been busy for the give-up bound. So it never runs alongside another run of
+ * its source, one stuck run cannot hold every later file's run, and no run is dropped silently: a run
+ * that cannot be started, is given up, or whose work fails, is logged at WARN with the file's id, so
+ * an operator can start it by hand.
  *
  * <p>The files waiting for the thread are bounded. When the queue is full, the file's run is refused
  * at once and logged at WARN with the file's id: the upload is answered without waiting for a place.
@@ -43,22 +46,35 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
     private final RunStarter starter;
     private final ExecutorService executor;
     private final BusyWait busyWait;
+    private final Clock clock;
+    private final Duration busyGiveUpAfter;
 
     /**
-     * @param executor runs each file's run; {@link #onOneThread} gives the one the application uses
-     * @param busyWait waits between tries while the source is busy, and says whether to try again
+     * @param executor        runs each file's run; {@link #onOneThread} gives the one the application uses
+     * @param busyWait        waits between tries while the source is busy, and says whether to try again
+     * @param clock           measures how long the source has been busy
+     * @param busyGiveUpAfter how long the source may stay busy, from the first refusal, before the run
+     *                        is given up
      */
-    public AutomaticRunTrigger(RunStarter starter, ExecutorService executor, BusyWait busyWait) {
+    public AutomaticRunTrigger(RunStarter starter, ExecutorService executor, BusyWait busyWait, Clock clock,
+                               Duration busyGiveUpAfter) {
         this.starter = Objects.requireNonNull(starter, "starter");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.busyWait = Objects.requireNonNull(busyWait, "busyWait");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.busyGiveUpAfter = Objects.requireNonNull(busyGiveUpAfter, "busyGiveUpAfter");
+        if (busyGiveUpAfter.isNegative() || busyGiveUpAfter.isZero()) {
+            throw new IllegalArgumentException("the busy give-up bound must be positive");
+        }
     }
 
     /**
-     * One thread and a queue of {@code queueCapacity} files; a file past it is refused, never held,
-     * and a busy source is tried again every {@code busyRetryInterval}.
+     * One thread and a queue of {@code queueCapacity} files; a file past it is refused, never held. A
+     * busy source is tried again every {@code busyRetryInterval}, and given up once it has been busy
+     * for {@code busyGiveUpAfter}.
      */
-    public static AutomaticRunTrigger onOneThread(RunStarter starter, int queueCapacity, Duration busyRetryInterval) {
+    public static AutomaticRunTrigger onOneThread(RunStarter starter, int queueCapacity, Duration busyRetryInterval,
+                                                  Duration busyGiveUpAfter, Clock clock) {
         ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(queueCapacity), work -> {
                     Thread thread = new Thread(work, "recon-run-trigger");
@@ -66,7 +82,7 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
                     thread.setDaemon(true);
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
-        return new AutomaticRunTrigger(starter, executor, BusyWait.sleeping(busyRetryInterval));
+        return new AutomaticRunTrigger(starter, executor, BusyWait.sleeping(busyRetryInterval), clock, busyGiveUpAfter);
     }
 
     @Override
@@ -154,7 +170,7 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
 
         @Override
         public void run() {
-            boolean waitLogged = false;
+            Instant busySince = null;
             while (true) {
                 try {
                     ReconciliationRun run = starter.start(file.source().value(), file.valueDateFrom(),
@@ -167,11 +183,14 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
                         notStarted(file, "refused as " + refused.reason());
                         return;
                     }
-                    if (!waitLogged) {
+                    if (busySince == null) {
+                        busySince = clock.instant();
                         LOG.log(System.Logger.Level.INFO, "Run for statement file {0} waits: source {1} has a running "
                                 + "run {2}", file.fileId(), file.source().value(),
                                 refused.runningRunId().map(Object::toString).orElse("that has just finished"));
-                        waitLogged = true;
+                    } else if (!clock.instant().isBefore(busySince.plus(busyGiveUpAfter))) {
+                        notStarted(file, "its source was still busy after " + busyGiveUpAfter);
+                        return;
                     }
                     if (!busyWait.waitBeforeRetry()) {
                         notStarted(file, "its source was busy");

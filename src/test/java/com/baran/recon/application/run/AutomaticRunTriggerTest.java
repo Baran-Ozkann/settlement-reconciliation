@@ -1,8 +1,11 @@
 package com.baran.recon.application.run;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -13,6 +16,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -23,12 +27,14 @@ import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.run.ReconciliationRun;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 /**
  * The trigger alone (FR-MAT-1), with a stand-in for the run use case: what it starts, on which
- * thread, how it treats a busy source, a refusal and a failure, and what a full queue does. The
- * database's part, refusing a second RUNNING run, is tested with the application in RunAfterUploadTest.
+ * thread, how it treats a busy source and one that stays busy, a refusal and a failure, and what a
+ * full queue does. The database's part, refusing a second RUNNING run, is tested with the
+ * application in RunAfterUploadTest.
  */
 @DisplayName("FR-MAT-1: the automatic trigger runs each ingested file's run in the background, one at a time")
 class AutomaticRunTriggerTest {
@@ -37,6 +43,9 @@ class AutomaticRunTriggerTest {
     private static final SourceCode SOURCE = SourceCode.of("PSP_TRIGGER_UNIT");
     private static final LocalDate FROM = LocalDate.of(2026, 9, 22);
     private static final LocalDate TO = LocalDate.of(2026, 9, 24);
+    /** The application's bound; a test that does not reach it runs on the system clock. */
+    private static final Duration GIVE_UP = Duration.ofMinutes(30);
+    private static final Duration RETRY = Duration.ofSeconds(5);
 
     private final ConcurrentLinkedQueue<String> started = new ConcurrentLinkedQueue<>();
     private AutomaticRunTrigger trigger;
@@ -59,7 +68,7 @@ class AutomaticRunTriggerTest {
             running.countDown();
             hold(finish);
             return completed(source, from, to);
-        }, 10, Duration.ofMillis(10));
+        }, 10, Duration.ofMillis(10), GIVE_UP, Clock.systemUTC());
 
         trigger.fileIngested(file(FROM, TO));
 
@@ -81,7 +90,7 @@ class AutomaticRunTriggerTest {
             }
             return completed(source, from, to);
         }, oneThread(),
-                () -> waits.incrementAndGet() > 0);
+                () -> waits.incrementAndGet() > 0, Clock.systemUTC(), GIVE_UP);
 
         trigger.fileIngested(file(FROM, TO));
 
@@ -100,12 +109,73 @@ class AutomaticRunTriggerTest {
             }
             return completed(source, from, to);
         }, oneThread(),
-                () -> false);
+                () -> false, Clock.systemUTC(), GIVE_UP);
 
         trigger.fileIngested(file(FROM, FROM));
         trigger.fileIngested(file(TO, TO));
 
         await().atMost(WAIT).untilAsserted(() -> assertThat(started).containsExactly("2026-09-22", "2026-09-24"));
+    }
+
+    @Test
+    @DisplayName("TDD 14 Phase 5: a source still busy after busy-give-up-after gives the run up, and the next file's run "
+            + "runs")
+    void sourceBusyPastTheBoundIsGivenUp() {
+        ManualClock clock = new ManualClock();
+        AtomicInteger waits = new AtomicInteger();
+        trigger = new AutomaticRunTrigger((source, from, to, by) -> {
+            started.add(from.toString());
+            if (from.equals(FROM)) {
+                throw RunRefusedException.sourceBusy(Optional.of(UUID.randomUUID()), null);
+            }
+            return completed(source, from, to);
+        }, oneThread(), () -> {
+            waits.incrementAndGet();
+            clock.advance(RETRY);
+            return true;
+        }, clock, GIVE_UP);
+
+        trigger.fileIngested(file(FROM, FROM));
+        trigger.fileIngested(file(TO, TO));
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started).last().isEqualTo("2026-09-24"));
+        // Refused at 0 s, 5 s, ... 1,800 s: the try that finds the source busy at the bound is the last.
+        assertThat(started).filteredOn(FROM.toString()::equals).hasSize(361);
+        assertThat(waits).hasValue(360);
+    }
+
+    @Test
+    @DisplayName("TDD 14 Phase 5: a source freed before busy-give-up-after has passed still gets the run, the bound "
+            + "counted from the first refusal")
+    void sourceFreedBeforeTheBoundIsStarted() {
+        ManualClock clock = new ManualClock();
+        AtomicInteger refusals = new AtomicInteger(360);
+        AtomicReference<ReconciliationRun> ran = new AtomicReference<>();
+        trigger = new AutomaticRunTrigger((source, from, to, by) -> {
+            started.add(from.toString());
+            if (refusals.getAndDecrement() > 0) {
+                throw RunRefusedException.sourceBusy(Optional.empty(), null);
+            }
+            ran.set(completed(source, from, to));
+            return ran.get();
+        }, oneThread(), () -> {
+            clock.advance(RETRY);
+            return true;
+        }, clock, GIVE_UP);
+
+        trigger.fileIngested(file(FROM, FROM));
+
+        // Refused at 0 s ... 1,795 s, free at 1,800 s: the try at the bound is still made.
+        await().atMost(WAIT).untilAsserted(() -> assertThat(ran.get()).isNotNull());
+        assertThat(started).hasSize(361);
+    }
+
+    @Test
+    @DisplayName("a give-up bound that is not positive is refused")
+    void boundMustBePositive() {
+        assertThatThrownBy(() -> new AutomaticRunTrigger((source, from, to, by) -> completed(source, from, to),
+                oneThread(), () -> true, Clock.systemUTC(), Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -121,7 +191,7 @@ class AutomaticRunTriggerTest {
         }, oneThread(), () -> {
             waits.incrementAndGet();
             return true;
-        });
+        }, Clock.systemUTC(), GIVE_UP);
 
         trigger.fileIngested(file(FROM, FROM));
         trigger.fileIngested(file(TO, TO));
@@ -139,7 +209,7 @@ class AutomaticRunTriggerTest {
                 throw new IllegalStateException("the run's work failed");
             }
             return completed(source, from, to);
-        }, 10, Duration.ofMillis(1));
+        }, 10, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
 
         trigger.fileIngested(file(FROM, FROM));
         trigger.fileIngested(file(TO, TO));
@@ -157,7 +227,7 @@ class AutomaticRunTriggerTest {
             started.add(from.toString());
             working.decrementAndGet();
             return completed(source, from, to);
-        }, 10, Duration.ofMillis(1));
+        }, 10, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
 
         List<LocalDate> days = FROM.datesUntil(FROM.plusDays(6)).toList();
         days.forEach(day -> trigger.fileIngested(file(day, day)));
@@ -177,7 +247,7 @@ class AutomaticRunTriggerTest {
             running.countDown();
             hold(finish);
             return completed(source, from, to);
-        }, 1, Duration.ofMillis(1));
+        }, 1, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
         trigger.fileIngested(file(FROM, FROM));
         assertThat(running.await(WAIT.toSeconds(), TimeUnit.SECONDS)).as("the first run holds the thread").isTrue();
         trigger.fileIngested(file(FROM.plusDays(1), FROM.plusDays(1)));
@@ -200,7 +270,7 @@ class AutomaticRunTriggerTest {
             waiting.countDown();
             throw RunRefusedException.sourceBusy(Optional.empty(), null);
         }, oneThread(),
-                AutomaticRunTrigger.BusyWait.sleeping(Duration.ofMinutes(5)));
+                AutomaticRunTrigger.BusyWait.sleeping(Duration.ofMinutes(5)), Clock.systemUTC(), GIVE_UP);
         trigger.fileIngested(file(FROM, FROM));
         trigger.fileIngested(file(TO, TO));
         assertThat(waiting.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
@@ -208,6 +278,31 @@ class AutomaticRunTriggerTest {
         trigger.close();
 
         assertThat(started).containsExactly("2026-09-22");
+    }
+
+    /** A clock the test moves on, here from the busy wait, so a bound of minutes takes no time. */
+    private static final class ManualClock extends Clock {
+
+        private final AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-10-12T09:00:00Z"));
+
+        void advance(Duration by) {
+            now.updateAndGet(instant -> instant.plus(by));
+        }
+
+        @Override
+        public Instant instant() {
+            return now.get();
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            throw new UnsupportedOperationException("the trigger reads instants only");
+        }
     }
 
     /** One thread, as the application has, with room for every file a test queues. */
