@@ -207,7 +207,9 @@ class JdbcStageAStore implements StageAStore {
      * dated or not - and their candidates by currency, amount and window. Every such line counts,
      * in the range or not, so a pair is unique in both directions over everything the window
      * reaches: the line has one candidate, and that entry is the candidate of no other line. Only a
-     * line in the range is matched or given a break.
+     * line in the range is matched or given a break. Lines without a reference and lines with an
+     * unknown one are two branches, so the known-reference test is one anti-join: inside an OR it was
+     * a scan of the source's entries for each line (NFR-PERF-2).
      */
     private static final String A3_FINDINGS = """
             reference_lines AS (
@@ -216,11 +218,13 @@ class JdbcStageAStore implements StageAStore {
             unreferenced AS (
                 SELECT line.id, line.value_date, line.gross_amount, line.currency
                   FROM psp line
-                  LEFT JOIN reference_lines counted ON counted.reference = line.reference
                  WHERE line.reference IS NULL
-                    OR (counted.lines = 1
-                        AND NOT EXISTS (SELECT 1 FROM ledger_entries known
-                                         WHERE known.source_code = :source AND known.transaction_id = line.reference))
+                UNION ALL
+                SELECT line.id, line.value_date, line.gross_amount, line.currency
+                  FROM psp line
+                  JOIN reference_lines counted ON counted.reference = line.reference AND counted.lines = 1
+                 WHERE NOT EXISTS (SELECT 1 FROM ledger_entries known
+                                    WHERE known.source_code = :source AND known.transaction_id = line.reference)
             ),
             candidate AS (
                 SELECT line.id AS psp_id, entry.id AS ledger_id, line.currency,
