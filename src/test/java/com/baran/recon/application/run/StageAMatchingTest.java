@@ -148,6 +148,26 @@ class StageAMatchingTest {
     }
 
     @Test
+    @DisplayName("TDD 8.2 (v1.11): one exact entry beside a conflicting one under the reference is an A1 match with the "
+            + "exact entry; the conflicting entry is not named and reaches MISSING_IN_PSP through its grace period")
+    void exactEntryBesideAConflictingOneIsAnA1Match() {
+        UUID transaction = UUID.randomUUID();
+        String exact = fixture.ledger(source, transaction, 12_500, TRY, TUESDAY);
+        String conflicting = fixture.ledger(source, transaction, 9_900, TRY, MONDAY);
+        String line = fixture.psp(source, "L-001", transaction.toString(), 12_500, TRY, TUESDAY);
+
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.matches(source)).extracting(MatchView::rule, MatchView::ledger, MatchView::psp)
+                .containsExactly(tuple("A1_EXACT_REFERENCE", exact, line));
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactly(tuple("MISSING_IN_PSP", conflicting, Set.of()));
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "ledger.TRY.matched.count", 1L, "ledger.TRY.broken.count", 1L, "ledger.TRY.pending.count", 0L,
+                "psp.TRY.matched.count", 1L, "psp.TRY.broken.count", 0L)));
+    }
+
+    @Test
     @DisplayName("TDD 8.2: references are compared as UUIDs, so case and formatting do not matter")
     void referencesAreComparedAsUuids() {
         UUID upper = UUID.randomUUID();
