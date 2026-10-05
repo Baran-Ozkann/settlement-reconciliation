@@ -80,9 +80,13 @@ class MatchingConfiguration {
      *                          and logged, never held: the upload does not wait for a place
      * @param busyRetryInterval how long a run waits before trying again while its source has a
      *                          running run; each try is one refused insert
+     * @param busyGiveUpAfter   how long a run's source may stay busy before the run is given up,
+     *                          logged with the file's id, and left to be started by hand, so one
+     *                          stuck run cannot hold every later triggered run
      */
     @ConfigurationProperties("recon.matching.automatic-trigger")
-    record AutomaticTriggerProperties(boolean enabled, int queueCapacity, Duration busyRetryInterval) {
+    record AutomaticTriggerProperties(boolean enabled, int queueCapacity, Duration busyRetryInterval,
+                                      Duration busyGiveUpAfter) {
 
         AutomaticTriggerProperties {
             if (queueCapacity < 1) {
@@ -91,6 +95,10 @@ class MatchingConfiguration {
             if (busyRetryInterval == null || busyRetryInterval.isNegative() || busyRetryInterval.isZero()) {
                 throw new IllegalArgumentException(
                         "recon.matching.automatic-trigger.busy-retry-interval must be a positive duration");
+            }
+            if (busyGiveUpAfter == null || busyGiveUpAfter.isNegative() || busyGiveUpAfter.isZero()) {
+                throw new IllegalArgumentException(
+                        "recon.matching.automatic-trigger.busy-give-up-after must be a positive duration");
             }
         }
     }

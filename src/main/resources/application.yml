@@ -102,6 +102,9 @@ recon:
       queue-capacity: 100
       # Each try while the source is busy is one insert the database refuses.
       busy-retry-interval: 5s
+      # A source still busy after this is given up on: the run is logged at WARN with the file's id
+      # and can be started with POST /api/v1/runs, so one stuck run cannot hold every later one.
+      busy-give-up-after: 30m
   # TDD 8.1: value-date windows and grace periods count every day except these. Holidays are ISO
   # dates. Both are snapshotted onto each run (FR-MAT-8).
   business-calendar:
