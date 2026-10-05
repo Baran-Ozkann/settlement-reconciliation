@@ -124,7 +124,9 @@ class JdbcStageAStore implements StageAStore {
      * entries carrying its transaction id, whatever their dates, since the shared reference is the
      * transaction's own id (TDD 8.2). A line with several exact entries is ambiguous, and one with
      * exactly one was matched by A1 and is no longer unmatched. Entries with another currency or
-     * amount are A2's: one is a mismatch, several are ambiguous.
+     * amount are A2's: one is a mismatch, several are ambiguous. A duplicate's other lines are
+     * gathered by one join over the repeated references rather than a look-up per line, which read
+     * every unmatched line once for each duplicate (NFR-PERF-2).
      */
     private static final String REFERENCE_FINDINGS = """
             reference_lines AS (
@@ -136,13 +138,19 @@ class JdbcStageAStore implements StageAStore {
                   JOIN reference_lines counted ON counted.reference = line.reference
                  WHERE line.value_date BETWEEN :from AND :to
             ),
+            repeated AS (
+                SELECT line.id, line.reference
+                  FROM psp line
+                  JOIN reference_lines counted ON counted.reference = line.reference
+                 WHERE counted.lines > 1
+            ),
             duplicate AS (
                 SELECT subject.id AS item_id, 'DUPLICATE_LINE' AS break_type,
-                       (SELECT jsonb_agg(jsonb_build_object('side', 'PSP', 'id', other.id) ORDER BY other.id)
-                          FROM psp other
-                         WHERE other.reference = subject.reference AND other.id <> subject.id) AS related_items
+                       jsonb_agg(jsonb_build_object('side', 'PSP', 'id', other.id) ORDER BY other.id) AS related_items
                   FROM subject
+                  JOIN repeated other ON other.reference = subject.reference AND other.id <> subject.id
                  WHERE subject.lines > 1
+                 GROUP BY subject.id
             ),
             carrier AS (
                 SELECT subject.id AS psp_id, entry.id AS ledger_id,
