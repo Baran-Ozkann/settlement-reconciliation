@@ -255,3 +255,70 @@ and `RunRolesTest` passed again (61 tests, 0 failures).
 | Mechanism | Why there is no break proof | What guards it instead |
 |---|---|---|
 | TDD 11: reading a run needs a VIEWER (`requestMatchers(HttpMethod.GET, "/api/v1/runs/*").hasRole(VIEWER)`) | every configured user is a VIEWER (the operator through the role hierarchy), so the rule and the catch-all `authenticated()` answer every user alike; no request can tell them apart. `GET /api/v1/statements/*` has the same rule for the same reason | `RunRolesTest.readingARunNeedsAViewer` pins what can be seen: both users pass, an anonymous request is 401. Phase 9 adds a METRICS user without VIEWER, which makes the rule testable |
+
+## Phase 5, part 2b
+
+Part 2b adds no constraint, index, trigger or grant, and `ApplicationRoleGrantsTest` is unchanged.
+The new mechanisms are the automatic trigger's give-up bound (owner decision 2) and the 500 a failed
+run answers with (owner decision 3). The two NFR-PERF-2 changes to `JdbcStageAStore` (`5b68cbc`,
+`0a9fba8`) rewrite how a statement finds its rows, not which rows it finds. They are no mechanism of
+their own, and `StageAMatchingTest` and `StageAPropertiesTest` passed unchanged on each. The section
+also adds the configuration bindings and the trigger switch from parts 1b and 2a, which had no rows.
+
+### Proven by permanent tests
+
+| Mechanism | Broken state the test builds | Proof test | What it asserts |
+|---|---|---|---|
+| Owner decision 2 (TDD 14 Phase 5): a triggered run whose source is still busy after `recon.matching.automatic-trigger.busy-give-up-after` is given up, so one stuck run cannot hold every later triggered run (`AutomaticRunTrigger`, the busy time measured on the injected `Clock` from the first refusal) | an application context of its own with the bound set to a day, out of the test's reach, through the property in that context alone. A run of one source is held inside its work (`HeldLedgerEntryStore`) while a file of that source and then a file of another source are uploaded. No file is edited | `TriggerWithoutGiveUpBreakProofTest.withoutTheBoundOneStuckRunHoldsTheNext` | for three seconds, three times the companion's bound, the other source gets no run and nothing is given up; both triggered runs complete only once the held run is released. With a one-second bound, `RunTriggerGiveUpTest.runOfAStuckSourceIsGivenUp`: the stuck source's triggered run is logged at WARN with the file's id ("was not started: its source was still busy after PT1S") and never recorded, the other source's run completes while the first is still held, and the run is then started by hand. `AutomaticRunTriggerTest.sourceBusyPastTheBoundIsGivenUp` and `sourceFreedBeforeTheBoundIsStarted` pin the boundary on a manual clock: refused at 0 s to 1,800 s is given up at the try at 1,800 s; free at 1,800 s is started |
+| FR-MAT-1, part 2a decision 1 (kept by the owner): `recon.matching.automatic-trigger.enabled`, off in the test profile (`RunTrigger.NONE` from `MatchingConfiguration.runTrigger`) | the same property set to true in a context of its own | `RunAfterUploadTest.switchedOnTheTriggerIsTheAutomaticOne` against `StatementUploadTest.testProfileSwitchesTheAutomaticTriggerOff` | switched on, the context's run trigger is the `AutomaticRunTrigger`, and the class's other tests see each upload's run; in the test profile it is `RunTrigger.NONE`. The one property is what differs |
+| FR-MAT-1: the trigger's settings bind, and one that cannot hold stops startup (`MatchingConfiguration.AutomaticTriggerProperties`: `queue-capacity` positive; `busy-retry-interval` and, from 2b, `busy-give-up-after` positive durations) | the context runner with the application's values | `AutomaticTriggerConfigurationTest.settingsBind` against `impossibleSettingFails` (5 cases) | the application's values bind (on, 100, 5 s, 30 min); a capacity of 0, an interval of 0 s or -1 s and a bound of 0 s or -1 m each fail the binding with the setting's name. Each refused case is the one value that differs |
+| FR-MAT-8, TDD 8.1 (part 1b): a PSP source's Stage A windows and grace periods bind, and one set on a bank source or negative stops startup (`SourcesProperties`, `StageASettings`) | the context runner with two PSP sources that set some keys and leave others out | `SourcesConfigurationTest.bindsStageAWindows` against `misplacedOrNegativeWindowFailsStartup` | the set values bind and the left-out ones take TDD 8.1's; a window on a bank source and a negative grace period each stop the context, naming the key |
+| TDD 8.1 (part 1b): the business calendar binds its weekend and holidays, and a holiday that is not an ISO date stops startup | the context runner with a weekend and two holidays | `SourcesConfigurationTest.bindsBusinessCalendar` and `businessCalendarDefaultsToTheTddWeekend` against `malformedHolidayFailsStartup` | the weekend and the holidays bind, and with none configured the weekend is Saturday and Sunday; `29.10.2026` stops the context |
+
+### Recorded one-offs
+
+Made at `d96fddc` by a throwaway edit of `ApiExceptionHandler` that was never committed: the file
+was copied aside first and copied back afterwards, `git status` was then clean, and `RunApiTest`
+passed again (23 tests, 0 failures).
+
+| Rule | Broken by | Test | What it reported |
+|---|---|---|---|
+| Owner decision 3 (TDD 14 Phase 5), FR-API-2: a failed run's 500 carries the FAILED run's id as `runId` and nothing else of the failure (`ApiExceptionHandler.runFailed`) | the failure's message appended to the detail (`"... recorded FAILED: " + failed.getCause().getMessage()`) | `RunApiTest#failedRunIs500WithItsId` | 1 test, 1 failure: the body `{"detail":"The run failed and was recorded FAILED: injected after the run was written COMPLETED", ..., "runId":"f726d8b1-..."}` was expected `not to contain: "injected after the run was written COMPLETED"`. Restored: it passes |
+
+### Unproven
+
+None in part 2b.
+
+## Phase 5 as a whole
+
+Every mechanism the phase introduced, and where its proof is. None lacks a row; the two Unproven
+entries give their reason and what guards them instead.
+
+| Mechanism | Part | Proof | Section |
+|---|---|---|---|
+| No `Path` component in a `@ConfigurationProperties` type (ArchUnit `noPathBoundFromConfiguration`) | 1a | permanent (fixture tree) | part 1a |
+| One RUNNING run per source, index `reconciliation_runs_one_running_per_source` (V11) | 1a | permanent (`DatabaseMechanismTest`, `OneRunningRunPerSourceBreakProofTest`) | part 1a |
+| recon_app's column-level UPDATE on `reconciliation_runs` (V12) | 1a | permanent (`ApplicationRoleGrantsTest`, `WithheldPrivilegeTest`) | part 1a |
+| Rollback of the run's work transaction (NFR-REL-2) | 1a, proven 1b | permanent (`WorkRollbackBreakProofTest`) | part 1b |
+| Startup recovery of a run left RUNNING | 1a, proven 1b | permanent (`StaleRunRecoveryBreakProofTest`) | part 1b |
+| INV-2 index behind the run's exclusion | 1b | permanent (`StageAMatchingTest.indexStopsAMatchTheExclusionCannotSee`) | part 1b |
+| Finalization check, INV-1 and INV-4 (`ItemStatistics.conserved`) | 1b | permanent (`ItemStatisticsTest`) | part 1b |
+| FR-MAT-2 exclusion of actively matched items | 1b | recorded one-off | part 1b |
+| INV-7 `ON CONFLICT` on break inserts | 1b | recorded one-off | part 1b |
+| INV-5, FR-MAT-4: no tie-break | 1b | recorded one-off (`StageAPropertiesTest`) | part 1b |
+| Stage A windows and grace periods binding | 1b | permanent (`SourcesConfigurationTest`) | part 2b |
+| Business calendar binding | 1b | permanent (`SourcesConfigurationTest`) | part 2b |
+| MATCHED_LATE's status guard (`breaks.status = target.status`) | 1b | **Unproven**: unreachable at REPEATABLE READ | part 1c (restated from 1b) |
+| The run's REPEATABLE READ snapshot | 1c | permanent (`RunSnapshotBreakProofTest`, `RunSnapshotTest`) | part 1c |
+| MATCHED_LATE limited to the types a match answers | 1c | recorded one-off | part 1c |
+| A2 without the window | 1c | recorded one-off | part 1c |
+| A1 without the window (references are identity) | 2a | recorded one-off | part 2a |
+| A3 keeps the window | 2a | recorded one-off | part 2a |
+| Only an OPERATOR starts a run | 2a | permanent and recorded one-off | part 2a |
+| Reading a run needs a VIEWER | 2a | **Unproven**: every user is a VIEWER until Phase 9 | part 2a |
+| The trigger waits while its source is busy | 2a | permanent (`TriggerWithoutWaitBreakProofTest`) | part 2a |
+| The trigger's queue refuses rather than holds the upload | 2a | permanent (`BlockingTriggerQueueBreakProofTest`) | part 2a |
+| The trigger switch (`enabled`) | 2a | permanent (pair of tests) | part 2b |
+| The trigger's settings binding | 2a, 2b | permanent (`AutomaticTriggerConfigurationTest`) | part 2b |
+| The trigger's give-up bound | 2b | permanent (`TriggerWithoutGiveUpBreakProofTest`) | part 2b |
+| A failed run's 500 carries its id and nothing else | 2b | recorded one-off | part 2b |
