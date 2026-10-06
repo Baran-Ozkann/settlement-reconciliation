@@ -1,11 +1,17 @@
 name: Verify commits
 
 # Every commit is built and tested on its own (CLAUDE.md 5, step 4), so a commit that only passes
-# with the one after it is caught. A push to main verifies the commits it adds; a run by hand
-# verifies every commit of main after a given base.
+# with the one after it is caught. A pull request into main verifies every commit it adds; a push to
+# main verifies the commits it adds; a run by hand verifies every commit of main after a given base.
+#
+# pull_request, never pull_request_target: the run gets a read-only token and no secrets, so the
+# code under test cannot reach anything a pull request from a fork should not.
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       base:
@@ -17,6 +23,12 @@ on:
 # not be able to push with a broader default token.
 permissions:
   contents: read
+
+# A new push to a pull request supersedes the run on its previous head, which is cancelled. Every
+# push to main and every run by hand gets a group of its own, so none of them is cancelled or queued.
+concurrency:
+  group: verify-commits-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job names its runner's Ubuntu release rather than ubuntu-latest, which moves to a new
 # release on GitHub's schedule: a run repeated on an old commit must use the release its first run
@@ -34,7 +46,8 @@ jobs:
         uses: actions/checkout@v5
         with:
           # The range is computed from history, and the dispatch range ends at origin/main, which a
-          # full fetch creates whatever ref the run was started from.
+          # full fetch creates whatever ref the run was started from. On a pull request the checkout
+          # is GitHub's merge commit, whose parents are the base and the pull request's head.
           fetch-depth: 0
           # No step here or in the jobs below talks to the remote after the checkout, so the token is
           # not left in .git/config for the build's plugins and tests to read.
@@ -48,6 +61,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ inputs.base }}
         run: |
           set -euo pipefail
@@ -65,6 +80,15 @@ jobs:
                 fail "The push's previous tip $BEFORE is not in the history; run this workflow by hand with a base."
               commits=$(git rev-list --reverse "$BEFORE..$AFTER")
             fi
+          elif [ "$EVENT" = pull_request ]; then
+            [[ "$PR_BASE" =~ ^[0-9a-f]{40}$ ]] || fail "The pull request's base is not a full commit hash."
+            [[ "$PR_HEAD" =~ ^[0-9a-f]{40}$ ]] || fail "The pull request's head is not a full commit hash."
+            git cat-file -e "$PR_BASE^{commit}" 2>/dev/null ||
+              fail "The pull request's base $PR_BASE is not in the history."
+            git cat-file -e "$PR_HEAD^{commit}" 2>/dev/null ||
+              fail "The pull request's head $PR_HEAD is not in the history."
+            # Every commit the pull request adds to its base, merge commits of the branch included.
+            commits=$(git rev-list --reverse "$PR_BASE..$PR_HEAD")
           else
             # A pasted hash often carries a space or a line break at either end. Only the ends are
             # trimmed: whitespace inside the input still fails the check below.
@@ -228,15 +252,17 @@ jobs:
 
   reverse-order:
     # Test classes share one database, and Surefire's class order differs between machines. Running
-    # the pushed tip in reverse order catches a class that passes only because another ran first.
-    if: github.event_name == 'push' && !github.event.deleted
+    # the pushed tip, or the pull request's head, in reverse order catches a class that passes only
+    # because another ran first. A run by hand has no new tip and skips this job.
+    if: (github.event_name == 'push' && !github.event.deleted) || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Check out the pushed tip
+      - name: Check out the pushed tip or the pull request's head
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.after }}
+          # An action input, not a shell line: the hash is never interpolated into a script.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.after }}
           persist-credentials: false
 
       - name: Set up JDK 21
