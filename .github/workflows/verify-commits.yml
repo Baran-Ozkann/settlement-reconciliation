@@ -66,12 +66,16 @@ jobs:
               commits=$(git rev-list --reverse "$BEFORE..$AFTER")
             fi
           else
-            [[ "$BASE" =~ ^[0-9a-fA-F]{7,40}$ ]] || fail "The base must be a commit hash of 7 to 40 hex characters."
-            base=$(git rev-parse --verify --quiet "${BASE,,}^{commit}") ||
-              fail "The base $BASE is not a commit of this repository (or is an ambiguous short hash)."
+            # A pasted hash often carries a space or a line break at either end. Only the ends are
+            # trimmed: whitespace inside the input still fails the check below.
+            input="${BASE#"${BASE%%[![:space:]]*}"}"
+            input="${input%"${input##*[![:space:]]}"}"
+            [[ "$input" =~ ^[0-9a-fA-F]{7,40}$ ]] || fail "The base must be a commit hash of 7 to 40 hex characters."
+            base=$(git rev-parse --verify --quiet "${input,,}^{commit}") ||
+              fail "The base $input is not a commit of this repository (or is an ambiguous short hash)."
             # A base off main would put commits of another line of history into the range.
             git merge-base --is-ancestor "$base" origin/main ||
-              fail "The base $BASE is not an ancestor of main."
+              fail "The base $input is not an ancestor of main."
             commits=$(git rev-list --reverse "$base..origin/main")
           fi
 
