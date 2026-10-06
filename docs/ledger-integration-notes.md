@@ -323,7 +323,7 @@ Not decided here; these are the facts that decide it.
 
 ## TDD corrections
 
-Assumptions in `docs/settlement-reconciliation-tdd.md` (v1.1) that the ledger's source contradicts,
+Assumptions in `docs/design-doc.md` (v1.1) that the ledger's source contradicts,
 with the proposed replacement text.
 
 ### C-1 — Topic name (§15, line 635)
