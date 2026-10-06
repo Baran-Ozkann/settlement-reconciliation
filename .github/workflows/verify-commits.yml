@@ -48,7 +48,7 @@ jobs:
       count: ${{ steps.list.outputs.count }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The range is computed from history, and the dispatch range ends at origin/main, which a
           # full fetch creates whatever ref the run was started from. On a pull request the checkout
@@ -151,7 +151,7 @@ jobs:
         commit: ${{ fromJSON(needs.list.outputs.commits) }}
     steps:
       - name: Check out the commit
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.commit }}
           # The rule check reads commit messages, and the docs-only test compares with the parent.
@@ -279,7 +279,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out the pushed tip or the pull request's head
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # An action input, not a shell line: the hash is never interpolated into a script.
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.after }}
