@@ -2,7 +2,9 @@
 .env
 .env.local
 
-# Phase reports: working notes for the owner, not part of the deliverable history
+# Milestone reviews (formerly phase reports): working notes for the owner, not part of the
+# deliverable history
+.milestone-reviews/
 .phase-reports/
 
 # Build output
