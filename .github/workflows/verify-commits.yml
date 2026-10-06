@@ -291,3 +291,59 @@ jobs:
 
       - name: Build and test in reverse alphabetical class order
         run: ./mvnw -B clean verify -Dsurefire.runOrder=reversealphabetical
+
+  all-commits-pass:
+    # Branch protection requires a check by name, and verify's names change with every commit. This
+    # one name stands for the whole run: it passes only if every commit and the reverse order passed.
+    name: All commits pass
+    needs: [list, verify, reverse-order]
+    # Runs whatever the needed jobs did. Without it a failure upstream would leave this job skipped,
+    # and branch protection accepts a skipped check.
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to pass or to be skipped on purpose
+        env:
+          EVENT: ${{ github.event_name }}
+          DELETED: ${{ github.event.deleted }}
+          LIST: ${{ needs.list.result }}
+          COUNT: ${{ needs.list.outputs.count }}
+          VERIFY: ${{ needs.verify.result }}
+          REVERSE: ${{ needs.reverse-order.result }}
+        run: |
+          set -uo pipefail
+          ok=true
+          # Each job's result must be the one exact value this event allows: a cancelled or skipped
+          # job where a result was due fails the check as a failure does.
+          expect() {
+            if [ "$2" = "$3" ]; then
+              echo "$1: $2"
+            else
+              echo "::error::$1 is '$2', expected '$3'."
+              ok=false
+            fi
+          }
+
+          if [ "$EVENT" = push ] && [ "$DELETED" = true ]; then
+            # Deleting main leaves nothing to verify, and every job skips itself.
+            expect list "$LIST" skipped
+            expect verify "$VERIFY" skipped
+            expect reverse-order "$REVERSE" skipped
+          else
+            expect list "$LIST" success
+            # An empty range is a pass with verify skipped; a range of one or more commits needs every
+            # one of them green.
+            if [ "$COUNT" = 0 ]; then
+              expect verify "$VERIFY" skipped
+            else
+              expect verify "$VERIFY" success
+            fi
+            # A run by hand has no new tip, so it has no reverse-order job.
+            if [ "$EVENT" = workflow_dispatch ]; then
+              expect reverse-order "$REVERSE" skipped
+            else
+              expect reverse-order "$REVERSE" success
+            fi
+          fi
+          $ok
