@@ -1,0 +1,243 @@
+name: Verify commits
+
+# Every commit is built and tested on its own (CLAUDE.md 5, step 4), so a commit that only passes
+# with the one after it is caught. A push to main verifies the commits it adds; a run by hand
+# verifies every commit of main after a given base.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Base commit (7-40 hex characters). Every commit in base..HEAD of main is verified.'
+        required: true
+        type: string
+
+# Read-only. Nothing in this workflow writes to the repository, and a compromised build step should
+# not be able to push with a broader default token.
+permissions:
+  contents: read
+
+jobs:
+  list:
+    # A push that deletes main has nothing to verify.
+    if: github.event_name != 'push' || !github.event.deleted
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commits: ${{ steps.list.outputs.commits }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          # The range is computed from history, and the dispatch range ends at origin/main, which a
+          # full fetch creates whatever ref the run was started from.
+          fetch-depth: 0
+          # No step here or in the jobs below talks to the remote after the checkout, so the token is
+          # not left in .git/config for the build's plugins and tests to read.
+          persist-credentials: false
+
+      - name: List the commits to verify, oldest first
+        id: list
+        # Every event value reaches the script through env, never interpolated into it, so a crafted
+        # input is only ever data. Each is validated before git sees it.
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          BASE: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          if [ "$EVENT" = push ]; then
+            [[ "$AFTER" =~ ^[0-9a-f]{40}$ ]] || fail "The push's new tip is not a full commit hash."
+            [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] || fail "The push's previous tip is not a full commit hash."
+            if [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+              # A new branch has no previous tip: only the pushed commit itself.
+              commits=$(git rev-parse --verify "$AFTER^{commit}")
+            else
+              # A force push can leave the previous tip outside the fetched history.
+              git cat-file -e "$BEFORE^{commit}" 2>/dev/null ||
+                fail "The push's previous tip $BEFORE is not in the history; run this workflow by hand with a base."
+              commits=$(git rev-list --reverse "$BEFORE..$AFTER")
+            fi
+          else
+            [[ "$BASE" =~ ^[0-9a-fA-F]{7,40}$ ]] || fail "The base must be a commit hash of 7 to 40 hex characters."
+            base=$(git rev-parse --verify --quiet "${BASE,,}^{commit}") ||
+              fail "The base $BASE is not a commit of this repository (or is an ambiguous short hash)."
+            # A base off main would put commits of another line of history into the range.
+            git merge-base --is-ancestor "$base" origin/main ||
+              fail "The base $BASE is not an ancestor of main."
+            commits=$(git rev-list --reverse "$base..origin/main")
+          fi
+
+          count=$(printf '%s' "$commits" | grep -c . || true)
+          [ "$count" -gt 0 ] || fail "The range holds no commit; there is nothing to verify."
+          # A matrix takes at most 256 jobs. Fail rather than verify part of the range silently.
+          [ "$count" -le 250 ] ||
+            fail "The range holds $count commits, more than the 250 one run verifies; run it by hand on smaller ranges."
+
+          echo "Verifying $count commit(s):"
+          git log --no-walk=unsorted --format='%h %s' $commits
+          # Assigned first: a failure inside a substitution that is an argument of echo would not stop
+          # the script, and an empty matrix would reach the next job.
+          matrix=$(printf '%s\n' "$commits" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "commits=$matrix" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: list
+    name: verify ${{ matrix.commit }}
+    runs-on: ubuntu-latest
+    # A full build takes about three minutes on the developer machine; this leaves room for a slow
+    # runner and stops a hung Testcontainers start from holding a runner for six hours.
+    timeout-minutes: 30
+    strategy:
+      # Every commit's result is wanted, not only the first failure's.
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        commit: ${{ fromJSON(needs.list.outputs.commits) }}
+    steps:
+      - name: Check out the commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.commit }}
+          # The rule check reads commit messages, and the docs-only test compares with the parent.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether the commit touches only Markdown
+        id: kind
+        env:
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          docs_only=false
+          # A commit without a parent (the first one) is always built.
+          if git rev-parse --verify --quiet "$COMMIT^" >/dev/null; then
+            # --no-renames lists both sides of a rename, so a file renamed to .md still counts as code.
+            changed=$(git diff --no-renames --name-only "$COMMIT^" "$COMMIT")
+            # An empty commit has one empty line here, which is not .md, so it is built as well.
+            others=$(printf '%s\n' "$changed" | grep -cv '\.md$' || true)
+            if [ "$others" -eq 0 ]; then
+              docs_only=true
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 21
+        if: steps.kind.outputs.docs_only != 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Unit, contract, architecture and Testcontainers integration tests in one run of this commit's
+      # own build. The exit status is kept rather than ending the job, so the summary below is written
+      # for a failing commit too; the last step fails the job.
+      - name: Build and test
+        id: build
+        if: steps.kind.outputs.docs_only != 'true'
+        run: |
+          set +e
+          ./mvnw -B clean verify
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Check project rules
+        id: rules
+        run: |
+          set +e
+          bash ci/check-rules.sh
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Write the commit's line in the summary
+        if: always()
+        env:
+          COMMIT: ${{ matrix.commit }}
+          DOCS_ONLY: ${{ steps.kind.outputs.docs_only }}
+          BUILD_EXIT: ${{ steps.build.outputs.exit }}
+          RULES_EXIT: ${{ steps.rules.outputs.exit }}
+        run: |
+          set -uo pipefail
+          subject=$(git log -1 --format=%s "$COMMIT" 2>/dev/null || echo '(subject unreadable)')
+
+          # Surefire writes one XML report per test class; the counts are the sums of their root
+          # elements' attributes. No report means the build stopped before the tests.
+          tests='no test reports'
+          if ls target/surefire-reports/TEST-*.xml >/dev/null 2>&1; then
+            tests=$(python3 - <<'EOF'
+          import glob
+          import xml.etree.ElementTree as ET
+          totals = dict(tests=0, failures=0, errors=0, skipped=0)
+          for path in glob.glob("target/surefire-reports/TEST-*.xml"):
+              root = ET.parse(path).getroot()
+              for key in totals:
+                  totals[key] += int(root.get(key, "0"))
+          print("tests={tests} failures={failures} errors={errors} skipped={skipped}".format(**totals))
+          EOF
+            )
+          fi
+
+          if [ "$DOCS_ONLY" = true ]; then
+            build='skipped (only *.md files changed)'
+            tests='-'
+          elif [ -z "$BUILD_EXIT" ]; then
+            build='not run'
+          elif [ "$BUILD_EXIT" = 0 ]; then
+            build='passed'
+          else
+            build="failed (exit $BUILD_EXIT)"
+          fi
+
+          if [ -z "$RULES_EXIT" ]; then
+            rules='not run'
+          elif [ "$RULES_EXIT" = 0 ]; then
+            rules='passed'
+          else
+            rules="failed (exit $RULES_EXIT)"
+          fi
+
+          echo "\`${COMMIT:0:7}\` $subject | build: $build | $tests | rules: $rules" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail the job if the build or the rules failed
+        if: always()
+        env:
+          DOCS_ONLY: ${{ steps.kind.outputs.docs_only }}
+          BUILD_EXIT: ${{ steps.build.outputs.exit }}
+          RULES_EXIT: ${{ steps.rules.outputs.exit }}
+        run: |
+          # An empty status means the step never ran; that is a failure unless the build was skipped
+          # on purpose.
+          if [ "$DOCS_ONLY" != true ] && [ "$BUILD_EXIT" != 0 ]; then
+            echo "::error::The build failed or did not run (exit '${BUILD_EXIT}')."
+            exit 1
+          fi
+          if [ "$RULES_EXIT" != 0 ]; then
+            echo "::error::The rules check failed or did not run (exit '${RULES_EXIT}')."
+            exit 1
+          fi
+
+  reverse-order:
+    # Test classes share one database, and Surefire's class order differs between machines. Running
+    # the pushed tip in reverse order catches a class that passes only because another ran first.
+    if: github.event_name == 'push' && !github.event.deleted
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the pushed tip
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.after }}
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test in reverse alphabetical class order
+        run: ./mvnw -B clean verify -Dsurefire.runOrder=reversealphabetical
