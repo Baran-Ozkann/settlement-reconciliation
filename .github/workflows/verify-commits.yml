@@ -42,6 +42,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       commits: ${{ steps.list.outputs.commits }}
+      count: ${{ steps.list.outputs.count }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v5
@@ -109,7 +110,15 @@ jobs:
           fi
 
           count=$(printf '%s' "$commits" | grep -c . || true)
-          [ "$count" -gt 0 ] || fail "The range holds no commit; there is nothing to verify."
+          if [ "$count" -eq 0 ]; then
+            # A pull request with nothing on top of its base, a push that moves main back to one of
+            # its ancestors, a run by hand from main's tip: nothing new to build, which is not a
+            # failure. A matrix with no value is an error, so verify reads the count and is skipped.
+            echo "::notice::The range holds no commit; there is nothing to verify."
+            echo "commits=[]" >> "$GITHUB_OUTPUT"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # A matrix takes at most 256 jobs. Fail rather than verify part of the range silently.
           [ "$count" -le 250 ] ||
             fail "The range holds $count commits, more than the 250 one run verifies; run it by hand on smaller ranges."
@@ -120,9 +129,12 @@ jobs:
           # the script, and an empty matrix would reach the next job.
           matrix=$(printf '%s\n' "$commits" | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "commits=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
 
   verify:
     needs: list
+    # Skipped when the range is empty; still implicitly requires list to have succeeded.
+    if: needs.list.outputs.count != '0'
     name: verify ${{ matrix.commit }}
     runs-on: ubuntu-24.04
     # A full build takes about three minutes on the developer machine; this leaves room for a slow
