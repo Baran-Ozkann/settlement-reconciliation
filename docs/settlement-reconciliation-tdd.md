@@ -1,6 +1,6 @@
-# Settlement Reconciliation — Technical Design Document
+# Settlement Reconciliation — Design Document
 
-Version: 1.11 — references are identity (A1 and A2 without the window); automatic trigger bounds and switch (Phase 5 parts 1c and 2a outcomes)
+Version: 1.12 — Milestone 5 outcomes; NFR-PERF-2 decided by a rule fixed before measuring; Milestone 5.1 (Stage A performance, pull-request CI); industry names for the process
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -69,7 +69,7 @@ This is a **three-way reconciliation**:
 IDs are stable. Tests and commit bodies reference them.
 
 ### 4.1 Ledger event consumption (FR-LED)
-- **FR-LED-1** Consume ledger posting events from the topic(s) identified in Phase 0.
+- **FR-LED-1** Consume ledger posting events from the topic(s) identified in Milestone 0.
 - **FR-LED-2** Store only entries on ledger accounts mapped to a configured source; ignore others.
 - **FR-LED-3** Processing is idempotent: the same event delivered N times produces one row.
 - **FR-LED-4** Offsets are committed only after the database transaction commits (at-least-once + dedupe).
@@ -144,8 +144,8 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-MAT-9** A ledger entry with no `value_date` falls in no date window and is excluded from run
   scope. Missing data is not a reconciliation discrepancy, so it must never produce a break.
 - **FR-MAT-10** Each run's `stats` records `ledger_entries_without_value_date` for its source, counted
-  at run time. It lives in the run record rather than only in the report, so a past run stays
-  reproducible after the number has moved on.
+  at run time, beside `ledger_entries_in_scope` (v1.12). It lives in the run record rather than only
+  in the report, so a past run stays reproducible after the number has moved on.
 
 ### 4.4 Breaks (FR-BRK)
 - **FR-BRK-1** Break types (§8.3) are a closed enum.
@@ -174,16 +174,36 @@ IDs are stable. Tests and commit bodies reference them.
 ### 4.6 Non-functional (NFR)
 - **NFR-PERF-1** Ingest a 1,000,000-line PSP file with the JVM limited to `-Xmx512m`. Target: ≤ 120 s on
   the developer machine, measured over the whole request. Measured and reported, never estimated.
-  *Revised in v1.7 from 60 s, which was set without measurement.* Phase 4 and Phase 4.1 measured 96–110 s
+  *Revised in v1.7 from 60 s, which was set without measurement.* Milestone 4 and Milestone 4.1 measured 96–110 s
   and showed why: the server-side insert of a million rows with every constraint kept is CPU-bound at
   47–68 s in one backend even with no foreign key, and the deferred line-to-file key adds about 26 s at
   commit (one check per row; checking it immediately costs more). Multi-row `VALUES` and `COPY` through a
   staging table were both slower than the current `unnest` form. A settlement file arrives once a day,
   so two minutes is operationally ample. The original target, every measurement and the analysis are
-  kept in `PROGRESS.md`, the Phase 4.1 report and, in Phase 10, the README. Time-ordered (v7) line ids
+  kept in `PROGRESS.md`, the Milestone 4.1 review and, in Milestone 10, the README. Time-ordered (v7) line ids
   were measured through the perf test and not kept (−4.8, +2.6, −0.3 s against adjacent baseline runs);
   line ids stay random v4. The margin to 120 s is 10–25 s on the developer machine.
-- **NFR-PERF-2** Stage A for 1,000,000 PSP lines against 1,000,000 ledger entries. Target: ≤ 120 s.
+- **NFR-PERF-2** Stage A for 1,000,000 PSP lines against 1,000,000 ledger entries under `-Xmx512m`,
+  timed from the RUNNING row to the COMPLETED return. Target: ≤ 120 s, settled in Milestone 5.1 by a rule
+  fixed in v1.12, before the measurements it applies to:
+  1. Measure the current statement form three times at the head of `main`, with the per-statement
+     breakdown and the share of A1 spent in foreign-key checks.
+  2. Measure three times with `match_items_match_fk` and `match_events_match_fk` deferred to commit
+     inside the run's work transaction (made `DEFERRABLE INITIALLY IMMEDIATE`, as V10 did for the
+     statement lines). The deferred form is kept only if its median run is at least 10 % below the
+     immediate form's; otherwise the keys stay immediate, since deferring moves a violation's report to
+     commit and buys nothing.
+  3. If all three runs of the kept form are ≤ 120 s, the target stands. Otherwise it becomes **180 s**,
+     for the reasons NFR-PERF-1 was revised in v1.7: 120 s was set without measurement; a run follows
+     each file in the background, about once a day per source, and the upload does not wait for it; and
+     Milestone 5 showed that the remaining cost is writing about a million matches with every constraint
+     kept, not a plan defect. A kept run above 180 s goes back to the owner.
+  *Milestone 5 history:* 3,882.7 s with the first statement forms (`acad3b9`); 274.2 s once A3's
+  unreferenced lines became one hash anti-join (`5b68cbc`); 161.8 s once a duplicate reference's other
+  lines became one join (`0a9fba8`). Three runs at `0a9fba8` took 161–162 s (A1 129.9–131.5 s, peak heap
+  44–104 MB of 512 MB), and a diagnosis attributed about 106 s of a 136.5 s A1 to foreign-key checks, but
+  those figures were left in an uncommitted draft, so Milestone 5.1 measures again. No constraint, foreign
+  key, index or trigger is dropped or disabled to meet the target, and no durability setting changes.
 - **NFR-PERF-3** Kafka projection throughput target: ≥ 5,000 events/s sustained in the local setup.
 - **NFR-REL-1** A crash during ingestion leaves no partial data; re-uploading the same file succeeds.
 - **NFR-REL-2** A crash during a run leaves no partial matches; re-running is safe.
@@ -224,7 +244,7 @@ calls the ledger's API. The only coupling is the event contract in `contracts/`.
 - Base package `com.baran.recon`.
 - The ledger's local stack already uses 8080, 8081, 5433, 9092, 4318, 3000, 9090 and 3200. This service must not
   collide: API `127.0.0.1:8090`, management `127.0.0.1:8091`, PostgreSQL `127.0.0.1:5434`.
-  Kafka: Phase 0 determines whether to join the ledger's broker (for a live end-to-end demo) or run a
+  Kafka: Milestone 0 determines whether to join the ledger's broker (for a live end-to-end demo) or run a
   separate broker for local development; tests always use Testcontainers.
 
 ### 5.2 Internal structure (hexagonal)
@@ -243,7 +263,7 @@ com.baran.recon
 └── config            Spring configuration, properties binding, security
 ```
 
-ArchUnit rules (Phase 1):
+ArchUnit rules (Milestone 1):
 - `domain` depends on nothing outside `java.*` and itself.
 - `application` depends only on `domain`.
 - `adapters` depend on `application` and `domain`, never on each other.
@@ -269,7 +289,7 @@ ArchUnit rules (Phase 1):
 4. Parse in streaming mode; validate each line; collect errors (line number + code). Over the line
    limit: `413`, nothing recorded.
 5. Over the invalid-line threshold: the file is recorded `REJECTED` with its line errors, no line stored
-   (`422`). Otherwise, in one transaction: lines in batches (Phase 4.1 settles the bulk write form),
+   (`422`). Otherwise, in one transaction: lines in batches (Milestone 4.1 settles the bulk write form),
    duplicate-line breaks, and the `statement_files` row last (V10 defers the line-to-file foreign keys
    to commit). On an infrastructure failure: rollback, `500`, **nothing recorded** — no `REJECTED` row,
    because the file was not found invalid, and the same file can be uploaded again.
@@ -277,7 +297,7 @@ ArchUnit rules (Phase 1):
    files named like the container's part files (`upload_*.tmp`) that a stopped JVM left directly in the
    temp directory are deleted; startup stops if that directory is the system temp directory, a
    filesystem root or the user's home. The directory must be one instance's own (v1 runs one instance).
-7. Trigger a run for the affected source and value-date range (Phase 5).
+7. Trigger a run for the affected source and value-date range (Milestone 5).
 
 **Matching run**
 1. Insert the `reconciliation_runs` row as `RUNNING`, with its config snapshot, in its own transaction.
@@ -285,12 +305,15 @@ ArchUnit rules (Phase 1):
    `reconciliation_runs(source_code) WHERE status = 'RUNNING'`. A second run for the source fails to
    insert; a manual trigger answers `409` with the running run's id.
 2. In one transaction at `REPEATABLE READ`: Stage A (if the source type is PSP), then Stage B
-   (Phase 6); persist matches, open breaks, auto-resolve breaks (`MATCHED_LATE`), record statistics,
+   (Milestone 6); persist matches, open breaks, auto-resolve breaks (`MATCHED_LATE`), record statistics,
    set `COMPLETED`. Every statement of the run reads the same snapshot, so a file or an event committed
    while the run works is seen by none of its steps, never by some (grace breaks) and not others
    (A1); the next run picks it up. A serialization failure fails the run like any other error.
 3. On failure: roll that transaction back and set `FAILED` in a transaction of its own. Nothing of the
-   run's work remains (NFR-REL-2).
+   run's work remains (NFR-REL-2). If `FAILED` itself cannot be recorded, or the failure is a JVM
+   `Error`, the run stays `RUNNING` until step 4: the source stays busy until a restart, the automatic
+   trigger gives up on it after `busy-give-up-after`, and a manual `POST` answers a plain `500` without
+   `runId`.
 4. At startup, a run left `RUNNING` by a stopped JVM is set `FAILED` (v1 runs one instance).
 
 ---
@@ -312,7 +335,7 @@ The ledger stores money as `BIGINT` minor units (kuruş), chosen over `NUMERIC` 
   configurable so PSP/bank lines in another currency can be ingested and reported as `CURRENCY_MISMATCH`.
 - Sign convention (from the perspective of our settlement/clearing account):
   - Ledger: the ledger uses a signed `amount` per entry (ledger ADR-001). An entry on the mapped clearing
-    account is taken as-is: positive increases that account. Confirmed in Phase 0 against the payload:
+    account is taken as-is: positive increases that account. Confirmed in Milestone 0 against the payload:
     `amount` is signed minor units, negative on the account that was debited.
   - PSP: `gross_amount` positive for payments, negative for refunds and chargebacks.
     `net_amount = gross_amount − fee_amount`. Fees are non-negative.
@@ -407,7 +430,7 @@ recon:
   sources:
     - code: PSP_ALPHA
       type: PSP_SETTLEMENT
-      ledger-accounts: [ "<clearing account id from Phase 0>" ]
+      ledger-accounts: [ "<clearing account id from Milestone 0>" ]
       value-date-window-days: 2        # business days, ± around ledger value date
       grace-days-ledger-unmatched: 3   # business days before MISSING_IN_PSP
       grace-days-psp-unmatched: 1      # business days before MISSING_IN_LEDGER
@@ -550,7 +573,7 @@ inside a transaction that is rolled back, a property overridden in the test's ow
 context. Such a proof runs on every build, so a later change that makes a check blind fails CI
 instead of going unnoticed, and nothing has to be weakened even briefly.
 
-**Fallback — a recorded one-off.** Where the broken state cannot be built that way, the phase that
+**Fallback — a recorded one-off.** Where the broken state cannot be built that way, the milestone that
 introduces the mechanism must:
 
 1. break it on purpose in a throwaway change that is **never committed**,
@@ -599,7 +622,7 @@ reconciliation_runs   (id UUID PK, source_code, value_date_from, value_date_to,
                        config_snapshot JSONB, stats JSONB, started_at, finished_at, triggered_by)
 matches               (id UUID PK, run_id FK, rule_id, rule_version, cardinality, status,
                        amount_difference BIGINT, currency CHAR(3),  -- the difference is money, so it
-                                                                    -- carries its currency (TDD 6)
+                                                                    -- carries its currency (design doc §6)
                        low_confidence BOOL, created_at)
 match_items           (match_id FK, side, item_id, active BOOL, PRIMARY KEY(match_id, side, item_id))
 match_events          (id BIGSERIAL PK, match_id FK, event_type, actor, reason, occurred_at)   -- append-only
@@ -613,7 +636,7 @@ break_events          (id BIGSERIAL PK, break_id FK, from_status, to_status, res
 **Grants.** `recon_app` gets exactly the verbs the code issues, table by table. Where the code
 updates only some columns, the grant is column-level (`GRANT UPDATE (status, resolution_code,
 resolved_at) ON breaks`), never table-wide, so a bug or an injected statement cannot rewrite a column
-no code path changes. Each grant lands in the same phase as the code that uses it, and
+no code path changes. Each grant lands in the same milestone as the code that uses it, and
 `ApplicationRoleGrantsTest` pins the full set exactly.
 
 **Concurrency on breaks.** A break transition updates the row only if its status is still the one
@@ -643,7 +666,7 @@ all, enforced by a `CHECK`.
 | GET | `/api/v1/breaks/export?…` | VIEWER | CSV export (injection-safe) |
 | GET | `/api/v1/reports/summary?source=&valueDate=` | VIEWER | Reconciliation summary |
 | GET | `/actuator/health` | public | Liveness/readiness |
-| GET | `/actuator/prometheus` | METRICS (any authenticated user until Phase 9) | Metrics scrape |
+| GET | `/actuator/prometheus` | METRICS (any authenticated user until Milestone 9) | Metrics scrape |
 
 ### 11.1 Security design
 - Spring Security, HTTP Basic over localhost in v1 (documented as a v1 simplification; production would
@@ -652,7 +675,7 @@ all, enforced by a `CHECK`.
   `RECON_VIEWER_PASSWORD_HASH`); none are in the repo. A missing or malformed user, the username
   `system`, or two users with the same name stops startup. `.env` holds a hash in single quotes, because
   docker compose reads that file too and would expand each `$`; the application drops one enclosing pair.
-  Roles: `VIEWER`, `OPERATOR` (includes VIEWER), `METRICS` (Phase 9; until then any authenticated user
+  Roles: `VIEWER`, `OPERATOR` (includes VIEWER), `METRICS` (Milestone 9; until then any authenticated user
   reads `/actuator/prometheus` and `/actuator/info`).
 - Stateless: no HTTP session is created; each request carries its credentials. `401` (with a Basic
   challenge) and `403` are Problem Details like every other error.
@@ -669,11 +692,11 @@ all, enforced by a `CHECK`.
   case from the same property.
 - **Configuration binding.** A filesystem path in configuration is bound as text and made a `Path`
   with `Path.of`, never bound as `Path`: Spring's `PathEditor` first tries the text as a resource
-  location, and Phase 4.1 found a configured `/` bound as the classpath root (`target/test-classes`),
+  location, and Milestone 4.1 found a configured `/` bound as the classpath root (`target/test-classes`),
   so a guard checked a directory nobody had configured. An ArchUnit rule forbids `Path` components in
   `@ConfigurationProperties` types.
 - Rate of uploads is not limited in v1; documented in the threat model.
-- Phase 9 produces `docs/threat-model.md` (STRIDE per component: upload, Kafka listener, API, DB).
+- Milestone 9 produces `docs/threat-model.md` (STRIDE per component: upload, Kafka listener, API, DB).
 
 ---
 
@@ -710,7 +733,7 @@ identifiers masked, no file contents.
 | End-to-end | Testcontainers + generator | Full three-way flow on a labeled dataset |
 | Performance | Separate Maven/Gradle profile or task, not in default CI | NFR-PERF-* |
 
-### 13.1 Synthetic data generator (Phase 8)
+### 13.1 Synthetic data generator (Milestone 8)
 - Deterministic by seed. Produces: ledger events (published to Kafka or written as JSON lines),
   PSP CSV, bank CSV, and a ground-truth file listing the expected outcome for every item.
 - Injected discrepancy types with configurable rates: missing PSP line, missing ledger entry,
@@ -721,12 +744,16 @@ identifiers masked, no file contents.
 
 ---
 
-## 14. Phases
+## 14. Milestones
 
-Each phase ends with a report (see `CLAUDE.md` §5). A phase is done only when every exit criterion is met,
-including the break proofs (§9.1) for every mechanism the phase introduces.
+Each milestone ends with a milestone review (see `CLAUDE.md` §5). A milestone is done only when every exit criterion is met,
+including the break proofs (§9.1) for every mechanism the milestone introduces.
 
-### Phase 0 — Discovery and contract extraction (no application code)
+*Naming (v1.12):* up to Phase 5 this document was called the TDD, its stages phases and their reports
+phase reports. From v1.12 they are the design doc, milestones and milestone reviews. Commit messages,
+`PROGRESS.md` entries and code comments written before keep the old words.
+
+### Milestone 0 — Discovery and contract extraction (no application code)
 Goal: replace every assumption about the ledger with facts.
 - Read `..\ledger-payment-core` (read-only): build tool and wrapper, Java/Spring Boot versions,
   base package convention, persistence approach (JPA/JDBC), Lombok usage, money representation,
@@ -740,11 +767,11 @@ Goal: replace every assumption about the ledger with facts.
   - `docs/adr/0002-json-schema-contract-instead-of-schema-registry.md`.
   - `.gitignore`, `.gitattributes` (if not already present), `.editorconfig`.
 - Exit criteria:
-  - Every "Phase 0 determines" item in this TDD has an answer with evidence, or is listed as an open question.
+  - Every "Milestone 0 determines" item in this design doc has an answer with evidence, or is listed as an open question.
   - Samples validate/fail against the schema as expected (verified with a documented command).
-  - A list of TDD assumptions that are contradicted by the ledger, with proposed TDD changes.
+  - A list of design doc assumptions that are contradicted by the ledger, with proposed design doc changes.
 
-### Phase 1 — Project skeleton
+### Milestone 1 — Project skeleton
 - Build with wrapper, Spring Boot app, profiles (`local`, `test`), `.env.example`.
 - `docker-compose.yml`: PostgreSQL + Kafka, ports on `127.0.0.1`, named volumes, healthchecks.
 - A bootstrap script (`ops/postgres/init/`) creates the migration role and the application role.
@@ -756,19 +783,19 @@ Goal: replace every assumption about the ledger with facts.
   USAGE only — no CREATE anywhere, no ownership, so it cannot run DDL at all.
 - A contract test that loads `contracts/ledger-events.schema.json` with the `networknt` JSON Schema
   validator (draft 2020-12) and asserts every `samples/valid-*.json` validates and every
-  `samples/invalid-*.json` fails — this is the verification Phase 0 could not run.
+  `samples/invalid-*.json` fails — this is the verification Milestone 0 could not run.
 - ArchUnit rules from §5.2 and INV-8/INV-9 (ban `float`/`double` everywhere in `domain`/`application`,
   `BigDecimal` outside the parsing adapter).
 - `ci/check-rules.sh` modelled on the ledger's: fails on floating point in the money path, `TODO`, a JPA
   dependency, `withReuse(true)`, and AI tool references in the commit range. It must distinguish
   "no match" from "could not run" (grep exit 1 vs ≥ 2), exactly as the ledger's fix does.
-- JaCoCo configured with thresholds from NFR-TEST-1 (enforced from Phase 2 onward).
+- JaCoCo configured with thresholds from NFR-TEST-1 (enforced from Milestone 2 onward).
 - GitHub Actions workflow: build + all tests (Testcontainers on `ubuntu-latest`).
 - Actuator restricted to `health`, `info`, `prometheus`. Placeholder README.
 - Exit: `docker compose up -d` + app start succeeds; `/actuator/health` is UP; CI config valid;
   ArchUnit tests pass; a test proves the app DB role cannot run DDL.
 
-### Phase 2 — Domain model and persistence
+### Milestone 2 — Domain model and persistence
 - `Money`, `CurrencyCode`, business-day calendar, item types, match and break domain models,
   break state machine (pure domain).
 - Migrations for all tables in §10 with constraints, partial unique indexes, append-only trigger and grants.
@@ -776,7 +803,7 @@ Goal: replace every assumption about the ledger with facts.
 - Exit: unit tests for Money (incl. jqwik), calendar, state machine (all legal and illegal transitions);
   integration tests prove INV-2, INV-7 constraints and INV-6 append-only enforcement (both privilege and trigger).
 
-### Phase 3 — Ledger event consumer
+### Milestone 3 — Ledger event consumer
 - Listener, schema validation, account-to-source filter, idempotent insert, manual ack after commit, DLQ.
 - Exit: FR-LED-1…9 covered; a five-field event projects with nulls and is never back-dated; a duplicate
   `entry_id` under a new `event-id` is rejected, logged and dead-lettered; an unmapped `tx_type` is
@@ -784,10 +811,10 @@ Goal: replace every assumption about the ledger with facts.
   → DLQ with headers and partition not blocked, crash-before-commit redelivery; contract test using
   `contracts/samples`; throughput measured (NFR-PERF-3).
 
-### Phase 4 — Statement ingestion
+### Milestone 4 — Statement ingestion
 - Security baseline, real and not stubbed, because this is the first HTTP endpoint: Spring Security
   with HTTP Basic, users and bcrypt hashes from environment variables, roles `VIEWER` and `OPERATOR`
-  (§11.1); unauthenticated requests get 401, a VIEWER uploading gets 403. Phase 9 hardens it.
+  (§11.1); unauthenticated requests get 401, a VIEWER uploading gets 403. Milestone 9 hardens it.
 - Upload endpoint, temp-file streaming with SHA-256 (temp files in a configured directory, deleted on
   success and on every failure path),
   parsers for both formats behind a `StatementParser` port, validation codes (§7.3), atomic insert,
@@ -799,9 +826,9 @@ Goal: replace every assumption about the ledger with facts.
   oversize line, non-UTF-8 bytes; streaming verified with a 1,000,000-line generated file under `-Xmx512m`
   (performance profile, not default CI).
 
-### Phase 4.1 — Bulk write path (follow-up, before Phase 5)
-Phase 4 measured NFR-PERF-1 at 97–100 s against 60 s (peak heap 147–155 MB of 512 MB): about 64 s in
-line inserts and 27 s at commit. Phase 5 writes up to a million matches in one transaction, so the bulk
+### Milestone 4.1 — Bulk write path (follow-up, before Milestone 5)
+Milestone 4 measured NFR-PERF-1 at 97–100 s against 60 s (peak heap 147–155 MB of 512 MB): about 64 s in
+line inserts and 27 s at commit. Milestone 5 writes up to a million matches in one transaction, so the bulk
 write technique is settled here first.
 - Measure the current statement form, then try, in order and each measured: driver-side batch
   rewriting or multi-row `VALUES`; `COPY FROM STDIN` into a transaction-scoped staging table followed by
@@ -809,12 +836,12 @@ write technique is settled here first.
   breaks); and the commit-time cost of the deferred line-to-file foreign keys.
 - No constraint, foreign key, CHECK, index, or trigger is dropped or disabled; no durability setting is
   changed; the target is not lowered by the implementation (the owner revised it in v1.7, §4.6). If
-  the target is still missed, the phase reports the
-  measurements and the owner decides.
+  the target is still missed, the milestone review
+  reports the measurements and the owner decides.
 - Also: the use case re-checks the file size behind the servlet limit (`413`); startup deletes stale
   container part files from the dedicated temp directory; the ArchUnit fixtures move out of
   `com.baran.recon` so no test context scans them.
-- Exit: NFR-PERF-1 measured three times under `-Xmx512m` with a per-stage breakdown; all Phase 4 tests
+- Exit: NFR-PERF-1 measured three times under `-Xmx512m` with a per-stage breakdown; all Milestone 4 tests
   and break proofs still pass.
 - Outcome of part A: no write form reached 60 s; the `unnest` form stays and the target is revised
   (§4.6). Random v4 line ids scatter inserts across the primary key index, and ascending ids made a
@@ -822,11 +849,11 @@ write technique is settled here first.
   v7 ids were 4.8 s faster, 2.6 s slower and 0.3 s faster than the adjacent baseline runs, so line ids
   stay random v4. CI on Linux then found the `Path` binding defect (§11.1), fixed in `df08898`.
 
-### Phase 5 — Stage A matching
+### Milestone 5 — Stage A matching
 - Run orchestration per §5.3 (RUNNING row, one run per source by partial unique index, config snapshot,
   one work transaction, FAILED on failure, stale RUNNING set FAILED at startup), rules A1–A3 with the
   §8.2 Stage A details, ambiguity handling, duplicate-reference handling, grace-period evaluation for
-  ledger and PSP sides, PENDING status, `MATCHED_LATE` auto-resolution (moved here from Phase 7, since
+  ledger and PSP sides, PENDING status, `MATCHED_LATE` auto-resolution (moved here from Milestone 7, since
   the run is what matches an item with an open break), FR-MAT-9/10.
 - `POST /api/v1/runs` (OPERATOR; synchronous; `201` with the run's status and stats, `409` with the
   running run's id when the source is busy, `400` for an unknown source or a bad range) and
@@ -845,34 +872,56 @@ write technique is settled here first.
 - Exit: FR-MAT-1…6, FR-MAT-8…10 for Stage A, FR-BRK-5; INV-1, INV-4, INV-5 property tests (shuffled
   inputs, fixed seed); an existing active match is never altered by a later run; a re-run with no new
   data writes nothing but its run row; a concurrent run on the same source is refused by the index
-  (with its break proof); NFR-PERF-2 measured three times under `-Xmx512m` (perf profile).
+  (with its break proof); NFR-PERF-2 measured three times under `-Xmx512m` (perf profile), the
+  figures committed in `PROGRESS.md` in the session that measures them.
+- Outcome: every exit criterion met except NFR-PERF-2 (161.8 s against 120 s, and the three runs never
+  committed), which moves to Milestone 5.1. Per-commit CI over `1f46fd4..ae6f032`: 57 of 66 commits green.
+  Two known red ranges, both pushed, both fixed by a later commit, kept in `PROGRESS.md` so that
+  `git bisect` skips them: `14bc542`, `cf025df`, `a5a3c4a` (on Linux's test order `RunMatchingTest`
+  reused `SpringTransactionsTest`'s event ids; fixed by `0ca8d55`) and `acad3b9`…`f49e1b8` (a comment
+  the rules script refuses; fixed by `84834ec`).
 
-### Phase 6 — Stage B matching
+### Milestone 5.1 — Stage A performance and pull-request CI (follow-up, before Milestone 6)
+- **Part A, CI.** From here every session works on its own branch; the owner pushes it, opens a pull
+  request, and merges it with a merge commit once CI is green. `verify-commits.yml` verifies each
+  commit of a pull request (base to head) and runs the reverse order on its head; a push to `main`
+  verifies the first-parent commits it adds (the merge commit, or a commit the owner pushed directly);
+  one aggregating job passes only if every commit passed, so branch protection can require it. The
+  runner is pinned to `ubuntu-24.04` (`ubuntu-latest` moves to Ubuntu 26 from 19 October 2026); actions
+  are pinned to full commit SHAs and kept current by Dependabot; the dispatch input `base` is trimmed
+  before it is validated. The document is renamed `docs/design-doc.md`.
+- **Part B, NFR-PERF-2** by the rule in §4.6.
+- Exit: Part A's own pull request verified by the new workflow; NFR-PERF-2 measured and committed per
+  §4.6, the perf test asserting the settled target; if the deferred keys are kept, a test pins their
+  deferrable form and a break proof shows that an orphan match row still fails the run at commit,
+  leaving nothing of its work.
+
+### Milestone 6 — Stage B matching
 - Batch aggregation, regex batch-id extraction, rules B1–B2, `UNEXPECTED_BANK_LINE`, `MISSING_SETTLEMENT`
   with grace, mixed-currency batch handling.
 - Exit: Stage B rules covered; INV-1/INV-4/INV-5 extended to Stage B; end-to-end three-way test with a
   small hand-written dataset whose expected results are asserted item by item.
 
-### Phase 7 — Break management and API
+### Milestone 7 — Break management and API
 - Break transitions endpoint, resolution codes, reopen-as-new-break, match
   reversal (FR-MAT-7) with events, list/detail/export/summary endpoints, Problem Details, pagination.
 - Exit: FR-BRK-1…7, FR-API-1…6 covered; two concurrent transitions on one break produce exactly one
   success and one 409, with one event written; INV-6 replay test; export injection test; authorization tests for
   every endpoint (VIEWER cannot mutate, unauthenticated gets 401).
 
-### Phase 8 — Synthetic data generator and evaluation
+### Milestone 8 — Synthetic data generator and evaluation
 - Generator (§13.1) as a separate module or `test`-scoped tool, deterministic by seed.
 - Evaluation runner producing `docs/evaluation.md`: precision/recall per break type, match rate, and
   NFR-PERF-1/2/3 measurements with machine description and exact commands.
 - Exit: evaluation reproducible from a single documented command; every metric below target is analysed.
 
-### Phase 9 — Observability and security hardening
+### Milestone 9 — Observability and security hardening
 - Metrics and structured logging per §12, masking, log-capture test (NFR-SEC-2), Spring Security finalized
   per §11.1, dependency vulnerability scan in CI (OWASP Dependency-Check or equivalent), `docs/threat-model.md`.
 - Exit: NFR-SEC-1/2, NFR-OBS-1 covered; scan passes or findings are documented with justification;
   threat model covers upload, listener, API, and DB.
 
-### Phase 10 — Documentation and release readiness
+### Milestone 10 — Documentation and release readiness
 - README in the same register as the ledger's: problem statement, three-way diagram (Mermaid), quick start as a
   real session, invariants table (mechanism + where + test), break-proof table, evaluation and benchmark tables,
   what a green suite did not catch (if anything was found), decision records, **known limits**, deliberately
@@ -894,13 +943,13 @@ one event per ledger entry, `event-id` header as the dedupe key, and — since l
 `entry_id` and `created_at` on the payload (OQ-1, OQ-2).
 **OQ-3** (v1.8): the account type does not affect matching, because a source maps ledger accounts by
 id (§8.1). In the synthetic world the PSP clearing account is an `ASSET`, money receivable from the
-PSP; Phase 8's data uses one such account per PSP source.
+PSP; Milestone 8's data uses one such account per PSP source.
 
 Still open:
-1. **OQ-4** Whether Phase 8 generates ledger data through the ledger's API or publishes
+1. **OQ-4** Whether Milestone 8 generates ledger data through the ledger's API or publishes
    schema-valid synthetic events onto the topic.
-2. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Phase 10.
+2. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Milestone 10.
 3. **OQ-6** An item whose break an operator resolved (e.g. `WRITTEN_OFF`) and that is still
    unmatched: a run would open the same break again. Whether runs skip it, and which status INV-1
-   gives it, is decided with Phase 7's transition endpoint, the first thing that resolves a break by
+   gives it, is decided with Milestone 7's transition endpoint, the first thing that resolves a break by
    hand. Until then nothing does, so no run can meet the case.
