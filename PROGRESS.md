@@ -1,9 +1,62 @@
 # Progress
 
-**Current phase:** 5 — Stage A matching, parts 1a to 2b built; per-commit verification open in CI;
-NFR-PERF-2's 120 s target not met
-**Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
+**Current milestone:** 5.1 — part A (pull-request CI, the design doc rename) built on its branch;
+part B (NFR-PERF-2 by the rule in design doc §4.6) is next
+**Branch:** `milestone-5.1/part-a`, merged into main through a pull request (one branch per session
+from Milestone 5.1 on)
 **Last updated:** 2026-10-06
+
+## Milestone 5.1 part A — pull-request CI and the design doc rename
+
+### The process from Milestone 5.1 on
+
+- Every session works on its own branch, created from a clean `main`. The owner pushes it, opens a
+  pull request into `main` and merges it with a merge commit once CI is green.
+- `.github/workflows/verify-commits.yml` verifies each commit of a pull request (`base.sha..head.sha`)
+  on its own and runs the reverse class order on the pull request's head. A push to `main` verifies
+  the first-parent commits it adds: the merge commit alone after a merge, each commit after a direct
+  push. A run by hand still verifies every commit of `main` after its base. One job,
+  `All commits pass`, passes only if every needed job passed or was skipped on purpose, and is the
+  check branch protection can require.
+- Runner pinned to `ubuntu-24.04`; `actions/checkout` and `actions/setup-java` pinned to full commit
+  hashes (v5.1.0, v5.7.0), kept current by Dependabot (`.github/dependabot.yml`, actions only).
+- Naming (design doc v1.12): the TDD is now the design doc, `docs/design-doc.md`; phases are
+  milestones; phase reports are milestone reviews, kept in the git-ignored `.milestone-reviews/`.
+  The entries below this section keep the old words.
+
+### Milestone 5's per-commit CI result
+
+From the owner's CI run #3:
+
+- Verify commits run #3, started by hand with base `1f46fd430151292c76d29bc2d2b680a9a1c46a1a`:
+  66 commits (`1f46fd4..ae6f032`), 7 min 55 s, 57 green, 9 red.
+- Known red range 1: `14bc542`, `cf025df`, `a5a3c4a`. At `14bc542` on Linux:
+  `SpringTransactionsTest.completedWorkCommits:50 Expecting value to be true but was false`,
+  Tests run 992, Failures 1. On Linux's class order `RunMatchingTest` used
+  `SpringTransactionsTest`'s event ids; fixed by `0ca8d55`. The "exit 127" row for `14bc542` in the
+  local partial record (Verification (2b), below) was an interrupted run; CI is the result.
+- Known red range 2: `acad3b9`, `5b68cbc`, `0a9fba8`, `6ff6eca`, `d96fddc`, `f49e1b8`:
+  `ci/check-rules.sh` refuses a class comment; fixed by `84834ec`.
+- All nine are pushed and stay as they are. A `git bisect` over this history skips them with:
+
+  ```
+  git bisect skip 14bc542 cf025df a5a3c4a acad3b9 5b68cbc 0a9fba8 6ff6eca d96fddc f49e1b8
+  ```
+
+This closes Phase 5's open per-commit verification (item H and Verification (2b), below).
+
+### Verification (part A)
+
+At `94430fc`, the last commit the build reads (this file changes nothing it reads), default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 245 s, 1127 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 %, overall 96.6 %
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0
+
+The workflow cannot run locally. Every changed shell block was extracted and dry-run in Git Bash
+(the milestone review lists each case and its output), and every commit's version of the workflow
+was parsed and its scripts checked with `bash -n`. The real test is this branch's own pull request.
 
 ## Phase 5 — parts 1a, 1b, 1c, 2a and 2b built; per-commit verification open (CI)
 

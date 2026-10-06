@@ -1,0 +1,11 @@
+version: 2
+
+# The workflow pins each action to a full commit hash, which never moves on its own. Dependabot opens
+# a pull request when an action releases a new version, with the new hash and its release comment,
+# and the pull request is verified like any other. Actions only: dependency scanning of the Maven
+# build is Milestone 9.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

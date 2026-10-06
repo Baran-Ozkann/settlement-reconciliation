@@ -2,7 +2,7 @@
 
 Three-way reconciliation of `ledger-payment-core` postings, PSP settlement reports and bank
 statements. Under construction: the full README is written when the service is complete. The
-design is in [`docs/settlement-reconciliation-tdd.md`](docs/settlement-reconciliation-tdd.md).
+design is in [`docs/design-doc.md`](docs/design-doc.md).
 
 ## Run locally (PowerShell)
 

@@ -1,11 +1,18 @@
 name: Verify commits
 
 # Every commit is built and tested on its own (CLAUDE.md 5, step 4), so a commit that only passes
-# with the one after it is caught. A push to main verifies the commits it adds; a run by hand
-# verifies every commit of main after a given base.
+# with the one after it is caught. A pull request into main verifies every commit it adds; a push to
+# main verifies the first-parent commits it adds; a run by hand verifies every commit of main after a
+# given base.
+#
+# pull_request, never pull_request_target: the run gets a read-only token and no secrets, so the
+# code under test cannot reach anything a pull request from a fork should not.
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       base:
@@ -18,20 +25,34 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run on its previous head, which is cancelled. Every
+# push to main and every run by hand gets a group of its own, so none of them is cancelled or queued.
+concurrency:
+  group: verify-commits-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every job names its runner's Ubuntu release rather than ubuntu-latest, which moves to a new
+# release on GitHub's schedule: a run repeated on an old commit must use the release its first run
+# used. Moving to a newer release is a commit of its own.
+#
+# Each action is pinned to a full commit hash, its release named in a comment: a tag can be moved to
+# other code, a commit hash cannot.
 jobs:
   list:
     # A push that deletes main has nothing to verify.
     if: github.event_name != 'push' || !github.event.deleted
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       commits: ${{ steps.list.outputs.commits }}
+      count: ${{ steps.list.outputs.count }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # The range is computed from history, and the dispatch range ends at origin/main, which a
-          # full fetch creates whatever ref the run was started from.
+          # full fetch creates whatever ref the run was started from. On a pull request the checkout
+          # is GitHub's merge commit, whose parents are the base and the pull request's head.
           fetch-depth: 0
           # No step here or in the jobs below talks to the remote after the checkout, so the token is
           # not left in .git/config for the build's plugins and tests to read.
@@ -45,6 +66,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ inputs.base }}
         run: |
           set -euo pipefail
@@ -60,20 +83,45 @@ jobs:
               # A force push can leave the previous tip outside the fetched history.
               git cat-file -e "$BEFORE^{commit}" 2>/dev/null ||
                 fail "The push's previous tip $BEFORE is not in the history; run this workflow by hand with a base."
-              commits=$(git rev-list --reverse "$BEFORE..$AFTER")
+              # The first-parent commits only. After a merged pull request that is the merge commit
+              # alone: the commits it brings were verified one by one on the pull request, and the
+              # merge commit's own build checks how they combine with main. A commit the owner
+              # pushed directly is on the first-parent line and is verified as before.
+              commits=$(git rev-list --reverse --first-parent "$BEFORE..$AFTER")
             fi
+          elif [ "$EVENT" = pull_request ]; then
+            [[ "$PR_BASE" =~ ^[0-9a-f]{40}$ ]] || fail "The pull request's base is not a full commit hash."
+            [[ "$PR_HEAD" =~ ^[0-9a-f]{40}$ ]] || fail "The pull request's head is not a full commit hash."
+            git cat-file -e "$PR_BASE^{commit}" 2>/dev/null ||
+              fail "The pull request's base $PR_BASE is not in the history."
+            git cat-file -e "$PR_HEAD^{commit}" 2>/dev/null ||
+              fail "The pull request's head $PR_HEAD is not in the history."
+            # Every commit the pull request adds to its base, merge commits of the branch included.
+            commits=$(git rev-list --reverse "$PR_BASE..$PR_HEAD")
           else
-            [[ "$BASE" =~ ^[0-9a-fA-F]{7,40}$ ]] || fail "The base must be a commit hash of 7 to 40 hex characters."
-            base=$(git rev-parse --verify --quiet "${BASE,,}^{commit}") ||
-              fail "The base $BASE is not a commit of this repository (or is an ambiguous short hash)."
+            # A pasted hash often carries a space or a line break at either end. Only the ends are
+            # trimmed: whitespace inside the input still fails the check below.
+            input="${BASE#"${BASE%%[![:space:]]*}"}"
+            input="${input%"${input##*[![:space:]]}"}"
+            [[ "$input" =~ ^[0-9a-fA-F]{7,40}$ ]] || fail "The base must be a commit hash of 7 to 40 hex characters."
+            base=$(git rev-parse --verify --quiet "${input,,}^{commit}") ||
+              fail "The base $input is not a commit of this repository (or is an ambiguous short hash)."
             # A base off main would put commits of another line of history into the range.
             git merge-base --is-ancestor "$base" origin/main ||
-              fail "The base $BASE is not an ancestor of main."
+              fail "The base $input is not an ancestor of main."
             commits=$(git rev-list --reverse "$base..origin/main")
           fi
 
           count=$(printf '%s' "$commits" | grep -c . || true)
-          [ "$count" -gt 0 ] || fail "The range holds no commit; there is nothing to verify."
+          if [ "$count" -eq 0 ]; then
+            # A pull request with nothing on top of its base, a push that moves main back to one of
+            # its ancestors, a run by hand from main's tip: nothing new to build, which is not a
+            # failure. A matrix with no value is an error, so verify reads the count and is skipped.
+            echo "::notice::The range holds no commit; there is nothing to verify."
+            echo "commits=[]" >> "$GITHUB_OUTPUT"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # A matrix takes at most 256 jobs. Fail rather than verify part of the range silently.
           [ "$count" -le 250 ] ||
             fail "The range holds $count commits, more than the 250 one run verifies; run it by hand on smaller ranges."
@@ -84,11 +132,14 @@ jobs:
           # the script, and an empty matrix would reach the next job.
           matrix=$(printf '%s\n' "$commits" | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "commits=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
 
   verify:
     needs: list
+    # Skipped when the range is empty; still implicitly requires list to have succeeded.
+    if: needs.list.outputs.count != '0'
     name: verify ${{ matrix.commit }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A full build takes about three minutes on the developer machine; this leaves room for a slow
     # runner and stops a hung Testcontainers start from holding a runner for six hours.
     timeout-minutes: 30
@@ -100,7 +151,7 @@ jobs:
         commit: ${{ fromJSON(needs.list.outputs.commits) }}
     steps:
       - name: Check out the commit
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ matrix.commit }}
           # The rule check reads commit messages, and the docs-only test compares with the parent.
@@ -128,7 +179,7 @@ jobs:
 
       - name: Set up JDK 21
         if: steps.kind.outputs.docs_only != 'true'
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '21'
@@ -221,19 +272,21 @@ jobs:
 
   reverse-order:
     # Test classes share one database, and Surefire's class order differs between machines. Running
-    # the pushed tip in reverse order catches a class that passes only because another ran first.
-    if: github.event_name == 'push' && !github.event.deleted
-    runs-on: ubuntu-latest
+    # the pushed tip, or the pull request's head, in reverse order catches a class that passes only
+    # because another ran first. A run by hand has no new tip and skips this job.
+    if: (github.event_name == 'push' && !github.event.deleted) || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Check out the pushed tip
-        uses: actions/checkout@v5
+      - name: Check out the pushed tip or the pull request's head
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ github.event.after }}
+          # An action input, not a shell line: the hash is never interpolated into a script.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.after }}
           persist-credentials: false
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '21'
@@ -241,3 +294,59 @@ jobs:
 
       - name: Build and test in reverse alphabetical class order
         run: ./mvnw -B clean verify -Dsurefire.runOrder=reversealphabetical
+
+  all-commits-pass:
+    # Branch protection requires a check by name, and verify's names change with every commit. This
+    # one name stands for the whole run: it passes only if every commit and the reverse order passed.
+    name: All commits pass
+    needs: [list, verify, reverse-order]
+    # Runs whatever the needed jobs did. Without it a failure upstream would leave this job skipped,
+    # and branch protection accepts a skipped check.
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to pass or to be skipped on purpose
+        env:
+          EVENT: ${{ github.event_name }}
+          DELETED: ${{ github.event.deleted }}
+          LIST: ${{ needs.list.result }}
+          COUNT: ${{ needs.list.outputs.count }}
+          VERIFY: ${{ needs.verify.result }}
+          REVERSE: ${{ needs.reverse-order.result }}
+        run: |
+          set -uo pipefail
+          ok=true
+          # Each job's result must be the one exact value this event allows: a cancelled or skipped
+          # job where a result was due fails the check as a failure does.
+          expect() {
+            if [ "$2" = "$3" ]; then
+              echo "$1: $2"
+            else
+              echo "::error::$1 is '$2', expected '$3'."
+              ok=false
+            fi
+          }
+
+          if [ "$EVENT" = push ] && [ "$DELETED" = true ]; then
+            # Deleting main leaves nothing to verify, and every job skips itself.
+            expect list "$LIST" skipped
+            expect verify "$VERIFY" skipped
+            expect reverse-order "$REVERSE" skipped
+          else
+            expect list "$LIST" success
+            # An empty range is a pass with verify skipped; a range of one or more commits needs every
+            # one of them green.
+            if [ "$COUNT" = 0 ]; then
+              expect verify "$VERIFY" skipped
+            else
+              expect verify "$VERIFY" success
+            fi
+            # A run by hand has no new tip, so it has no reverse-order job.
+            if [ "$EVENT" = workflow_dispatch ]; then
+              expect reverse-order "$REVERSE" skipped
+            else
+              expect reverse-order "$REVERSE" success
+            fi
+          fi
+          $ok
