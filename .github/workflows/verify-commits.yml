@@ -2,7 +2,8 @@ name: Verify commits
 
 # Every commit is built and tested on its own (CLAUDE.md 5, step 4), so a commit that only passes
 # with the one after it is caught. A pull request into main verifies every commit it adds; a push to
-# main verifies the commits it adds; a run by hand verifies every commit of main after a given base.
+# main verifies the first-parent commits it adds; a run by hand verifies every commit of main after a
+# given base.
 #
 # pull_request, never pull_request_target: the run gets a read-only token and no secrets, so the
 # code under test cannot reach anything a pull request from a fork should not.
@@ -78,7 +79,11 @@ jobs:
               # A force push can leave the previous tip outside the fetched history.
               git cat-file -e "$BEFORE^{commit}" 2>/dev/null ||
                 fail "The push's previous tip $BEFORE is not in the history; run this workflow by hand with a base."
-              commits=$(git rev-list --reverse "$BEFORE..$AFTER")
+              # The first-parent commits only. After a merged pull request that is the merge commit
+              # alone: the commits it brings were verified one by one on the pull request, and the
+              # merge commit's own build checks how they combine with main. A commit the owner
+              # pushed directly is on the first-parent line and is verified as before.
+              commits=$(git rev-list --reverse --first-parent "$BEFORE..$AFTER")
             fi
           elif [ "$EVENT" = pull_request ]; then
             [[ "$PR_BASE" =~ ^[0-9a-f]{40}$ ]] || fail "The pull request's base is not a full commit hash."
