@@ -1,16 +1,143 @@
 # Progress
 
-**Current phase:** 5 — Stage A matching, parts 1a, 1b, 1c and 2a done (2b not started)
+**Current phase:** 5 — Stage A matching, parts 1a to 2b built; per-commit verification open in CI;
+NFR-PERF-2's 120 s target not met
 **Branch:** main (the phase prompt directs the work here rather than onto a phase branch)
-**Last updated:** 2026-10-04
+**Last updated:** 2026-10-06
 
-## Phase 5 — parts 1a, 1b, 1c and 2a done; 2b to come
+## Phase 5 — parts 1a, 1b, 1c, 2a and 2b built; per-commit verification open (CI)
 
 Phase 5 runs in five sessions: 1a (the ArchUnit configuration rule, the schema and the run
 lifecycle, no matching rule), 1b (Stage A rules, item statuses, property tests), 1c (three
 changes to 1b that TDD v1.9 settled), 2a (A1 as reference identity, the run endpoints, the
 automatic trigger) and 2b (NFR-PERF-2, the break-proofs record, per-commit verification, the
 phase report).
+
+### Done in 2b
+
+The owner answered the five 2a open questions in TDD v1.11 (`3eefc19`): keep the trigger switch
+(1), v1.11 is the text on disk (2), give a busy source up after a bound (3), answer a failed run's
+POST with its id (4), and one exact entry beside a conflicting one is an A1 match (5). The commits
+call them owner decisions 1 to 4 of part 2b.
+
+- [x] A. The give-up bound. `3e38f61` binds `recon.matching.automatic-trigger.busy-give-up-after`
+  (30 min; a duration that is not positive stops startup, `AutomaticTriggerConfigurationTest`).
+  `866ca1f`: the trigger measures on the injected `Clock` how long the source has been busy since
+  the first refusal; a refusal at or past the bound gives the run up, logs it at WARN with the
+  file's id, and the thread goes on to the next file. `RunTriggerGiveUpTest` (a one-second bound: the
+  stuck source's run is given up and never recorded, another source's run completes while the first
+  is held, the run is then started by hand); `AutomaticRunTriggerTest` pins the boundary on a manual
+  clock (refused from 0 s to 1,800 s is given up at the try at 1,800 s; free at 1,800 s is started).
+  Break proof `TriggerWithoutGiveUpBreakProofTest` (`c26e056`): with the bound at a day, for three
+  seconds the other source gets no run and nothing is given up
+- [x] B. `runId` in the 500 (`995cd4a`): `RunMatching` throws `RunFailedException`, carrying the run's
+  id with the failure as its cause, once the run is recorded FAILED; the API answers 500 Problem
+  Details whose only addition is `runId`. The automatic trigger logs the failed run's id with the
+  file's id. `RunApiTest.failedRunIs500WithItsId`, with `LeakCheck`; `FailingRunStore` became public
+- [x] C. Decision 4 tested (`6ff6eca`): one exact entry beside a conflicting one is an A1 match, the
+  conflicting entry reaches MISSING_IN_PSP through its grace period, no A2 break. Decision 1 pinned
+  (`d96fddc`): `StatementUploadTest` sees `RunTrigger.NONE` in the test profile, `RunAfterUploadTest`
+  sees the `AutomaticRunTrigger` with the switch on
+- [x] D. NFR-PERF-2 test (`acad3b9`, `StageAPerformanceTest`, `-Pperf`, `-Xmx512m`): a database of the
+  test's own filled by PostgreSQL with 1,000,000 lines and 1,000,000 entries (900,000 A1 pairs,
+  50,000 A3 pairs, 20,000 amount conflicts, 15,000 unknown references beside 15,000 unnamed entries,
+  15,000 lines repeating a reference two by two), analysed, then one run timed from the RUNNING row
+  to its return. Store proxies time each statement and the commit; peak heap is printed. It asserts
+  the outcome counts the data was built for, then 120 s. The load is not timed
+- [x] E. Two SQL changes kept, each with `StageAMatchingTest` and `StageAPropertiesTest` unchanged and
+  passing: `5b68cbc`, A3's unreferenced lines as two `UNION ALL` branches, so the known-reference
+  test is one hash anti-join instead of a `NOT EXISTS` inside an `OR` that scanned the million
+  entries once per referenced line; `0a9fba8`, a duplicate reference's other lines gathered by one
+  join and aggregation instead of a correlated subquery per duplicate. Same rows either way. No
+  index, constraint or grant was added (1b decision 10)
+- [ ] F. **The 120 s target is not met** (measurements below). A deferred foreign-key variant (the
+  three keys on `match_items` and `match_events` checked at commit) was prepared to be measured, but
+  the session's permission check refused the command before it ran: nothing of it was measured,
+  and nothing of it is in the repository. It goes to the phase report as a TDD proposal, beside a
+  revised target
+- [x] G. `docs/break-proofs.md` part 2b and the phase-wide index (`f49e1b8`). `84834ec` reworded the
+  perf test's class comment, which the rules script refused (see Verification)
+- [x] H. Per-commit verification moved to CI (`43ba4f2`, `.github/workflows/verify-commits.yml`),
+  following CLAUDE.md 5 step 4. The local run made before the move is recorded below as a partial
+  record; the owner's CI run closes it
+
+### NFR-PERF-2 measurements (2b)
+
+`.\mvnw.cmd -q -B test -Pperf "-Dtest=StageAPerformanceTest"`, one run per row, on the commit named.
+Each figure is quoted from that commit's message; the test prints them as `NFR-PERF-2 RESULT` and
+`NFR-PERF-2 BREAKDOWN` lines but does not keep them.
+
+| SQL as of | Run | A3 | Reference breaks | Source of the figures |
+|---|---|---|---|---|
+| `acad3b9` (part 2a's statements) | 3,882.7 s | 3,611.9 s | not quoted | `acad3b9` |
+| `5b68cbc` (A3 anti-join) | 274.2 s | 11.3 s | 118 s, 110 s of it the correlated subquery | `5b68cbc`; the 118 s and 110 s are quoted by `0a9fba8` for "the NFR-PERF-2 run" before it |
+| `0a9fba8` (duplicate-reference join) | 161.8 s | not quoted | 7.4 s | `0a9fba8` |
+
+**Not in the repository:** the three runs at the final SQL that the phase exit asks for, and the
+diagnosis of A1's time (each match writes one row in `matches`, two in `match_items` and one in
+`match_events`, with immediate foreign-key checks on the last three). Both were made in the previous
+session and kept in its scratch draft of this section, which was not committed and was not searched
+for. Their figures are not reproduced here, so as not to quote numbers this record cannot back.
+Open question below.
+
+### Decisions in 2b (for the phase report)
+
+1. The busy time is measured from the run's first refusal on the injected `Clock`, and the first try
+   at or past the bound gives up; with the 5 s interval a run is given up within one interval of
+   30 minutes
+2. If recording FAILED fails as well, the run stays RUNNING and the original failure answers as a
+   plain 500 without `runId`, as before (part 1a decision 3)
+3. The perf test writes its items as the schema's owner, straight in SQL, not through ingestion or
+   the ledger projection, and analyses the tables before timing: NFR-PERF-2 is Stage A's time, and
+   the load is NFR-PERF-1's and NFR-PERF-3's
+4. Per-commit verification runs in CI from `43ba4f2` on: CLAUDE.md 5 step 4 as the owner changed it
+
+### Open questions for the owner (2b)
+
+1. NFR-PERF-2: the last quoted run is 161.8 s against 120 s. Measure the deferred foreign-key variant
+   (TDD change), revise the target, or both? The phase report gives the reasoning for each
+2. The three official runs and the A1 foreign-key diagnosis are not in the repository: paste them
+   from the previous session's draft, or have them measured again at HEAD?
+3. `acad3b9` to `f49e1b8` fail `ci/check-rules.sh` (the word pair `84834ec` removed), so their CI jobs
+   will be red. They are pushed and are not rewritten: accept them as a known red range?
+
+### Verification (2b)
+
+At `43ba4f2` (the last commit the build reads; this file changes nothing it reads), default order
+only, as CLAUDE.md 5 now has it (the reverse order runs in CI):
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 247 s, 1127 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 %, overall 96.6 %
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0
+
+The two SQL commits' messages record that `StageAMatchingTest` and `StageAPropertiesTest` passed on
+each; for the other 2b commits this record holds nothing beyond their messages. No 2b commit was
+built on its own with the full build locally: that is the CI run's.
+
+**Per-commit verification of Phase 5** (base `1f46fd430151292c76d29bc2d2b680a9a1c46a1a`, "Record
+Phase 4.1 outcomes and settle the Stage A design"; range `1f46fd4..` this commit) moved to CI and
+is open until the owner's run of `verify-commits.yml` with that base. Before the move, a local run
+(clean verify, or the rules alone for a docs-only commit, then `ci/check-rules.sh`, one commit at a
+time) covered 8 rows of the 64 commits before `43ba4f2`, copied here from
+`target/verify-results-5.txt` as a partial, local record:
+
+```
+1418bbf | Forbid Path components in configuration properties types | exit=0 tests=970 failures=0 errors=0 skipped=3 (180 s) | rules exit=0 | 2026-10-05 23:10:41
+2e2eb06 | Finish a reconciliation run as completed or failed in the domain | exit=0 tests=973 failures=0 errors=0 skipped=3 (168 s) | rules exit=0 | 2026-10-05 23:13:56
+dc32964 | Record the store tests' parent run as finished, not running | exit=0 tests=973 failures=0 errors=0 skipped=3 (170 s) | rules exit=0 | 2026-10-05 23:16:59
+50889c3 | Allow one running reconciliation run per source with a partial index | exit=0 tests=977 failures=0 errors=0 skipped=3 (172 s) | rules exit=0 | 2026-10-05 23:20:05
+f082162 | Grant the application the outcome columns of reconciliation runs | exit=0 tests=981 failures=0 errors=0 skipped=3 (196 s) | rules exit=0 | 2026-10-05 23:23:13
+f2f61ae | Give the run store the operations of the run lifecycle | exit=0 tests=984 failures=0 errors=0 skipped=3 (195 s) | rules exit=0 | 2026-10-05 23:26:46
+3de38b7 | Count a source's ledger entries in run scope and without a value date | exit=0 tests=985 failures=0 errors=0 skipped=3 (196 s) | rules exit=0 | 2026-10-05 23:30:18
+14bc542 | Run matching for a source in its own run record and work transaction | exit=127 tests=148 failures=0 errors=0 skipped=0 (179 s) | rules exit=1 | 2026-10-05 23:33:54
+```
+
+Seven rows are complete and passed. The eighth, `14bc542`, is not a result: 148 tests is a build cut
+short, exit 127 is the shell's "command not found", and the run was stopped there. A `git grep` at
+`14bc542` for the two text rules most likely to fire (the attribution words and TODO/FIXME) finds
+nothing; CI gives the real result. The file under target/ was copied to the session scratchpad
+before this session's clean build deleted it.
 
 ### Done in 2a
 
@@ -341,7 +468,7 @@ Each 1c commit also passed the tests it touches before it was committed (`StageA
 commit (left for part 2, as for 1a and 1b). Docker Desktop was not running at the start of the
 session and was started for Testcontainers; no setting was changed
 
-### Left for 2b
+### Left for 2b (done in 2b, above, except the target and the per-commit run in CI)
 
 - NFR-PERF-2 measured three times under `-Xmx512m`, with indexes added only if the measurement
   calls for them; each match costs one row in `matches`, two in `match_items` and one in
@@ -374,7 +501,13 @@ session and was started for Testcontainers; no setting was changed
   `PSP_SNAPSHOT_SERIAL`, `PSP_SNAPSHOT_READ_COMMITTED`. `StageAMatchingTest` uses 35 of its 40
   sources. Taken in 2a (sources only, no event ids): `PSP_RUN_API` (`RunApiTest`; `PSP_ROLES` is
   only named in `RunRolesTest`'s requests), `PSP_TRIGGER_RANGE`, `BANK_TRIGGER_RANGE`,
-  `PSP_AFTER_UPLOAD_*`, `BANK_AFTER_UPLOAD_DONE`, `PSP_TRIGGER_NO_WAIT`, `PSP_TRIGGER_CALLER_RUNS`
+  `PSP_AFTER_UPLOAD_*`, `BANK_AFTER_UPLOAD_DONE`, `PSP_TRIGGER_NO_WAIT`, `PSP_TRIGGER_CALLER_RUNS`.
+  Taken in 2b: `PSP_GIVE_UP_STUCK`, `PSP_GIVE_UP_NEXT`, `PSP_NO_GIVE_UP_STUCK`, `PSP_NO_GIVE_UP_NEXT`,
+  `PSP_RUN_API_FAILS`, and `PSP_STAGE_A_PERF` with event ids from 20_000_000_000 (a database of its
+  own)
+- Per-commit verification runs in CI (`verify-commits.yml`): a push to main verifies the commits it
+  adds; a run by hand with a base verifies `base..main`. Locally, one full `clean verify` and the
+  rules script at a phase's last code commit
 - The automatic trigger is off in the test profile. A class that tests it sets
   `recon.matching.automatic-trigger.enabled=true` in its own properties, with a short
   `busy-retry-interval`; `HeldLedgerEntryStore` (now public) holds a run inside its work for any
