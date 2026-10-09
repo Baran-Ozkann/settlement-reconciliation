@@ -3,6 +3,7 @@ package com.baran.recon.application.run;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
@@ -12,6 +13,7 @@ import java.sql.Statement;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -30,14 +32,22 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StageAStore;
+import com.baran.recon.domain.breaks.Actor;
+import com.baran.recon.domain.item.SourceCode;
+import com.baran.recon.domain.match.RuleId;
+import com.baran.recon.domain.match.StageARule;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.run.RunStatus;
 import com.baran.recon.support.ReconPostgres;
@@ -87,6 +97,8 @@ class StageAPerformanceTest {
     private static final int A3_LAST = 950_000;
     private static final int MISMATCH_LAST = 970_000;
     private static final int MISSING_LAST = 985_000;
+    /** Off by default: the diagnostic leaves dead rows behind it, so a run with it on is not a measurement. */
+    private static final boolean EXPLAIN_A1 = Boolean.getBoolean("perf.explainA1");
     /** A range of event ids no other test class uses (CLAUDE.md 7.3); the database is this class's own anyway. */
     private static final long EVENT_ID_BASE = 20_000_000_000L;
 
@@ -99,6 +111,15 @@ class StageAPerformanceTest {
 
     @Autowired
     private RunMatching matching;
+
+    @Autowired
+    private RunStore runs;
+
+    @Autowired
+    private JdbcClient jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
@@ -119,6 +140,9 @@ class StageAPerformanceTest {
         long loadStart = System.nanoTime();
         load();
         double loadSeconds = seconds(System.nanoTime() - loadStart);
+        if (EXPLAIN_A1) {
+            explainA1();
+        }
         resetPeaks();
         SPENT.clear();
         FIRST_CALLED.clear();
@@ -145,6 +169,55 @@ class StageAPerformanceTest {
         assertThat(run.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(outcomes()).as("the run did the work the data was built for").containsExactlyInAnyOrderEntriesOf(expected());
         assertThat(elapsed).as("NFR-PERF-2").isLessThanOrEqualTo(TARGET);
+    }
+
+    /**
+     * A diagnostic, not part of the measurement: A1's own statement under EXPLAIN (ANALYZE, BUFFERS),
+     * as the application's role and at the run's isolation level, for a run row of its own, in a
+     * transaction that is rolled back. It prints the plan's total time and every trigger line, with
+     * its time and calls: an immediate foreign-key check is one such line. The statement is read from
+     * the store, so what is explained is what the run executes. The rolled-back rows stay behind as
+     * dead tuples that the timed run must read past, so the run after it is not an official figure.
+     */
+    private void explainA1() {
+        TransactionTemplate snapshot = new TransactionTemplate(transactionManager);
+        snapshot.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        List<String> plan = snapshot.execute(status -> {
+            status.setRollbackOnly();
+            UUID runId = UUID.randomUUID();
+            runs.insert(ReconciliationRun.start(runId, SourceCode.of(SOURCE), FROM, TO, Map.of(), FixedRunClock.NOW,
+                    "operator-001"));
+            RuleId rule = StageARule.A1_EXACT_REFERENCE.matchRule().orElseThrow();
+            return jdbc.sql("EXPLAIN (ANALYZE, BUFFERS) " + a1Statement())
+                    .param("runId", runId)
+                    .param("source", SOURCE)
+                    .param("from", FROM)
+                    .param("to", TO)
+                    .param("ruleId", rule.name())
+                    .param("ruleVersion", StageARule.A1_EXACT_REFERENCE.version())
+                    .param("cardinality", rule.cardinality().name())
+                    .param("lowConfidence", rule.lowConfidence())
+                    .param("actor", Actor.SYSTEM.name())
+                    .param("at", FixedRunClock.NOW.atOffset(ZoneOffset.UTC))
+                    .query(String.class).list();
+        });
+        System.out.println("NFR-PERF-2 EXPLAIN A1: rolled back; the timed run below is not an official measurement");
+        plan.stream()
+                .filter(line -> line.startsWith("Trigger") || line.startsWith("Planning Time")
+                        || line.startsWith("Execution Time"))
+                .forEach(line -> System.out.println("NFR-PERF-2 EXPLAIN A1: " + line));
+    }
+
+    /** The statement the store runs for A1, which is the adapter's own constant and not public. */
+    private static String a1Statement() {
+        try {
+            Field statement = Class.forName("com.baran.recon.adapters.out.persistence.JdbcStageAStore")
+                    .getDeclaredField("MATCH_BY_REFERENCE");
+            statement.setAccessible(true);
+            return (String) statement.get(null);
+        } catch (ReflectiveOperationException missing) {
+            throw new IllegalStateException("A1's statement is no longer where the diagnostic reads it", missing);
+        }
     }
 
     /** What the groups of the class comment must give. */
