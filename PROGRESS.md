@@ -1,7 +1,8 @@
 # Progress
 
 **Current milestone:** 5.1 — part B1 (NFR-PERF-2 measured and decided by the rule in design doc
-§4.6); part B2 (implementing the decision) is next
+§4.6): the keys stay immediate, and the target goes back to the owner (every run above 180 s);
+part B2 waits for that decision
 **Branch:** `milestone-5.1/part-b1` (one branch per session from Milestone 5.1 on)
 **Last updated:** 2026-10-09
 
@@ -75,6 +76,60 @@ Execution Time: 191449.909 ms
 - The rolled-back rows are dead tuples the timed run then reads past, so that run is not official:
   258.422 s (A1 205.824 s, reference breaks 10.799 s, A3 15.879 s, MATCHED_LATE 6.247 s, grace
   breaks 11.204 s, statistics 8.435 s, commit 0.004 s, peak heap 57 MB).
+
+### The deferred-key experiment (never committed), three runs
+
+On top of `fe9b3bb`, uncommitted and discarded afterwards (the milestone review holds the full diff):
+
+- a migration `V13__defer_match_item_and_event_checks_on_request.sql`:
+  `ALTER TABLE match_items ALTER CONSTRAINT match_items_match_fk DEFERRABLE INITIALLY IMMEDIATE;`
+  and the same for `match_events_match_fk`, as V10 did for the statement lines;
+- `SET CONSTRAINTS match_items_match_fk, match_events_match_fk DEFERRED` at the top of
+  `JdbcStageAStore.matchByReference`, which is the first statement of the run's work transaction and
+  is called nowhere else; every other writer kept immediate checks;
+- in the diagnostic only, the same `SET CONSTRAINTS ... DEFERRED` before the EXPLAIN, and then a timed
+  `SET CONSTRAINTS ... IMMEDIATE`, which fires the deferred checks (EXPLAIN does not show them).
+
+The same command as the baseline, three runs, each failing only on its 120 s assertion:
+
+| Run | Total | RUNNING row | A1 | Reference breaks | A3 | MATCHED_LATE | Grace breaks | Statistics | Commit | Peak heap | Load and analyse (not timed) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 256.981 | 0.033 | 82.019 | 11.695 | 9.733 | 0.027 | 11.628 | 7.266 | 134.564 | 93 MB | 91.4 |
+| 2 | 228.433 | 0.038 | 74.868 | 8.347 | 8.713 | 0.021 | 10.876 | 6.681 | 118.876 | 104 MB | 105.4 |
+| 3 | 233.586 | 0.031 | 78.286 | 10.001 | 8.581 | 0.018 | 10.184 | 6.819 | 119.652 | 45 MB | 90.9 |
+
+**Deferred median: 233.586 s** (run 3). Against the baseline runs, A1 falls from 184–196 s to
+75–82 s and the commit rises from under 0.01 s to 119–135 s: the deferred checks still run, one per
+row, at commit.
+
+The diagnostic run with the experiment (not official):
+
+```
+deferred checks fired by SET CONSTRAINTS ... IMMEDIATE in 110.262 s
+Planning Time: 6.418 ms
+Trigger for constraint matches_run_fk on matches: time=35390.189 calls=900000
+Execution Time: 82093.407 ms
+```
+
+The two deferred keys leave A1's plan (82.09 s, against 191.45 s immediate), and firing them takes
+110.26 s, against 112.69 s for the same two checks done immediately. Its timed run, after the
+rolled-back rows: 282.576 s (A1 96.788 s, commit 134.516 s, peak heap 43 MB).
+
+### The rule applied (design doc §4.6)
+
+- Step 1: baseline median **238.028 s** (226.386, 238.028, 239.819).
+- Step 2: deferred median **233.586 s** (256.981, 228.433, 233.586). Difference
+  (238.028 − 233.586) / 238.028 = **1.87 %** below the baseline. The deferred form is kept only at
+  10 % or more, a median of 214.225 s or less. **The keys stay immediate**; the experiment is
+  discarded.
+- Step 3, for the kept (immediate) form: its three runs, 226.386, 238.028 and 239.819 s, are all
+  above 120 s, so the target does not stand at 120 s and becomes 180 s. All three are also above
+  180 s, and the rule says a kept run above 180 s **goes back to the owner**.
+
+**Decision:** `match_items_match_fk` and `match_events_match_fk` stay immediate. The rule does not
+settle the target: every kept run is above 180 s, so NFR-PERF-2's target is the owner's decision
+before part B2. The same SQL measured 161–162 s in Milestone 5, which would have been within 180 s;
+this sitting's machine was slower for both forms alike.
 
 ## Milestone 5.1 part A — pull-request CI and the design doc rename
 
