@@ -1,10 +1,135 @@
 # Progress
 
-**Current milestone:** 5.1 — part A (pull-request CI, the design doc rename) built on its branch;
-part B (NFR-PERF-2 by the rule in design doc §4.6) is next
-**Branch:** `milestone-5.1/part-a`, merged into main through a pull request (one branch per session
-from Milestone 5.1 on)
-**Last updated:** 2026-10-06
+**Current milestone:** 5.1 — part B1 (NFR-PERF-2 measured and decided by the rule in design doc
+§4.6): the keys stay immediate, and the target goes back to the owner (every run above 180 s);
+part B2 waits for that decision
+**Branch:** `milestone-5.1/part-b1` (one branch per session from Milestone 5.1 on)
+**Last updated:** 2026-10-09
+
+## Milestone 5.1 part B1 — NFR-PERF-2 measured and decided by the rule
+
+Every official figure below was measured in one sitting on 2026-10-09, so that the two forms are
+compared under the same machine conditions. No change to `src/main` or the schema is committed in
+this part.
+
+### Machine context
+
+- CPU AMD Ryzen 5 7535HS, 6 cores / 12 logical processors; 15.2 GB RAM; Windows 11 Pro 10.0.26200
+  (build 26200).
+- Docker Desktop 29.7.2 on WSL 2 (kernel 6.18.33.2-microsoft-standard-WSL2), `docker info`: 12 CPUs,
+  7.38 GiB memory. No container running before the session; each run starts its own throwaway
+  PostgreSQL through Testcontainers.
+- Java: Temurin 21.0.12+8-LTS. The test JVM runs under `-Xmx512m` (the `perf` profile).
+- Load: no build or other container ran alongside the measurements. The owner's Chrome was open
+  throughout: total CPU 11–18 % before the first run, and Chrome took about one logical processor
+  during a sample taken in baseline run 3's load phase; free RAM 3.3 GB before, 2.5 GB during.
+- The same SQL as Milestone 5's `0a9fba8` (nothing under `src/main` has changed since): Milestone 5
+  measured 161–162 s for it, this sitting measures 226–240 s. The machine was slower today, which is
+  why both forms are measured here and compared only with each other.
+
+### Baseline: the immediate keys, three runs
+
+Command, at `ec1ada6` (the diagnostic below, off; no SQL change since `0a9fba8`), each run's console
+teed to the session scratchpad:
+
+```
+.\mvnw.cmd -q -B test -Pperf "-Dtest=StageAPerformanceTest"
+```
+
+Each run fails on its 120 s assertion after printing its figures, as expected; every other assertion
+(run COMPLETED, the expected matches and breaks) passed. Seconds; statistics is `itemTotals` plus
+the two ledger counts; peak heap is the sum of the heap pools' peaks, of 512 MB.
+
+| Run | Total | RUNNING row | A1 | Reference breaks | A3 | MATCHED_LATE | Grace breaks | Statistics | Commit | Peak heap | Load and analyse (not timed) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 226.386 | 0.040 | 184.170 | 9.710 | 15.440 | 0.030 | 10.320 | 6.659 | 0.003 | 57 MB | 92.0 |
+| 2 | 238.028 | 0.029 | 190.890 | 11.457 | 16.663 | 0.020 | 11.616 | 7.331 | 0.004 | 104 MB | 92.0 |
+| 3 | 239.819 | 0.035 | 195.522 | 10.731 | 16.096 | 0.017 | 10.719 | 6.682 | 0.003 | 42 MB | 100.0 |
+
+**Baseline median: 238.028 s** (run 2). A1 is 80–82 % of every run.
+
+### A1's foreign-key share (diagnostic, not an official run)
+
+`ec1ada6` adds `-Dperf.explainA1=true`, off by default: on the test's own loaded database, as
+`recon_app` at REPEATABLE READ and for a run row of its own, it runs A1's own statement under
+`EXPLAIN (ANALYZE, BUFFERS)` and rolls the transaction back. The three runs above printed no
+`EXPLAIN` line. One run with it on, at `ec1ada6`:
+
+```
+.\mvnw.cmd -q -B test -Pperf "-Dtest=StageAPerformanceTest" "-Dperf.explainA1=true"
+```
+
+```
+Planning Time: 4.710 ms
+Trigger for constraint matches_run_fk on matches: time=36267.148 calls=900000
+Trigger for constraint match_items_match_fk on match_items: time=75202.983 calls=1800000
+Trigger for constraint match_events_match_fk on match_events: time=37488.262 calls=900000
+Execution Time: 191449.909 ms
+```
+
+- The three foreign-key checks: 148.96 s of 191.45 s, **77.8 %** of A1 under EXPLAIN.
+- The two keys the rule may defer, `match_items_match_fk` and `match_events_match_fk`: 112.69 s,
+  **58.9 %**. `matches_run_fk` (each match to its run, outside the rule): 36.27 s, 18.9 %.
+- EXPLAIN ANALYZE times every node, so its total is not A1's run time; the shares are what it shows.
+  An uncommitted check run of the same code before `ec1ada6` was committed gave the same shares
+  (170.63 s of 219.28 s, 77.8 %; the two keys 59.5 %).
+- The rolled-back rows are dead tuples the timed run then reads past, so that run is not official:
+  258.422 s (A1 205.824 s, reference breaks 10.799 s, A3 15.879 s, MATCHED_LATE 6.247 s, grace
+  breaks 11.204 s, statistics 8.435 s, commit 0.004 s, peak heap 57 MB).
+
+### The deferred-key experiment (never committed), three runs
+
+On top of `fe9b3bb`, uncommitted and discarded afterwards (the milestone review holds the full diff):
+
+- a migration `V13__defer_match_item_and_event_checks_on_request.sql`:
+  `ALTER TABLE match_items ALTER CONSTRAINT match_items_match_fk DEFERRABLE INITIALLY IMMEDIATE;`
+  and the same for `match_events_match_fk`, as V10 did for the statement lines;
+- `SET CONSTRAINTS match_items_match_fk, match_events_match_fk DEFERRED` at the top of
+  `JdbcStageAStore.matchByReference`, which is the first statement of the run's work transaction and
+  is called nowhere else; every other writer kept immediate checks;
+- in the diagnostic only, the same `SET CONSTRAINTS ... DEFERRED` before the EXPLAIN, and then a timed
+  `SET CONSTRAINTS ... IMMEDIATE`, which fires the deferred checks (EXPLAIN does not show them).
+
+The same command as the baseline, three runs, each failing only on its 120 s assertion:
+
+| Run | Total | RUNNING row | A1 | Reference breaks | A3 | MATCHED_LATE | Grace breaks | Statistics | Commit | Peak heap | Load and analyse (not timed) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 256.981 | 0.033 | 82.019 | 11.695 | 9.733 | 0.027 | 11.628 | 7.266 | 134.564 | 93 MB | 91.4 |
+| 2 | 228.433 | 0.038 | 74.868 | 8.347 | 8.713 | 0.021 | 10.876 | 6.681 | 118.876 | 104 MB | 105.4 |
+| 3 | 233.586 | 0.031 | 78.286 | 10.001 | 8.581 | 0.018 | 10.184 | 6.819 | 119.652 | 45 MB | 90.9 |
+
+**Deferred median: 233.586 s** (run 3). Against the baseline runs, A1 falls from 184–196 s to
+75–82 s and the commit rises from under 0.01 s to 119–135 s: the deferred checks still run, one per
+row, at commit.
+
+The diagnostic run with the experiment (not official):
+
+```
+deferred checks fired by SET CONSTRAINTS ... IMMEDIATE in 110.262 s
+Planning Time: 6.418 ms
+Trigger for constraint matches_run_fk on matches: time=35390.189 calls=900000
+Execution Time: 82093.407 ms
+```
+
+The two deferred keys leave A1's plan (82.09 s, against 191.45 s immediate), and firing them takes
+110.26 s, against 112.69 s for the same two checks done immediately. Its timed run, after the
+rolled-back rows: 282.576 s (A1 96.788 s, commit 134.516 s, peak heap 43 MB).
+
+### The rule applied (design doc §4.6)
+
+- Step 1: baseline median **238.028 s** (226.386, 238.028, 239.819).
+- Step 2: deferred median **233.586 s** (256.981, 228.433, 233.586). Difference
+  (238.028 − 233.586) / 238.028 = **1.87 %** below the baseline. The deferred form is kept only at
+  10 % or more, a median of 214.225 s or less. **The keys stay immediate**; the experiment is
+  discarded.
+- Step 3, for the kept (immediate) form: its three runs, 226.386, 238.028 and 239.819 s, are all
+  above 120 s, so the target does not stand at 120 s and becomes 180 s. All three are also above
+  180 s, and the rule says a kept run above 180 s **goes back to the owner**.
+
+**Decision:** `match_items_match_fk` and `match_events_match_fk` stay immediate. The rule does not
+settle the target: every kept run is above 180 s, so NFR-PERF-2's target is the owner's decision
+before part B2. The same SQL measured 161–162 s in Milestone 5, which would have been within 180 s;
+this sitting's machine was slower for both forms alike.
 
 ## Milestone 5.1 part A — pull-request CI and the design doc rename
 
