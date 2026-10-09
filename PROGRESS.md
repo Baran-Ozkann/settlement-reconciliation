@@ -1,10 +1,80 @@
 # Progress
 
-**Current milestone:** 5.1 — part A (pull-request CI, the design doc rename) built on its branch;
-part B (NFR-PERF-2 by the rule in design doc §4.6) is next
-**Branch:** `milestone-5.1/part-a`, merged into main through a pull request (one branch per session
-from Milestone 5.1 on)
-**Last updated:** 2026-10-06
+**Current milestone:** 5.1 — part B1 (NFR-PERF-2 measured and decided by the rule in design doc
+§4.6); part B2 (implementing the decision) is next
+**Branch:** `milestone-5.1/part-b1` (one branch per session from Milestone 5.1 on)
+**Last updated:** 2026-10-09
+
+## Milestone 5.1 part B1 — NFR-PERF-2 measured and decided by the rule
+
+Every official figure below was measured in one sitting on 2026-10-09, so that the two forms are
+compared under the same machine conditions. No change to `src/main` or the schema is committed in
+this part.
+
+### Machine context
+
+- CPU AMD Ryzen 5 7535HS, 6 cores / 12 logical processors; 15.2 GB RAM; Windows 11 Pro 10.0.26200
+  (build 26200).
+- Docker Desktop 29.7.2 on WSL 2 (kernel 6.18.33.2-microsoft-standard-WSL2), `docker info`: 12 CPUs,
+  7.38 GiB memory. No container running before the session; each run starts its own throwaway
+  PostgreSQL through Testcontainers.
+- Java: Temurin 21.0.12+8-LTS. The test JVM runs under `-Xmx512m` (the `perf` profile).
+- Load: no build or other container ran alongside the measurements. The owner's Chrome was open
+  throughout: total CPU 11–18 % before the first run, and Chrome took about one logical processor
+  during a sample taken in baseline run 3's load phase; free RAM 3.3 GB before, 2.5 GB during.
+- The same SQL as Milestone 5's `0a9fba8` (nothing under `src/main` has changed since): Milestone 5
+  measured 161–162 s for it, this sitting measures 226–240 s. The machine was slower today, which is
+  why both forms are measured here and compared only with each other.
+
+### Baseline: the immediate keys, three runs
+
+Command, at `ec1ada6` (the diagnostic below, off; no SQL change since `0a9fba8`), each run's console
+teed to the session scratchpad:
+
+```
+.\mvnw.cmd -q -B test -Pperf "-Dtest=StageAPerformanceTest"
+```
+
+Each run fails on its 120 s assertion after printing its figures, as expected; every other assertion
+(run COMPLETED, the expected matches and breaks) passed. Seconds; statistics is `itemTotals` plus
+the two ledger counts; peak heap is the sum of the heap pools' peaks, of 512 MB.
+
+| Run | Total | RUNNING row | A1 | Reference breaks | A3 | MATCHED_LATE | Grace breaks | Statistics | Commit | Peak heap | Load and analyse (not timed) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 226.386 | 0.040 | 184.170 | 9.710 | 15.440 | 0.030 | 10.320 | 6.659 | 0.003 | 57 MB | 92.0 |
+| 2 | 238.028 | 0.029 | 190.890 | 11.457 | 16.663 | 0.020 | 11.616 | 7.331 | 0.004 | 104 MB | 92.0 |
+| 3 | 239.819 | 0.035 | 195.522 | 10.731 | 16.096 | 0.017 | 10.719 | 6.682 | 0.003 | 42 MB | 100.0 |
+
+**Baseline median: 238.028 s** (run 2). A1 is 80–82 % of every run.
+
+### A1's foreign-key share (diagnostic, not an official run)
+
+`ec1ada6` adds `-Dperf.explainA1=true`, off by default: on the test's own loaded database, as
+`recon_app` at REPEATABLE READ and for a run row of its own, it runs A1's own statement under
+`EXPLAIN (ANALYZE, BUFFERS)` and rolls the transaction back. The three runs above printed no
+`EXPLAIN` line. One run with it on, at `ec1ada6`:
+
+```
+.\mvnw.cmd -q -B test -Pperf "-Dtest=StageAPerformanceTest" "-Dperf.explainA1=true"
+```
+
+```
+Planning Time: 4.710 ms
+Trigger for constraint matches_run_fk on matches: time=36267.148 calls=900000
+Trigger for constraint match_items_match_fk on match_items: time=75202.983 calls=1800000
+Trigger for constraint match_events_match_fk on match_events: time=37488.262 calls=900000
+Execution Time: 191449.909 ms
+```
+
+- The three foreign-key checks: 148.96 s of 191.45 s, **77.8 %** of A1 under EXPLAIN.
+- The two keys the rule may defer, `match_items_match_fk` and `match_events_match_fk`: 112.69 s,
+  **58.9 %**. `matches_run_fk` (each match to its run, outside the rule): 36.27 s, 18.9 %.
+- EXPLAIN ANALYZE times every node, so its total is not A1's run time; the shares are what it shows.
+  An uncommitted check run of the same code before `ec1ada6` was committed gave the same shares
+  (170.63 s of 219.28 s, 77.8 %; the two keys 59.5 %).
+- The rolled-back rows are dead tuples the timed run then reads past, so that run is not official:
+  258.422 s (A1 205.824 s, reference breaks 10.799 s, A3 15.879 s, MATCHED_LATE 6.247 s, grace
+  breaks 11.204 s, statistics 8.435 s, commit 0.004 s, peak heap 57 MB).
 
 ## Milestone 5.1 part A — pull-request CI and the design doc rename
 
