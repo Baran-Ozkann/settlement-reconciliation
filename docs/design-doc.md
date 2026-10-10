@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.12 — Milestone 5 outcomes; NFR-PERF-2 decided by a rule fixed before measuring; Milestone 5.1 (Stage A performance, pull-request CI); industry names for the process
+Version: 1.13 — NFR-PERF-2: the match keys stay immediate (Milestone 5.1 part B1); official performance runs need controlled machine conditions
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -198,6 +198,18 @@ IDs are stable. Tests and commit bodies reference them.
      each file in the background, about once a day per source, and the upload does not wait for it; and
      Milestone 5 showed that the remaining cost is writing about a million matches with every constraint
      kept, not a plan defect. A kept run above 180 s goes back to the owner.
+  *Measurement conditions (v1.13):* step 3 compares absolute times, so an official run is made with
+  the developer laptop on mains power, Windows power mode "Best performance", the browser and every
+  other heavy application closed, and nothing else in Docker; the review records each condition.
+  Step 2 compares two forms measured in one sitting and needs only that they share the conditions.
+  *Milestone 5.1 part B1 (2026-10-09):* step 2 was applied. Immediate keys 226.4, 238.0 and 239.8 s
+  (median 238.0 s), deferred keys 257.0, 228.4 and 233.6 s (median 233.6 s): 1.87 % lower, below
+  10 %, so **both keys stay immediate**. Deferring moved about 110 s out of A1 and into the commit,
+  one check per row, as Milestone 4.1 found for the line-to-file key. Under EXPLAIN the three match
+  foreign keys took 77.8 % of A1, the two the rule covers 58.9 %. Step 3 was not settled: the same SQL
+  measured 161–162 s in Milestone 5 and 226–240 s that evening, with the laptop's power state
+  unrecorded and a browser open, so the absolute figures do not stand. Part B2 repeats step 3 with
+  three official runs of the immediate form under the conditions above.
   *Milestone 5 history:* 3,882.7 s with the first statement forms (`acad3b9`); 274.2 s once A3's
   unreferenced lines became one hash anti-join (`5b68cbc`); 161.8 s once a duplicate reference's other
   lines became one join (`0a9fba8`). Three runs at `0a9fba8` took 161–162 s (A1 129.9–131.5 s, peak heap
@@ -890,7 +902,8 @@ write technique is settled here first.
   runner is pinned to `ubuntu-24.04` (`ubuntu-latest` moves to Ubuntu 26 from 19 October 2026); actions
   are pinned to full commit SHAs and kept current by Dependabot; the dispatch input `base` is trimmed
   before it is validated. The document is renamed `docs/design-doc.md`.
-- **Part B, NFR-PERF-2** by the rule in §4.6.
+- **Part B, NFR-PERF-2** by the rule in §4.6: B1 measured both forms and kept the immediate keys;
+  B2 settles the target by step 3 under the measurement conditions.
 - Exit: Part A's own pull request verified by the new workflow; NFR-PERF-2 measured and committed per
   §4.6, the perf test asserting the settled target; if the deferred keys are kept, a test pins their
   deferrable form and a break proof shows that an orphan match row still fails the run at commit,
