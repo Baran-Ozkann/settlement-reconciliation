@@ -7,6 +7,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,11 @@ import com.baran.recon.application.run.StageAFixture.BreakView;
 import com.baran.recon.application.run.StageAFixture.MatchView;
 import com.baran.recon.application.statement.IngestStatement;
 import com.baran.recon.application.statement.UploadedStatement;
+import com.baran.recon.domain.breaks.Actor;
+import com.baran.recon.domain.breaks.Break;
 import com.baran.recon.domain.breaks.BreakType;
+import com.baran.recon.domain.item.ItemRef;
+import com.baran.recon.domain.item.ItemSide;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.run.RunStatus;
@@ -730,6 +735,32 @@ class StageAMatchingTest {
                         tuple("AMOUNT_MISMATCH", "PSP L-CONFLICT", Set.of(named)),
                         tuple("DUPLICATE_LINE", "PSP L-FLAGGED", Set.of()));
         assertThat(fixture.eventsOf(flagged)).hasSize(1);
+    }
+
+    /**
+     * Stage B never names a PSP line (TDD 8.2, v1.14), so this break is put in by hand, as a bug or a
+     * hand-made row would put it: the Stage A status of a line must not depend on a bank line's break.
+     */
+    @Test
+    @DisplayName("TDD 8.2 (v1.14): a line named only by a break on a BANK item is not BROKEN: past its grace it is "
+            + "MISSING_IN_LEDGER, inside it it is pending")
+    void lineNamedOnlyByABankBreakKeepsItsStageAStatus() {
+        fixture.psp(source, "L-PAST-GRACE", null, 1_000, TRY, THURSDAY);
+        fixture.psp(source, "L-IN-GRACE", null, 2_000, TRY, FRIDAY);
+        ItemRef bankLine = new ItemRef(ItemSide.BANK, UUID.randomUUID());
+        breaks.open(Break.open(UUID.randomUUID(), BreakType.UNEXPECTED_BANK_LINE, bankLine,
+                List.of(new ItemRef(ItemSide.PSP, fixture.pspId(source, "L-PAST-GRACE")),
+                        new ItemRef(ItemSide.PSP, fixture.pspId(source, "L-IN-GRACE"))),
+                Optional.empty(), Actor.operator("operator-001"), Optional.of("Opened by the test"),
+                Instant.parse("2026-10-12T08:00:00Z")));
+
+        ReconciliationRun run = run(MONDAY, FRIDAY);
+
+        assertThat(fixture.breaks(source)).extracting(BreakView::type, BreakView::subject, BreakView::related)
+                .containsExactly(tuple("MISSING_IN_LEDGER", "PSP L-PAST-GRACE", Set.of()));
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats)
+                .containsEntry("psp.TRY.broken.count", 1L).containsEntry("psp.TRY.broken.sum", 1_000L)
+                .containsEntry("psp.TRY.pending.count", 1L).containsEntry("psp.TRY.pending.sum", 2_000L));
     }
 
     @Test
