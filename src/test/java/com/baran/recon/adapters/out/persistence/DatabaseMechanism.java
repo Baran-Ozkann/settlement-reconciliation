@@ -9,7 +9,9 @@ import static com.baran.recon.adapters.out.persistence.MechanismKind.TRIGGER;
 import static com.baran.recon.adapters.out.persistence.MechanismKind.UNIQUE;
 import static com.baran.recon.adapters.out.persistence.MechanismKind.UNIQUE_INDEX;
 import static com.baran.recon.adapters.out.persistence.Row.text;
+import static com.baran.recon.adapters.out.persistence.Rows.B1_MATCH;
 import static com.baran.recon.adapters.out.persistence.Rows.BANK_LINE;
+import static com.baran.recon.adapters.out.persistence.Rows.BATCH_MISMATCH_BREAK;
 import static com.baran.recon.adapters.out.persistence.Rows.BREAK;
 import static com.baran.recon.adapters.out.persistence.Rows.BREAK_EVENT;
 import static com.baran.recon.adapters.out.persistence.Rows.LEDGER_ENTRY;
@@ -174,6 +176,10 @@ enum DatabaseMechanism {
             List.of(RUN), MATCH.with("cardinality", text("MANY_TO_ONE"))),
     MATCHES_LOW_CONFIDENCE_MATCHES_RULE(CHECK, "matches", "matches_low_confidence_matches_rule",
             List.of(RUN), MATCH.with("low_confidence", "true")),
+    MATCHES_BATCH_LINE_COUNT_POSITIVE(CHECK, "matches", "matches_batch_line_count_positive",
+            List.of(RUN), B1_MATCH.with("batch_line_count", "0")),
+    MATCHES_BATCH_LINE_COUNT_WHEN_B1(CHECK, "matches", "matches_batch_line_count_when_b1",
+            List.of(RUN), B1_MATCH.with("batch_line_count", "NULL")),
 
     MATCH_ITEMS_PK(PRIMARY_KEY, "match_items", "match_items_pk",
             List.of(RUN, MATCH, MATCH_ITEM), MATCH_ITEM.with("active", "false")),
@@ -223,6 +229,10 @@ enum DatabaseMechanism {
             List.of(RUN), BREAK.with("previous_break_id", BREAK.literal("id"))),
     BREAKS_ONE_UNRESOLVED_PER_ITEM(UNIQUE_INDEX, "breaks", "breaks_one_unresolved_per_item",
             List.of(RUN, BREAK), BREAK.with("id", text("b0000000-0000-4000-8000-000000000002"))),
+    BREAKS_DETAILS_OBJECT(CHECK, "breaks", "breaks_details_object",
+            List.of(RUN), BATCH_MISMATCH_BREAK.with("details", text("[]"))),
+    BREAKS_DETAILS_WHEN_BATCH_AMOUNT_MISMATCH(CHECK, "breaks", "breaks_details_when_batch_amount_mismatch",
+            List.of(RUN), BATCH_MISMATCH_BREAK.with("details", "NULL")),
 
     BREAK_EVENTS_PK(PRIMARY_KEY, "break_events", "break_events_pk",
             List.of(RUN, BREAK, BREAK_EVENT), BREAK_EVENT),

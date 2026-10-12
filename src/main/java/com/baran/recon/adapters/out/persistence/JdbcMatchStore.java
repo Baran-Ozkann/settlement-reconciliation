@@ -15,6 +15,7 @@ import com.baran.recon.application.port.ItemAlreadyMatchedException;
 import com.baran.recon.application.port.MatchStore;
 import com.baran.recon.domain.breaks.Actor;
 import com.baran.recon.domain.item.ItemSide;
+import com.baran.recon.domain.match.Cardinality;
 import com.baran.recon.domain.match.Match;
 import com.baran.recon.domain.match.MatchItem;
 import com.baran.recon.domain.match.MatchStatus;
@@ -33,9 +34,9 @@ class JdbcMatchStore implements MatchStore {
 
     private static final String INSERT_MATCH = """
             INSERT INTO matches (id, run_id, rule_id, rule_version, cardinality, status, amount_difference,
-                                 currency, low_confidence, created_at)
+                                 currency, low_confidence, created_at, batch_line_count)
             VALUES (:id, :runId, :ruleId, :ruleVersion, :cardinality, :status, :amountDifference,
-                    :currency, :lowConfidence, :createdAt)
+                    :currency, :lowConfidence, :createdAt, :batchLineCount)
             """;
 
     private static final String INSERT_ITEM = """
@@ -79,6 +80,7 @@ class JdbcMatchStore implements MatchStore {
                 .param("currency", match.amountDifference().currency().code())
                 .param("lowConfidence", match.lowConfidence())
                 .param("createdAt", timestamp(match.createdAt()))
+                .param("batchLineCount", batchLineCount(match))
                 .update();
         boolean active = match.status() == MatchStatus.ACTIVE;
         try {
@@ -101,6 +103,17 @@ class JdbcMatchStore implements MatchStore {
                 .param("actor", Actor.SYSTEM.name())
                 .param("occurredAt", timestamp(match.createdAt()))
                 .update();
+    }
+
+    /**
+     * V13 requires a B1 match's line count. A many-to-one match still lists the batch's PSP lines
+     * themselves, so their number is that count.
+     */
+    private static Integer batchLineCount(Match match) {
+        if (match.cardinality() != Cardinality.MANY_TO_ONE) {
+            return null;
+        }
+        return Math.toIntExact(match.items().stream().filter(item -> item.side() == ItemSide.PSP).count());
     }
 
     @Override

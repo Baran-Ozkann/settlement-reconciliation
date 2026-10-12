@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -85,6 +86,7 @@ class MatchStoreTest {
 
         assertThat(matches.findById(match.id())).contains(match);
         assertThat(creationEvents(match.id())).isEqualTo(1);
+        assertThat(batchLineCount(match.id())).as("V13: no line count on a Stage A match").isEmpty();
     }
 
     @Test
@@ -96,6 +98,7 @@ class MatchStoreTest {
         matches.record(match);
 
         assertThat(matches.findById(match.id())).contains(match);
+        assertThat(batchLineCount(match.id())).as("V13: a B1 match records its batch's line count").contains(3);
     }
 
     @Test
@@ -131,6 +134,11 @@ class MatchStoreTest {
         assertThatThrownBy(() -> jdbc.sql(sql).param("matchId", matchId).update())
                 .hasRootCauseInstanceOf(SQLException.class)
                 .satisfies(e -> assertThat(rootCause(e).getSQLState()).isEqualTo(INSUFFICIENT_PRIVILEGE));
+    }
+
+    private Optional<Integer> batchLineCount(UUID matchId) {
+        return jdbc.sql("SELECT batch_line_count FROM matches WHERE id = :matchId").param("matchId", matchId)
+                .query((row, n) -> Optional.ofNullable(row.getObject("batch_line_count", Integer.class))).single();
     }
 
     private int creationEvents(UUID matchId) {
