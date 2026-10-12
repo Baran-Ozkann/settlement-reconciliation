@@ -1,10 +1,66 @@
 # Progress
 
-**Current milestone:** 5.1 — **closed** in part B2: NFR-PERF-2's target settled at 180 s by step 3
-of the rule in design doc §4.6, three official runs of the immediate keys under controlled machine
-conditions, and the perf test asserts it
-**Branch:** `milestone-5.1/part-b2` (one branch per session from Milestone 5.1 on)
+**Current milestone:** 6 — Stage B matching, started in part A: authenticated image pulls in CI and
+the Stage B questions answered in the milestone review; no Stage B code yet (the owner settles
+Stage B in design doc v1.14, part B builds it)
+**Branch:** `milestone-6/part-a` (one branch per session from Milestone 5.1 on)
 **Last updated:** 2026-10-12
+
+## Milestone 6 part A — authenticated Docker Hub pulls, and the Stage B questions
+
+### Verify commits runs #12 and #13: cancelled by Docker Hub's anonymous pull limit
+
+- Both runs were cancelled at the 30-minute job timeout. The `reverse-order` log ends with
+  Testcontainers retrying `postgres:16-alpine` on:
+
+  ```
+  com.github.dockerjava.api.exception.InternalServerErrorException: Status 500:
+  {"message":"toomanyrequests: You have reached your unauthenticated pull rate limit. ..."}
+  ```
+
+- Cause: every job pulled its images anonymously on a fresh runner, the per-commit matrix multiplies
+  the pulls, and Docker Hub counts the anonymous limit per shared IP address, so other users of the
+  same runner addresses use up the same allowance. Nothing in the code under test failed.
+- The owner re-ran both runs. Their outcome was not recorded in this session (no call to GitHub is
+  made from here); the owner adds it.
+
+### The two CI changes
+
+- `71c8b4d` logs in to Docker Hub in `verify` and `reverse-order`, the two jobs that start
+  containers: the repository variable `DOCKERHUB_USERNAME` and the secret `DOCKERHUB_TOKEN` (a
+  personal access token with Public Repo Read-only scope, also stored as a Dependabot secret) reach
+  a plain shell step through `env`, and the token reaches `docker login --password-stdin` on stdin
+  only. When either is empty (a pull request from a fork, a missing secret) the step leaves a
+  `::notice::` and the build runs with anonymous pulls; `verify` leaves a notice and skips the login
+  for a Markdown-only commit, whose build is skipped. A final `if: always()` step runs
+  `docker logout`. Still `pull_request` only, `permissions: contents: read`, no new action.
+- `9ecb415` groups Dependabot's GitHub Actions updates (`patterns: ["*"]`) into one pull request
+  per week instead of one per action.
+- Neither can run locally. The login script was dry-run in Git Bash against a fake `docker` that
+  records its arguments and stdin, in every case (both values set, token empty, username empty,
+  both empty, Markdown-only, a failing login): the token reached `docker` on stdin only and appeared
+  in no argument and no output. Every commit's version of the workflow was parsed with SnakeYAML and
+  each script checked with `bash -n`. The real test is this branch's pull request: every job should
+  log `Login Succeeded`, or the notice for a Markdown-only commit, and pull without retries.
+
+### Verification (part A)
+
+At `9ecb415`, the last commit the build reads (this file changes nothing it reads), default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 188 s, 1127 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 %, overall 96.6 %
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0, at this file's commit, the
+  branch's last, so its message check covers all three commits
+
+### Milestone 6 started with the Stage B questions
+
+Part A writes no Stage B code. The thirteen questions of the milestone prompt (what a Stage B match
+contains, which run does Stage B, a batch's identity, date, scope and completeness, batch id
+extraction, signs and sums, duplicate and mixed-currency cases, what a later match answers, grace,
+INV-1/INV-4 for the new sides, run concurrency) are answered in the part A milestone review with
+`file:line` evidence from the code, with the further questions the code raises. The owner settles
+Stage B's details in design doc v1.14, as v1.8 did for Stage A, and part B builds them.
 
 ## Milestone 5.1 part B2 — NFR-PERF-2's three official runs
 
