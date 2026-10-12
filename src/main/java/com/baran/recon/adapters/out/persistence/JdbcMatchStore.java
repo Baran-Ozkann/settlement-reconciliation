@@ -15,7 +15,6 @@ import com.baran.recon.application.port.ItemAlreadyMatchedException;
 import com.baran.recon.application.port.MatchStore;
 import com.baran.recon.domain.breaks.Actor;
 import com.baran.recon.domain.item.ItemSide;
-import com.baran.recon.domain.match.Cardinality;
 import com.baran.recon.domain.match.Match;
 import com.baran.recon.domain.match.MatchItem;
 import com.baran.recon.domain.match.MatchStatus;
@@ -23,7 +22,9 @@ import com.baran.recon.domain.match.RuleId;
 
 import static com.baran.recon.adapters.out.persistence.SqlValues.currency;
 import static com.baran.recon.adapters.out.persistence.SqlValues.instant;
+import static com.baran.recon.adapters.out.persistence.SqlValues.integerOrNull;
 import static com.baran.recon.adapters.out.persistence.SqlValues.money;
+import static com.baran.recon.adapters.out.persistence.SqlValues.optionalInt;
 import static com.baran.recon.adapters.out.persistence.SqlValues.timestamp;
 import static com.baran.recon.adapters.out.persistence.SqlValues.uuid;
 
@@ -51,7 +52,8 @@ class JdbcMatchStore implements MatchStore {
             """;
 
     private static final String SELECT_MATCH = """
-            SELECT id, run_id, rule_id, rule_version, status, amount_difference, currency, created_at
+            SELECT id, run_id, rule_id, rule_version, status, amount_difference, currency, created_at,
+                   batch_line_count
               FROM matches
              WHERE id = :id
             """;
@@ -80,7 +82,7 @@ class JdbcMatchStore implements MatchStore {
                 .param("currency", match.amountDifference().currency().code())
                 .param("lowConfidence", match.lowConfidence())
                 .param("createdAt", timestamp(match.createdAt()))
-                .param("batchLineCount", batchLineCount(match))
+                .param("batchLineCount", integerOrNull(match.batchLineCount()))
                 .update();
         boolean active = match.status() == MatchStatus.ACTIVE;
         try {
@@ -105,17 +107,6 @@ class JdbcMatchStore implements MatchStore {
                 .update();
     }
 
-    /**
-     * V13 requires a B1 match's line count. A many-to-one match still lists the batch's PSP lines
-     * themselves, so their number is that count.
-     */
-    private static Integer batchLineCount(Match match) {
-        if (match.cardinality() != Cardinality.MANY_TO_ONE) {
-            return null;
-        }
-        return Math.toIntExact(match.items().stream().filter(item -> item.side() == ItemSide.PSP).count());
-    }
-
     @Override
     public Optional<Match> findById(UUID id) {
         return jdbc.sql(SELECT_MATCH).param("id", id).query(this::map).optional();
@@ -134,6 +125,7 @@ class JdbcMatchStore implements MatchStore {
                 MatchStatus.valueOf(row.getString("status")),
                 money(row, "amount_difference", currency(row, "currency")),
                 instant(row, "created_at"),
-                items);
+                items,
+                optionalInt(row, "batch_line_count"));
     }
 }

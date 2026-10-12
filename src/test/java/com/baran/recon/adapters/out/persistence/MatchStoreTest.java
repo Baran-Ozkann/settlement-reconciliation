@@ -90,10 +90,11 @@ class MatchStoreTest {
     }
 
     @Test
-    @DisplayName("FR-MAT-6: a Stage B match is read back with every line of the batch")
+    @DisplayName("FR-MAT-6, TDD 8.2 (v1.14): a Stage B match is read back with its batch, its bank line and the "
+            + "batch's line count")
     void manyToOneMatchRoundTrips() {
-        Match match = Match.active(UUID.randomUUID(), runId, RuleId.B1_BATCH_TOTAL, 1, NO_DIFFERENCE, AT,
-                List.of(item(ItemSide.PSP), item(ItemSide.PSP), item(ItemSide.PSP), item(ItemSide.BANK)));
+        Match match = Match.activeBatch(UUID.randomUUID(), runId, RuleId.B1_BATCH_TOTAL, 1, NO_DIFFERENCE, AT,
+                List.of(item(ItemSide.BATCH), item(ItemSide.BANK)), 3);
 
         matches.record(match);
 
