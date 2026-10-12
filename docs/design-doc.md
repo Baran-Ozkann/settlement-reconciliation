@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.13 — NFR-PERF-2: the match keys stay immediate (Milestone 5.1 part B1); official performance runs need controlled machine conditions
+Version: 1.14 — Stage B details settled (Milestone 6 part A); NFR-PERF-2 settled at 180 s (Milestone 5.1 part B2); a daily scheduled run per source
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -128,7 +128,9 @@ IDs are stable. Tests and commit bodies reference them.
 
 ### 4.3 Matching (FR-MAT)
 - **FR-MAT-1** Matching is triggered by `POST /api/v1/runs` with `source` and `valueDateFrom`/`valueDateTo`,
-  and automatically after a successful file ingestion for that file's source and date range.
+  and automatically: after a successful file ingestion for that file's source and date range, after a
+  PSP file also for the bank source the PSP source `settles-to` over the same range (v1.14), and once
+  a day for every source over a look-back range (v1.14, §5.3).
 - **FR-MAT-2** Matching is **incremental**: only items without an active match are considered.
   Existing active matches are never changed by a run.
 - **FR-MAT-3** Rules run in a fixed, documented order (§8.2). The first rule that matches an item wins.
@@ -184,8 +186,8 @@ IDs are stable. Tests and commit bodies reference them.
   were measured through the perf test and not kept (−4.8, +2.6, −0.3 s against adjacent baseline runs);
   line ids stay random v4. The margin to 120 s is 10–25 s on the developer machine.
 - **NFR-PERF-2** Stage A for 1,000,000 PSP lines against 1,000,000 ledger entries under `-Xmx512m`,
-  timed from the RUNNING row to the COMPLETED return. Target: ≤ 120 s, settled in Milestone 5.1 by a rule
-  fixed in v1.12, before the measurements it applies to:
+  timed from the RUNNING row to the COMPLETED return. **Target: ≤ 180 s** (settled in Milestone 5.1
+  part B2, v1.14). It was set by a rule fixed in v1.12, before the measurements it applies to:
   1. Measure the current statement form three times at the head of `main`, with the per-statement
      breakdown and the share of A1 spent in foreign-key checks.
   2. Measure three times with `match_items_match_fk` and `match_events_match_fk` deferred to commit
@@ -210,6 +212,12 @@ IDs are stable. Tests and commit bodies reference them.
   measured 161–162 s in Milestone 5 and 226–240 s that evening, with the laptop's power state
   unrecorded and a browser open, so the absolute figures do not stand. Part B2 repeats step 3 with
   three official runs of the immediate form under the conditions above.
+  *Milestone 5.1 part B2 (2026-10-12), outcome:* under the measurement conditions, confirmed by the
+  owner (mains power, "Best performance"), the immediate keys ran 159.974, 159.425 and 154.554 s
+  (median 159.4 s), within 1–7 s of Milestone 5. None is within 120 s and none above 180 s, so step 3
+  settles the target at **180 s**, and the perf test asserts it. The owner has stated that part B1
+  ran on battery: the same SQL was 33 % slower there, which is why the measurement conditions exist.
+  The margin is 20–25 s on the developer machine, under those conditions only.
   *Milestone 5 history:* 3,882.7 s with the first statement forms (`acad3b9`); 274.2 s once A3's
   unreferenced lines became one hash anti-join (`5b68cbc`); 161.8 s once a duplicate reference's other
   lines became one join (`0a9fba8`). Three runs at `0a9fba8` took 161–162 s (A1 129.9–131.5 s, peak heap
@@ -316,9 +324,11 @@ ArchUnit rules (Milestone 1):
    One run per source at a time is enforced by the database: a partial unique index on
    `reconciliation_runs(source_code) WHERE status = 'RUNNING'`. A second run for the source fails to
    insert; a manual trigger answers `409` with the running run's id.
-2. In one transaction at `REPEATABLE READ`: Stage A (if the source type is PSP), then Stage B
-   (Milestone 6); persist matches, open breaks, auto-resolve breaks (`MATCHED_LATE`), record statistics,
-   set `COMPLETED`. Every statement of the run reads the same snapshot, so a file or an event committed
+2. In one transaction at `REPEATABLE READ`: the run's stage (v1.14). A PSP source's run does
+   Stage A; a bank source's run does Stage B, over its bank lines and the batches of every PSP source
+   whose `settles-to` names it. No run does both, so every Stage B write is serialized by the one
+   RUNNING run of the bank source. The stage persists matches, opens breaks, auto-resolves breaks
+   (`MATCHED_LATE`), records statistics, and the run is set `COMPLETED`. Every statement of the run reads the same snapshot, so a file or an event committed
    while the run works is seen by none of its steps, never by some (grace breaks) and not others
    (A1); the next run picks it up. A serialization failure fails the run like any other error.
 3. On failure: roll that transaction back and set `FAILED` in a transaction of its own. Nothing of the
@@ -327,6 +337,20 @@ ArchUnit rules (Milestone 1):
    trigger gives up on it after `busy-give-up-after`, and a manual `POST` answers a plain `500` without
    `runId`.
 4. At startup, a run left `RUNNING` by a stopped JVM is set `FAILED` (v1 runs one instance).
+
+**What starts a run (v1.14)**
+- `POST /api/v1/runs`, by an operator, over any range.
+- After a file is ingested: a run of that file's source over the value dates the file stored; after
+  a PSP file, also a run of its `settles-to` bank source over the same range, so a bank line whose
+  batch arrived late is matched (B1 pairs a bank line and a batch when *either* is in range).
+- **Once a day, a scheduled run of every source** over `[today − look-back, today]`. Automatic runs
+  only cover each file's own dates, so without it a grace break (`MISSING_IN_PSP`,
+  `MISSING_IN_LEDGER`, `MISSING_SETTLEMENT`) opens only when some later file happens to cover the
+  item's date, and a PSP that never pays a batch is never reported. Configuration
+  `recon.matching.scheduled-run.*`: `enabled` (true; false in the test profile, as the automatic
+  trigger is), the time of day in the value-date zone, and `look-back-days` (default 30, more than
+  any grace plus window). It uses the automatic trigger's executor, queue, busy wait and give-up
+  bound, and runs as `system`.
 
 ---
 
@@ -446,11 +470,11 @@ recon:
       value-date-window-days: 2        # business days, ± around ledger value date
       grace-days-ledger-unmatched: 3   # business days before MISSING_IN_PSP
       grace-days-psp-unmatched: 1      # business days before MISSING_IN_LEDGER
-      settles-to: BANK_MAIN
+      settles-to: BANK_MAIN            # required on a PSP source; must name a BANK_STATEMENT source
     - code: BANK_MAIN
       type: BANK_STATEMENT
       batch-id-pattern: "BATCH[-_]?([A-Za-z0-9_-]{1,64})"
-      grace-days-batch-unpaid: 2       # business days before MISSING_SETTLEMENT
+      grace-days-batch-unpaid: 2       # business days before MISSING_SETTLEMENT (on the bank source)
   # ISO 4217 codes accepted as supported. A ledger entry in another ISO currency is still projected,
   # WARNed once per code and counted (money that really moved); a non-ISO code is SCHEMA_INVALID.
   # A non-ISO entry or an empty list stops startup.
@@ -513,12 +537,61 @@ Stage A details (settled in v1.8):
 
 | Order | Rule id | Condition | Outcome |
 |---|---|---|---|
-| 1 | `B1_BATCH_TOTAL` | bank line reference yields batch id via regex, batch exists, same currency, `bank.amount == Σ psp.net_amount` of all lines in the batch | Match N:1 (all batch lines + bank line) |
-| 2 | `B2_BATCH_CONFLICT` | batch id found but sum or currency differs | Break `BATCH_AMOUNT_MISMATCH` on the bank line with expected vs actual |
-| 3 | unmatched | bank line with no extractable/known batch id | Break `UNEXPECTED_BANK_LINE` |
+| 1 | `B1_BATCH_TOTAL` | the bank line's extracted batch id names exactly one batch, the batch has one currency equal to the bank line's, and `bank.amount == Σ psp.net_amount` of the batch's lines | Match N:1: one `BATCH` item and one `BANK` item; the match records the batch's line count |
+| 2 | `B2_BATCH_CONFLICT` | the batch id names exactly one batch, but the sum or the currency differs (a mixed-currency batch always differs) | Break `BATCH_AMOUNT_MISMATCH` on the bank line, related item the `BATCH`, with the expected and actual amounts in `details` |
+| 3 | unmatched | no extracted batch id, or an id that names no batch | Break `UNEXPECTED_BANK_LINE` on the bank line |
+| — | ambiguity | the id names batches of more than one PSP source | Break `AMBIGUOUS_MATCH` on the bank line, related items all those `BATCH` items |
 
-A batch is considered complete only when all its PSP lines are ingested; batches are
-identified per PSP source. Mixed-currency batches are invalid → `BATCH_AMOUNT_MISMATCH`.
+Stage B details (settled in v1.14, Milestone 6 part A):
+- **A batch is an item.** A batch is identified by (PSP source, `batch_id`); its item id is
+  `BatchKey.itemId()`, a name-based UUID, computed identically in SQL (a test pins the two equal). A
+  Stage B match holds the `BATCH` item and the `BANK` item, never the PSP lines: a PSP line keeps its
+  Stage A match, and INV-2 holds. `Match`'s MANY_TO_ONE shape is one `BATCH` and one `BANK` item; the
+  N of N:1 is the line count recorded on the match (`matches.batch_line_count`).
+- **A batch's lines.** The batch is the set of its source's lines with that `batch_id` in the run's
+  snapshot, whatever file they came from: nothing in the PSP format marks a batch complete, so the
+  sum is taken at run time and a later run takes it again. A line whose `line_id` repeats is not
+  stored (FR-ING-4), so the sum uses the first stored version.
+- **A batch's date and scope.** The latest `value_date` of its lines; it moves when a later line
+  arrives. A batch is in a bank run's scope when that date is in the run's range; B1 pairs a bank line
+  and a batch when either is in range, as A1 does. No value-date window: the batch id is identity, as
+  a reference is in Stage A (v1.10).
+- **Batch id.** Extracted at ingestion with the bank source's `batch-id-pattern` (first match,
+  capture group 1, 1–64 of `[A-Za-z0-9_-]`) and stored; a line keeps the id extracted when it was
+  ingested. The run snapshots the configured pattern. Ids compare exactly, case-sensitive. The default
+  pattern consumes a leading `-` or `_`, so a `batch_id` starting with one is never extracted;
+  synthetic data avoids it.
+- **Signs and sums.** Signed integers in minor units: a batch whose refunds exceed its payments has a
+  negative net, which a negative bank line matches. A sum past BIGINT fails the run (INV-8). A
+  zero-net batch can never be paid (bank amounts are non-zero), so it reaches `MISSING_SETTLEMENT`
+  after grace and an operator resolves it.
+- **Duplicates.** Several unmatched bank lines naming one batch: none is matched, each gets
+  `DUPLICATE_LINE`, related items the other bank lines and the `BATCH` (named, so the batch is
+  `BROKEN` and gets no grace break while claimed twice). A bank line naming a batch that is already
+  matched gets `DUPLICATE_LINE`, related items the matched bank line and the `BATCH`: a second payout
+  of a paid batch needs attention at once. `DUPLICATE_LINE` therefore also means "two bank lines
+  claim one batch", as it means "two PSP lines share a reference" in Stage A.
+- **A line arriving after its batch was matched.** FR-MAT-2 keeps the match. A run that finds a
+  matched batch whose line count or sum now differs from the match opens `BATCH_AMOUNT_MISMATCH` on the
+  `BATCH` item, with the old and new figures in `details`; it stays open for an operator.
+- **Bank lines with no batch id** (fees, interest, any other movement on the account) are
+  `UNEXPECTED_BANK_LINE` at once: there is no grace for a bank line. An operator resolves them.
+- **Auto-resolution.** A B1 match resolves, with `MATCHED_LATE`, an unresolved `UNEXPECTED_BANK_LINE`,
+  `BATCH_AMOUNT_MISMATCH` or `AMBIGUOUS_MATCH` on its bank line, and `MISSING_SETTLEMENT` on its batch.
+  Unlike Stage A's mismatch breaks, a B2 is answered by a later match, because a batch's sum is taken
+  over lines that may still be arriving: a B2 is often "batch incomplete", and the later B1 is its
+  explanation. `DUPLICATE_LINE` stays open. A break that only names an item is left alone.
+- **Breaks name only `BATCH` and `BANK` items.** A Stage B break never names a PSP line, so it never
+  changes a line's Stage A status; Stage A's "named" check also reads only `LEDGER` and `PSP` items
+  (defence in depth).
+- **Item status and statistics.** A batch and a bank line take `MATCHED`, `BROKEN` or `PENDING` in the
+  same order as Stage A. A bank run's statistics cover `BANK` (the line's amount) and `BATCH` (the
+  batch's net sum) per currency; a mixed-currency batch counts once in each of its currencies, so
+  conservation holds per currency but a batch count summed across currencies counts it twice. A PSP
+  line's status stays the one Stage A gives it. The ledger counts stay in a bank run's stats, at 0.
+- **Grace.** `MISSING_SETTLEMENT` on a pending batch (no active match, no unresolved break, named by
+  none) dated before `firstDayWithinGrace(today, grace-days-batch-unpaid)`, the setting being the bank
+  source's, snapshotted on the run.
 
 **Grace-period breaks (evaluated at the end of each run, using the injected `Clock`)**
 - Ledger entry unmatched past `grace-days-ledger-unmatched` → `MISSING_IN_PSP`.
@@ -635,11 +708,15 @@ reconciliation_runs   (id UUID PK, source_code, value_date_from, value_date_to,
 matches               (id UUID PK, run_id FK, rule_id, rule_version, cardinality, status,
                        amount_difference BIGINT, currency CHAR(3),  -- the difference is money, so it
                                                                     -- carries its currency (design doc §6)
-                       low_confidence BOOL, created_at)
+                       low_confidence BOOL, created_at,
+                       batch_line_count INTEGER NULL)      -- set exactly for B1 (v1.14)
 match_items           (match_id FK, side, item_id, active BOOL, PRIMARY KEY(match_id, side, item_id))
 match_events          (id BIGSERIAL PK, match_id FK, event_type, actor, reason, occurred_at)   -- append-only
 breaks                (id UUID PK, break_type, item_side, item_id, related_items JSONB, status,
-                       resolution_code, opened_run_id, previous_break_id, opened_at, resolved_at)
+                       resolution_code, opened_run_id, previous_break_id, opened_at, resolved_at,
+                       details JSONB NULL)   -- an object, set exactly for BATCH_AMOUNT_MISMATCH (v1.14):
+                                             -- bank amount and currency, the batch's per-currency
+                                             -- sums and line count, or a matched batch's old and new
 break_events          (id BIGSERIAL PK, break_id FK, from_status, to_status, resolution_code,
                        actor, reason, occurred_at)                                             -- append-only
 ```
@@ -910,10 +987,22 @@ write technique is settled here first.
   leaving nothing of its work.
 
 ### Milestone 6 — Stage B matching
-- Batch aggregation, regex batch-id extraction, rules B1–B2, `UNEXPECTED_BANK_LINE`, `MISSING_SETTLEMENT`
-  with grace, mixed-currency batch handling.
-- Exit: Stage B rules covered; INV-1/INV-4/INV-5 extended to Stage B; end-to-end three-way test with a
-  small hand-written dataset whose expected results are asserted item by item.
+- Part A (done): authenticated Docker Hub pulls in CI (runs #12 and #13 had hit the anonymous pull
+  limit; both passed when re-run), Dependabot updates grouped, and the Stage B questions answered from
+  the code, settled in §8.2 (v1.14).
+- Part B, foundations: `settles-to` and `grace-days-batch-unpaid` bound and validated; the migration
+  for `matches.batch_line_count` and `breaks.details`; `Match`'s MANY_TO_ONE shape; the batch item id
+  in SQL; a PSP ingestion also triggering its bank source's run; Stage A's "named" check restricted to
+  `LEDGER` and `PSP`.
+- Part C, Stage B: rules B1–B2, ambiguity, duplicates, the late-line break, `UNEXPECTED_BANK_LINE`,
+  `MISSING_SETTLEMENT` with grace, `MATCHED_LATE`, statistics, the bank run's stage.
+- Part D: the daily scheduled run (§5.3); INV-1/INV-4/INV-5 property tests extended to Stage B; the
+  end-to-end three-way test.
+- Exit: Stage B rules and details of §8.2 covered, each by name; INV-1/INV-4/INV-5 extended to Stage B
+  (shuffled inputs, fixed seed); a test pins the SQL batch id equal to `BatchKey.itemId()`; the
+  scheduled run opens a grace break no file-triggered run would; break proofs for every new
+  mechanism; an end-to-end three-way test with a small hand-written dataset (ledger events, a PSP
+  file, a bank file) whose expected results are asserted item by item.
 
 ### Milestone 7 — Break management and API
 - Break transitions endpoint, resolution codes, reopen-as-new-break, match
@@ -959,10 +1048,15 @@ id (§8.1). In the synthetic world the PSP clearing account is an `ASSET`, money
 PSP; Milestone 8's data uses one such account per PSP source.
 
 Still open:
-1. **OQ-4** Whether Milestone 8 generates ledger data through the ledger's API or publishes
+1. **OQ-7** (v1.14) `sources_state` (V3) is written by no code and granted to no role. Use it in a later
+   milestone or drop it in Milestone 10.
+2. **OQ-8** (v1.14) A file whose amounts sum past BIGINT makes every run over its range fail (INV-8
+   requires the failure). A per-line amount bound at ingestion would prevent it: decided with
+   Milestone 9's threat model.
+3. **OQ-4** Whether Milestone 8 generates ledger data through the ledger's API or publishes
    schema-valid synthetic events onto the topic.
-2. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Milestone 10.
-3. **OQ-6** An item whose break an operator resolved (e.g. `WRITTEN_OFF`) and that is still
+4. **OQ-5** License: the ledger has none to match, so this is the owner's choice before Milestone 10.
+5. **OQ-6** An item whose break an operator resolved (e.g. `WRITTEN_OFF`) and that is still
    unmatched: a run would open the same break again. Whether runs skip it, and which status INV-1
    gives it, is decided with Milestone 7's transition endpoint, the first thing that resolves a break by
    hand. Until then nothing does, so no run can meet the case.
