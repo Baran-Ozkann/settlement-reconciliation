@@ -28,7 +28,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** {@code GET /api/v1/statements/{id}} over real HTTP: a file's status, counts and errors, for a VIEWER (TDD 11). */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "recon.sources[0].code=PSP_VIEW",
-        "recon.sources[0].type=PSP_SETTLEMENT"})
+        "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_VIEW",
+        "recon.sources[1].code=BANK_VIEW",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("TDD 11: a VIEWER reads a statement file's status, counts and validation errors")

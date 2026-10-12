@@ -2,6 +2,7 @@ package com.baran.recon.domain.source;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
@@ -81,17 +82,18 @@ class BatchIdPatternTest {
     @DisplayName("a bank source needs a pattern, and a PSP source cannot have one")
     void patternBelongsToBankSourcesOnly() {
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT, Set.of(),
-                Optional.empty(), Optional.empty()))
+                Optional.empty(), Optional.empty(), Optional.empty(), OptionalInt.of(2)))
                 .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("batch-id-pattern");
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("PSP_ALPHA"), SourceType.PSP_SETTLEMENT, Set.of(),
-                Optional.of(TDD_EXAMPLE), Optional.of(StageASettings.TDD_DEFAULTS)))
+                Optional.of(TDD_EXAMPLE), Optional.of(StageASettings.TDD_DEFAULTS),
+                Optional.of(SourceCode.of("BANK_MAIN")), OptionalInt.empty()))
                 .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("batch-id-pattern");
     }
 
     @Test
     @DisplayName("FR-ING-2: sources are found by code; an unknown code finds nothing; a repeated code is refused")
     void configuredSourcesByCode() {
-        SourceDefinition psp = SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of());
+        SourceDefinition psp = SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(), SourceCode.of("BANK_MAIN"));
         SourceDefinition bank = SourceDefinition.bank(SourceCode.of("BANK_MAIN"), TDD_EXAMPLE);
         ConfiguredSources sources = ConfiguredSources.of(List.of(psp, bank));
 

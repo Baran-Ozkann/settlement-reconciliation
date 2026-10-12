@@ -32,7 +32,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_STALE",
-        "recon.sources[0].type=PSP_SETTLEMENT"})
+        "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[1].code=BANK_STALE",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
+        "recon.sources[0].settles-to=BANK_STALE"})
 @ActiveProfiles("test")
 @DirtiesContext
 @DisplayName("TDD 5.3: at startup, a run left RUNNING is set FAILED and its source is free again")

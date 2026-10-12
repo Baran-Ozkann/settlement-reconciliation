@@ -84,6 +84,8 @@ class StageAPropertiesTest {
     private static final long EVENT_IDS_PER_SOURCE = 1_000L;
     private static final String SOURCE_PREFIX = "PSP_PROPERTY_";
     private static final int SOURCES = 200;
+    /** The bank source every PSP source here settles to (TDD 8.1); Stage A never reads it. */
+    private static final String BANK = "BANK_PROPERTY";
     private static final AtomicInteger NEXT_SOURCE = new AtomicInteger();
 
     /** The run's range is a working week; the items' dates reach past both ends of it. */
@@ -114,7 +116,11 @@ class StageAPropertiesTest {
             registry.add(source + "value-date-window-days", () -> "2");
             registry.add(source + "grace-days-ledger-unmatched", () -> Integer.toString(GRACE_LEDGER));
             registry.add(source + "grace-days-psp-unmatched", () -> Integer.toString(GRACE_PSP));
+            registry.add(source + "settles-to", () -> BANK);
         }
+        registry.add("recon.sources[" + SOURCES + "].code", () -> BANK);
+        registry.add("recon.sources[" + SOURCES + "].type", () -> "BANK_STATEMENT");
+        registry.add("recon.sources[" + SOURCES + "].batch-id-pattern", () -> "BATCH[-_]?([A-Za-z0-9_-]{1,64})");
     }
 
     @Autowired

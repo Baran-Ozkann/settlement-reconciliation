@@ -2,6 +2,7 @@ package com.baran.recon.domain.source;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 
@@ -60,11 +61,12 @@ class LedgerAccountSourcesTest {
     @DisplayName("a bank statement source cannot map ledger accounts")
     void bankSourceWithLedgerAccountsIsRefused() {
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT,
-                Set.of(CLEARING), Optional.of(BATCH_PATTERN), Optional.empty()))
+                Set.of(CLEARING), Optional.of(BATCH_PATTERN), Optional.empty(), Optional.empty(),
+                OptionalInt.of(2)))
                 .isInstanceOf(InvalidSourceConfigurationException.class);
     }
 
     private static SourceDefinition psp(String code, UUID account) {
-        return SourceDefinition.psp(SourceCode.of(code), Set.of(account));
+        return SourceDefinition.psp(SourceCode.of(code), Set.of(account), SourceCode.of("BANK_MAIN"));
     }
 }

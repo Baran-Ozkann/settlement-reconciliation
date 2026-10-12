@@ -23,7 +23,7 @@ record ParserRun(Optional<LineError> headerError, List<ParsedLine> lines) {
 
     static final UUID FILE_ID = UUID.fromString("00000000-0000-4000-8000-00000000f11e");
     static final StatementContext PSP = new StatementContext(FILE_ID,
-            SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of()));
+            SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(), SourceCode.of("BANK_MAIN")));
     static final StatementContext BANK = new StatementContext(FILE_ID,
             SourceDefinition.bank(SourceCode.of("BANK_MAIN"), BatchIdPattern.of("BATCH[-_]?([A-Za-z0-9_-]{1,64})")));
 

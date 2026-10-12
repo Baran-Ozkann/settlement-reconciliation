@@ -42,7 +42,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_NO_INDEX",
-        "recon.sources[0].type=PSP_SETTLEMENT"})
+        "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[1].code=BANK_NO_INDEX",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
+        "recon.sources[0].settles-to=BANK_NO_INDEX"})
 @ActiveProfiles("test")
 @Import(HeldLedgerEntryStore.Injection.class)
 @DirtiesContext

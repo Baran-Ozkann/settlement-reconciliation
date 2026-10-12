@@ -4,11 +4,13 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import com.baran.recon.domain.calendar.BusinessCalendar;
@@ -26,12 +28,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SourcesConfigurationTest {
 
     private static final String CLEARING = "00000000-0000-4000-8000-000000000001";
+    private static final String PATTERN = "BATCH[-_]?([A-Za-z0-9_-]{1,64})";
 
     private final ApplicationContextRunner context = new ApplicationContextRunner()
             .withUserConfiguration(SourcesConfiguration.class);
 
     @Test
-    @DisplayName("the TDD 8.1 layout binds, including keys this phase does not read yet")
+    @DisplayName("the TDD 8.1 layout binds, every key of it")
     void bindsTheDocumentedLayout() {
         context.withPropertyValues(
                         "recon.sources[0].code=PSP_ALPHA",
@@ -53,6 +56,10 @@ class SourcesConfigurationTest {
                     assertThat(sources.find(SourceCode.of("BANK_MAIN")).flatMap(SourceDefinition::batchIdPattern)
                             .flatMap(pattern -> pattern.extract(Optional.of("PAYOUT BATCH-B-001"))))
                             .contains("B-001");
+                    assertThat(sources.find(SourceCode.of("PSP_ALPHA")).flatMap(SourceDefinition::settlesTo))
+                            .contains(SourceCode.of("BANK_MAIN"));
+                    assertThat(sources.find(SourceCode.of("BANK_MAIN")).map(SourceDefinition::graceDaysBatchUnpaid))
+                            .contains(OptionalInt.of(2));
                 });
     }
 
@@ -72,11 +79,17 @@ class SourcesConfigurationTest {
                         "recon.sources[0].code=PSP_ALPHA",
                         "recon.sources[0].type=PSP_SETTLEMENT",
                         "recon.sources[0].ledger-accounts[0]=" + CLEARING,
+                        "recon.sources[0].settles-to=BANK_MAIN",
                         "recon.sources[1].code=PSP_BETA",
                         "recon.sources[1].type=PSP_SETTLEMENT",
-                        "recon.sources[1].ledger-accounts[0]=" + CLEARING)
+                        "recon.sources[1].ledger-accounts[0]=" + CLEARING,
+                        "recon.sources[1].settles-to=BANK_MAIN",
+                        "recon.sources[2].code=BANK_MAIN",
+                        "recon.sources[2].type=BANK_STATEMENT",
+                        "recon.sources[2].batch-id-pattern=" + PATTERN)
                 .run(started -> assertThat(started).hasFailed()
-                        .getFailure().rootCause().isInstanceOf(InvalidSourceConfigurationException.class));
+                        .getFailure().rootCause().isInstanceOf(InvalidSourceConfigurationException.class)
+                        .hasMessageContaining("PSP_ALPHA").hasMessageContaining("PSP_BETA"));
     }
 
     @Test
@@ -99,9 +112,14 @@ class SourcesConfigurationTest {
                         "recon.sources[0].value-date-window-days=4",
                         "recon.sources[0].grace-days-ledger-unmatched=5",
                         "recon.sources[0].grace-days-psp-unmatched=0",
+                        "recon.sources[0].settles-to=BANK_MAIN",
                         "recon.sources[1].code=PSP_BETA",
                         "recon.sources[1].type=PSP_SETTLEMENT",
-                        "recon.sources[1].grace-days-psp-unmatched=6")
+                        "recon.sources[1].grace-days-psp-unmatched=6",
+                        "recon.sources[1].settles-to=BANK_MAIN",
+                        "recon.sources[2].code=BANK_MAIN",
+                        "recon.sources[2].type=BANK_STATEMENT",
+                        "recon.sources[2].batch-id-pattern=" + PATTERN)
                 .run(started -> {
                     ConfiguredSources sources = started.getBean(ConfiguredSources.class);
                     assertThat(sources.find(SourceCode.of("PSP_ALPHA")).flatMap(SourceDefinition::stageA))
@@ -125,10 +143,135 @@ class SourcesConfigurationTest {
         context.withPropertyValues(
                         "recon.sources[0].code=PSP_ALPHA",
                         "recon.sources[0].type=PSP_SETTLEMENT",
-                        "recon.sources[0].grace-days-ledger-unmatched=-1")
+                        "recon.sources[0].grace-days-ledger-unmatched=-1",
+                        "recon.sources[0].settles-to=BANK_MAIN",
+                        "recon.sources[1].code=BANK_MAIN",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
                 .run(started -> assertThat(started).hasFailed()
                         .getFailure().rootCause().isInstanceOf(InvalidSourceConfigurationException.class)
                         .hasMessageContaining("grace-days-ledger-unmatched"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: a bank source binds its grace-days-batch-unpaid, and one that leaves it out takes TDD 8.1's 2")
+    void bindsBatchGrace() {
+        context.withPropertyValues(
+                        "recon.sources[0].code=BANK_MAIN",
+                        "recon.sources[0].type=BANK_STATEMENT",
+                        "recon.sources[0].batch-id-pattern=" + PATTERN,
+                        "recon.sources[0].grace-days-batch-unpaid=0",
+                        "recon.sources[1].code=BANK_OTHER",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
+                .run(started -> {
+                    ConfiguredSources sources = started.getBean(ConfiguredSources.class);
+                    assertThat(sources.find(SourceCode.of("BANK_MAIN")).map(SourceDefinition::graceDaysBatchUnpaid))
+                            .contains(OptionalInt.of(0));
+                    assertThat(sources.find(SourceCode.of("BANK_OTHER")).map(SourceDefinition::graceDaysBatchUnpaid))
+                            .contains(OptionalInt.of(2));
+                });
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: a negative grace-days-batch-unpaid, or one set on a PSP source, stops startup naming the "
+            + "source and the key")
+    void negativeOrMisplacedBatchGraceFailsStartup() {
+        context.withPropertyValues(
+                        "recon.sources[0].code=BANK_MAIN",
+                        "recon.sources[0].type=BANK_STATEMENT",
+                        "recon.sources[0].batch-id-pattern=" + PATTERN,
+                        "recon.sources[0].grace-days-batch-unpaid=-1")
+                .run(started -> assertFailsNaming(started, "BANK_MAIN", "grace-days-batch-unpaid"));
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[0].settles-to=BANK_MAIN",
+                        "recon.sources[0].grace-days-batch-unpaid=2",
+                        "recon.sources[1].code=BANK_MAIN",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
+                .run(started -> assertFailsNaming(started, "PSP_ALPHA", "grace-days-batch-unpaid"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: a PSP source whose settles-to names a configured bank source starts")
+    void settlesToAConfiguredBankSourceStarts() {
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[0].settles-to=BANK_MAIN",
+                        "recon.sources[1].code=PSP_BETA",
+                        "recon.sources[1].type=PSP_SETTLEMENT",
+                        "recon.sources[1].settles-to=BANK_MAIN",
+                        "recon.sources[2].code=BANK_MAIN",
+                        "recon.sources[2].type=BANK_STATEMENT",
+                        "recon.sources[2].batch-id-pattern=" + PATTERN)
+                .run(started -> {
+                    assertThat(started).hasNotFailed();
+                    ConfiguredSources sources = started.getBean(ConfiguredSources.class);
+                    assertThat(sources.find(SourceCode.of("PSP_BETA")).flatMap(SourceDefinition::settlesTo))
+                            .contains(SourceCode.of("BANK_MAIN"));
+                });
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: a PSP source without settles-to stops startup naming the source and the key")
+    void missingSettlesToFailsStartup() {
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[1].code=BANK_MAIN",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
+                .run(started -> assertFailsNaming(started, "PSP_ALPHA", "settles-to"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: settles-to naming no configured source, a PSP source, or no source code at all stops "
+            + "startup naming the source and the key")
+    void settlesToNotNamingABankSourceFailsStartup() {
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[0].settles-to=BANK_ELSEWHERE",
+                        "recon.sources[1].code=BANK_MAIN",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
+                .run(started -> assertFailsNaming(started, "PSP_ALPHA", "settles-to"));
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[0].settles-to=PSP_BETA",
+                        "recon.sources[1].code=PSP_BETA",
+                        "recon.sources[1].type=PSP_SETTLEMENT",
+                        "recon.sources[1].settles-to=BANK_MAIN",
+                        "recon.sources[2].code=BANK_MAIN",
+                        "recon.sources[2].type=BANK_STATEMENT",
+                        "recon.sources[2].batch-id-pattern=" + PATTERN)
+                .run(started -> assertFailsNaming(started, "PSP_ALPHA", "settles-to"));
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[0].settles-to=bank main",
+                        "recon.sources[1].code=BANK_MAIN",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
+                .run(started -> assertFailsNaming(started, "PSP_ALPHA", "settles-to"));
+    }
+
+    @Test
+    @DisplayName("TDD 8.1: settles-to on a bank source stops startup naming the source and the key")
+    void settlesToOnABankSourceFailsStartup() {
+        context.withPropertyValues(
+                        "recon.sources[0].code=BANK_MAIN",
+                        "recon.sources[0].type=BANK_STATEMENT",
+                        "recon.sources[0].batch-id-pattern=" + PATTERN,
+                        "recon.sources[0].settles-to=BANK_OTHER",
+                        "recon.sources[1].code=BANK_OTHER",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
+                .run(started -> assertFailsNaming(started, "BANK_MAIN", "settles-to"));
     }
 
     @Test
@@ -157,5 +300,11 @@ class SourcesConfigurationTest {
         context.withPropertyValues("recon.business-calendar.holidays[0]=29.10.2026")
                 .run(started -> assertThat(started).hasFailed()
                         .getFailure().rootCause().isInstanceOf(DateTimeParseException.class));
+    }
+
+    private static void assertFailsNaming(AssertableApplicationContext started, String source, String key) {
+        assertThat(started).hasFailed()
+                .getFailure().rootCause().isInstanceOf(InvalidSourceConfigurationException.class)
+                .hasMessageContaining(source).hasMessageContaining(key);
     }
 }

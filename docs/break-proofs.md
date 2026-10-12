@@ -322,3 +322,14 @@ entries give their reason and what guards them instead.
 | The trigger's settings binding | 2a, 2b | permanent (`AutomaticTriggerConfigurationTest`) | part 2b |
 | The trigger's give-up bound | 2b | permanent (`TriggerWithoutGiveUpBreakProofTest`) | part 2b |
 | A failed run's 500 carries its id and nothing else | 2b | recorded one-off | part 2b |
+
+## Milestone 6, part B
+
+Part B lays Stage B's foundations (design doc v1.14) and writes no Stage B rule. Each mechanism is
+listed here by the commit that adds it.
+
+### Proven by permanent tests
+
+| Mechanism | Broken state the test builds | Proof test | What it asserts |
+|---|---|---|---|
+| TDD 8.1 (v1.14): a PSP source's `settles-to` is required and must name a configured `BANK_STATEMENT` source; a bank source's `grace-days-batch-unpaid` is not negative, defaults to 2, and is refused on a PSP source, as `settles-to` is on a bank source (`SourceDefinition`, `ConfiguredSources.of`, `SourcesProperties`) | the context runner with each wrong value in turn: `settles-to` left out, naming no configured source, naming a PSP source, not a source code, or set on a bank source; the grace negative, or set on a PSP source | `SourcesConfigurationTest.missingSettlesToFailsStartup`, `settlesToNotNamingABankSourceFailsStartup`, `settlesToOnABankSourceFailsStartup` and `negativeOrMisplacedBatchGraceFailsStartup`, against `settlesToAConfiguredBankSourceStarts`, `bindsBatchGrace` and `bindsTheDocumentedLayout`; the same rules in `StageBSourceKeysTest` | each wrong value stops startup with `InvalidSourceConfigurationException` naming the source and the key; the same configuration with the value put right starts, binds `settles-to`, and binds the grace as set or as 2 when left out |

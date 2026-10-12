@@ -71,6 +71,8 @@ class StageAMatchingTest {
     private static final long FIRST_EVENT_ID = 9_700_000_000L;
     private static final String SOURCE_PREFIX = "PSP_STAGE_A_";
     private static final int SOURCES = 40;
+    /** The bank source every PSP source here settles to (TDD 8.1); Stage A never reads it. */
+    private static final String BANK = "BANK_STAGE_A";
     private static final AtomicInteger NEXT_SOURCE = new AtomicInteger();
 
     // A week with a weekend after it: 2026-10-05 is a Monday.
@@ -97,7 +99,11 @@ class StageAMatchingTest {
             registry.add(source + "value-date-window-days", () -> "2");
             registry.add(source + "grace-days-ledger-unmatched", () -> "3");
             registry.add(source + "grace-days-psp-unmatched", () -> "1");
+            registry.add(source + "settles-to", () -> BANK);
         }
+        registry.add("recon.sources[" + SOURCES + "].code", () -> BANK);
+        registry.add("recon.sources[" + SOURCES + "].type", () -> "BANK_STATEMENT");
+        registry.add("recon.sources[" + SOURCES + "].batch-id-pattern", () -> "BATCH[-_]?([A-Za-z0-9_-]{1,64})");
     }
 
     @Autowired

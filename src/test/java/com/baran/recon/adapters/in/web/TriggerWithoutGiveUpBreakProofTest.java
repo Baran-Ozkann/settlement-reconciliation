@@ -56,8 +56,13 @@ import static org.awaitility.Awaitility.await;
         "recon.matching.automatic-trigger.busy-give-up-after=1d",
         "recon.sources[0].code=PSP_NO_GIVE_UP_STUCK",
         "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_NO_GIVE_UP",
         "recon.sources[1].code=PSP_NO_GIVE_UP_NEXT",
-        "recon.sources[1].type=PSP_SETTLEMENT"})
+        "recon.sources[1].type=PSP_SETTLEMENT",
+        "recon.sources[1].settles-to=BANK_NO_GIVE_UP",
+        "recon.sources[2].code=BANK_NO_GIVE_UP",
+        "recon.sources[2].type=BANK_STATEMENT",
+        "recon.sources[2].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @Import(HeldLedgerEntryStore.Injection.class)
 @ExtendWith(OutputCaptureExtension.class)

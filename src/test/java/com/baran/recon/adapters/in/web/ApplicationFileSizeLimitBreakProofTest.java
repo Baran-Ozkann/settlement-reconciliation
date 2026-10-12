@@ -36,7 +36,11 @@ import static org.awaitility.Awaitility.await;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "recon.sources[0].code=" + ApplicationFileSizeLimitBreakProofTest.PSP,
-        "recon.sources[0].type=PSP_SETTLEMENT"})
+        "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_APP_SIZE_PROOF",
+        "recon.sources[1].code=BANK_APP_SIZE_PROOF",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("Break proof, FR-ING-8: without the application's size check the file over the limit is ingested")

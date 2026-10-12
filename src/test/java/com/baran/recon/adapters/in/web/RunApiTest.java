@@ -44,8 +44,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "recon.sources[0].code=PSP_RUN_API",
         "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_RUN_API",
         "recon.sources[1].code=PSP_RUN_API_FAILS",
-        "recon.sources[1].type=PSP_SETTLEMENT"})
+        "recon.sources[1].type=PSP_SETTLEMENT",
+        "recon.sources[1].settles-to=BANK_RUN_API",
+        "recon.sources[2].code=BANK_RUN_API",
+        "recon.sources[2].type=BANK_STATEMENT",
+        "recon.sources[2].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @Import(FailingRunStore.Injection.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

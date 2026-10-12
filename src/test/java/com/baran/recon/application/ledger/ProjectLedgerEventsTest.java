@@ -46,7 +46,7 @@ class ProjectLedgerEventsTest {
     private final FakeStore store = new FakeStore();
     private final CountingTransactions transactions = new CountingTransactions();
     private final ProjectLedgerEvents projection = new ProjectLedgerEvents(
-            LedgerAccountSources.of(List.of(SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(CLEARING)))),
+            LedgerAccountSources.of(List.of(SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(CLEARING), SourceCode.of("BANK_MAIN")))),
             store, transactions, Clock.fixed(NOW, ZoneOffset.UTC), ISTANBUL);
 
     @Test

@@ -62,7 +62,11 @@ import static org.awaitility.Awaitility.await;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "recon.matching.automatic-trigger.enabled=true",
         "recon.sources[0].code=PSP_TRIGGER_CALLER_RUNS",
-        "recon.sources[0].type=PSP_SETTLEMENT"})
+        "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_TRIGGER_CALLER_RUNS",
+        "recon.sources[1].code=BANK_TRIGGER_CALLER_RUNS",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @Import({HeldLedgerEntryStore.Injection.class, BlockingTriggerQueueBreakProofTest.CallerRuns.class})
 @ExtendWith(OutputCaptureExtension.class)

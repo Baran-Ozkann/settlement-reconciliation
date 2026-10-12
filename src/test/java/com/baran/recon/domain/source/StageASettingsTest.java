@@ -1,6 +1,7 @@
 package com.baran.recon.domain.source;
 
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
@@ -20,7 +21,7 @@ class StageASettingsTest {
     @DisplayName("the defaults are TDD 8.1's: a window of 2 and grace periods of 3 and 1 business days")
     void defaultsAreTheTddValues() {
         assertThat(StageASettings.TDD_DEFAULTS).isEqualTo(new StageASettings(2, 3, 1));
-        assertThat(SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of()).stageA())
+        assertThat(SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(), SourceCode.of("BANK_MAIN")).stageA())
                 .contains(StageASettings.TDD_DEFAULTS);
     }
 
@@ -40,10 +41,12 @@ class StageASettingsTest {
     @DisplayName("a PSP source needs its Stage A settings, and a bank source cannot have them")
     void settingsBelongToPspSourcesOnly() {
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("PSP_ALPHA"), SourceType.PSP_SETTLEMENT, Set.of(),
-                Optional.empty(), Optional.empty()))
+                Optional.empty(), Optional.empty(), Optional.of(SourceCode.of("BANK_MAIN")),
+                OptionalInt.empty()))
                 .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("Stage A");
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT, Set.of(),
-                Optional.of(PATTERN), Optional.of(StageASettings.TDD_DEFAULTS)))
+                Optional.of(PATTERN), Optional.of(StageASettings.TDD_DEFAULTS), Optional.empty(),
+                OptionalInt.of(2)))
                 .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("only a PSP source");
     }
 }

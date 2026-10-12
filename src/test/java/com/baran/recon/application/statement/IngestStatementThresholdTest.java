@@ -32,6 +32,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_THRESHOLD",
         "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_THRESHOLD",
+        "recon.sources[1].code=BANK_THRESHOLD",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
         "recon.ingestion.max-invalid-line-ratio-bp=3334"})
 @ActiveProfiles("test")
 @DisplayName("FR-ING-7: under a configured invalid-line threshold, a file with a few invalid lines is ingested")
