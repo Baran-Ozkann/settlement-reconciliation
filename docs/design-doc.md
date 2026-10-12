@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.14 — Stage B details settled (Milestone 6 part A); NFR-PERF-2 settled at 180 s (Milestone 5.1 part B2); a daily scheduled run per source
+Version: 1.15 — Milestone 6 part B's questions settled: `details` keys, the "named" check's side, the bank run after any PSP run, a bank source nothing settles to; part C split into C1 and C2
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -342,7 +342,10 @@ ArchUnit rules (Milestone 1):
 - `POST /api/v1/runs`, by an operator, over any range.
 - After a file is ingested: a run of that file's source over the value dates the file stored; after
   a PSP file, also a run of its `settles-to` bank source over the same range, so a bank line whose
-  batch arrived late is matched (B1 pairs a bank line and a batch when *either* is in range).
+  batch arrived late is matched (B1 pairs a bank line and a batch when *either* is in range). The bank
+  run follows whatever the PSP run's outcome (completed, failed, refused or given up), because the
+  file's lines are committed either way and Stage B reads lines, not Stage A's results (v1.15). The
+  two runs are one task: a file takes one place in the trigger's queue.
 - **Once a day, a scheduled run of every source** over `[today − look-back, today]`. Automatic runs
   only cover each file's own dates, so without it a grace break (`MISSING_IN_PSP`,
   `MISSING_IN_LEDGER`, `MISSING_SETTLEMENT`) opens only when some later file happens to cover the
@@ -475,6 +478,9 @@ recon:
       type: BANK_STATEMENT
       batch-id-pattern: "BATCH[-_]?([A-Za-z0-9_-]{1,64})"
       grace-days-batch-unpaid: 2       # business days before MISSING_SETTLEMENT (on the bank source)
+      # A bank source that no PSP source settles to is allowed (v1.15): every line it carries is
+      # UNEXPECTED_BANK_LINE, which is true. Startup logs one WARN naming it, so a forgotten
+      # settles-to is seen.
   # ISO 4217 codes accepted as supported. A ledger entry in another ISO currency is still projected,
   # WARNed once per code and counted (money that really moved); a non-ISO code is SCHEMA_INVALID.
   # A non-ISO entry or an empty list stops startup.
@@ -571,6 +577,10 @@ Stage B details (settled in v1.14, Milestone 6 part A):
   matched gets `DUPLICATE_LINE`, related items the matched bank line and the `BATCH`: a second payout
   of a paid batch needs attention at once. `DUPLICATE_LINE` therefore also means "two bank lines
   claim one batch", as it means "two PSP lines share a reference" in Stage A.
+- **Precedence for one bank line (v1.15).** No id, or an id naming no batch: `UNEXPECTED_BANK_LINE`.
+  An id naming batches of several sources: `AMBIGUOUS_MATCH`, whatever other lines name. An id naming
+  exactly one batch: `DUPLICATE_LINE` if another unmatched bank line names it too or it is already
+  matched; otherwise B1, else B2. Each line gets exactly one outcome.
 - **A line arriving after its batch was matched.** FR-MAT-2 keeps the match. A run that finds a
   matched batch whose line count or sum now differs from the match opens `BATCH_AMOUNT_MISMATCH` on the
   `BATCH` item, with the old and new figures in `details`; it stays open for an operator.
@@ -582,8 +592,28 @@ Stage B details (settled in v1.14, Milestone 6 part A):
   over lines that may still be arriving: a B2 is often "batch incomplete", and the later B1 is its
   explanation. `DUPLICATE_LINE` stays open. A break that only names an item is left alone.
 - **Breaks name only `BATCH` and `BANK` items.** A Stage B break never names a PSP line, so it never
-  changes a line's Stage A status; Stage A's "named" check also reads only `LEDGER` and `PSP` items
-  (defence in depth).
+  changes a line's Stage A status; Stage A's "named" check also reads only breaks whose *subject*
+  (`item_side`) is a `LEDGER` entry or a `PSP` line (defence in depth, v1.15). Filtering the related
+  side as well would change nothing: every reader of "named" already compares the related item's side.
+- **`details` of a `BATCH_AMOUNT_MISMATCH` (v1.15).** A JSON object written once, when the break
+  opens; a later run never changes it (INV-7 keeps the one open break). Amounts are integers in minor
+  units, exact in JSONB; how the API renders them is Milestone 7's. `sums` lists one entry per
+  currency, ordered by currency code (INV-5). Two shapes, told apart by `kind`:
+  ```json
+  {"kind": "BATCH_TOTAL_CONFLICT",
+   "bank":  {"amount": 125000, "currency": "TRY"},
+   "batch": {"lineCount": 3, "sums": [{"currency": "TRY", "amount": 124500}]}}
+  ```
+  on the bank line (rule B2), and
+  ```json
+  {"kind": "BATCH_CHANGED_AFTER_MATCH", "matchId": "<uuid>",
+   "matched": {"lineCount": 3, "sums": [{"currency": "TRY", "amount": 125000}]},
+   "current": {"lineCount": 4, "sums": [{"currency": "TRY", "amount": 124000}]}}
+  ```
+  on the `BATCH` item (a line arriving after its batch was matched). `matched` is what the match
+  recorded: `batch_line_count`, and the bank line's amount, which B1 made equal to the batch's sum.
+  `Break` carries `details` as a typed value in the domain; the persistence adapter alone turns it into
+  JSON, bound as a parameter.
 - **Item status and statistics.** A batch and a bank line take `MATCHED`, `BROKEN` or `PENDING` in the
   same order as Stage A. A bank run's statistics cover `BANK` (the line's amount) and `BATCH` (the
   batch's net sum) per currency; a mixed-currency batch counts once in each of its currencies, so
@@ -717,6 +747,7 @@ breaks                (id UUID PK, break_type, item_side, item_id, related_items
                        details JSONB NULL)   -- an object, set exactly for BATCH_AMOUNT_MISMATCH (v1.14):
                                              -- bank amount and currency, the batch's per-currency
                                              -- sums and line count, or a matched batch's old and new
+                                             -- line count and sums; keys in §8.2 (v1.15)
 break_events          (id BIGSERIAL PK, break_id FK, from_status, to_status, resolution_code,
                        actor, reason, occurred_at)                                             -- append-only
 ```
@@ -990,12 +1021,16 @@ write technique is settled here first.
 - Part A (done): authenticated Docker Hub pulls in CI (runs #12 and #13 had hit the anonymous pull
   limit; both passed when re-run), Dependabot updates grouped, and the Stage B questions answered from
   the code, settled in §8.2 (v1.14).
-- Part B, foundations: `settles-to` and `grace-days-batch-unpaid` bound and validated; the migration
+- Part B (done), foundations: `settles-to` and `grace-days-batch-unpaid` bound and validated; the migration
   for `matches.batch_line_count` and `breaks.details`; `Match`'s MANY_TO_ONE shape; the batch item id
   in SQL; a PSP ingestion also triggering its bank source's run; Stage A's "named" check restricted to
-  `LEDGER` and `PSP`.
-- Part C, Stage B: rules B1–B2, ambiguity, duplicates, the late-line break, `UNEXPECTED_BANK_LINE`,
-  `MISSING_SETTLEMENT` with grace, `MATCHED_LATE`, statistics, the bank run's stage.
+  `LEDGER` and `PSP`. Its open questions are settled in v1.15.
+- Part C1, Stage B matching: the bank run's stage and its snapshot (pattern, batch grace); `Break`
+  carrying `details`; rules B1–B2, ambiguity, `UNEXPECTED_BANK_LINE`, both duplicate cases; the bank
+  run's statistics (INV-1/INV-4 per currency); idempotent re-runs; the WARN for a bank source nothing
+  settles to.
+- Part C2, Stage B over time: `MATCHED_LATE` for Stage B, `MISSING_SETTLEMENT` with grace, the
+  late-line break (`BATCH_CHANGED_AFTER_MATCH`), and Stage A's settings messages naming the source.
 - Part D: the daily scheduled run (§5.3); INV-1/INV-4/INV-5 property tests extended to Stage B; the
   end-to-end three-way test.
 - Exit: Stage B rules and details of §8.2 covered, each by name; INV-1/INV-4/INV-5 extended to Stage B
