@@ -5,8 +5,9 @@ name: Verify commits
 # main verifies the first-parent commits it adds; a run by hand verifies every commit of main after a
 # given base.
 #
-# pull_request, never pull_request_target: the run gets a read-only token and no secrets, so the
-# code under test cannot reach anything a pull request from a fork should not.
+# pull_request, never pull_request_target: the run gets a read-only token, and a pull request from a
+# fork gets no secret at all, so the code under test cannot reach anything a fork should not. The one
+# secret the workflow names is the read-only Docker Hub token of the login steps below.
 on:
   push:
     branches: [main]
@@ -177,6 +178,31 @@ jobs:
           fi
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
 
+      # Docker Hub limits anonymous pulls per shared IP address, and every job of the matrix pulls its
+      # Testcontainers images on a fresh runner: runs #12 and #13 were cancelled at the timeout while
+      # retrying postgres:16-alpine. Logged in, the pulls count against the owner's account. The token
+      # is a personal access token with Public Repo Read-only scope: it pulls public images and can do
+      # nothing else. Both values reach the script through env, never interpolated, and neither is
+      # printed. The same step is in reverse-order.
+      - name: Log in to Docker Hub
+        env:
+          DOCS_ONLY: ${{ steps.kind.outputs.docs_only }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$DOCS_ONLY" = true ]; then
+            echo "::notice::Only Markdown changed; the build is skipped, so Docker Hub is not logged in to."
+            exit 0
+          fi
+          # A pull request from a fork gets no secret, and a missing one is not a fault of the commit
+          # under test: the build runs with anonymous pulls.
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::notice::No Docker Hub credentials are available; images are pulled anonymously."
+            exit 0
+          fi
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
       - name: Set up JDK 21
         if: steps.kind.outputs.docs_only != 'true'
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -270,6 +296,12 @@ jobs:
             exit 1
           fi
 
+      # Removes the stored token from the runner whatever happened above. Not logged in, it only says
+      # so and succeeds.
+      - name: Log out of Docker Hub
+        if: always()
+        run: docker logout
+
   reverse-order:
     # Test classes share one database, and Surefire's class order differs between machines. Running
     # the pushed tip, or the pull request's head, in reverse order catches a class that passes only
@@ -285,6 +317,19 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.after }}
           persist-credentials: false
 
+      # Why, and what the token can do: the same step in verify. This job always builds.
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::notice::No Docker Hub credentials are available; images are pulled anonymously."
+            exit 0
+          fi
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
       - name: Set up JDK 21
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
@@ -294,6 +339,10 @@ jobs:
 
       - name: Build and test in reverse alphabetical class order
         run: ./mvnw -B clean verify -Dsurefire.runOrder=reversealphabetical
+
+      - name: Log out of Docker Hub
+        if: always()
+        run: docker logout
 
   all-commits-pass:
     # Branch protection requires a check by name, and verify's names change with every commit. This

@@ -9,3 +9,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Every action update in one pull request: each pull request is verified commit by commit, and
+    # actions are few, so one verified run for all of them beats one per action.
+    groups:
+      github-actions:
+        patterns: ["*"]
