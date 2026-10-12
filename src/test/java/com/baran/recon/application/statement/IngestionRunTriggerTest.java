@@ -3,6 +3,7 @@ package com.baran.recon.application.statement;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -56,6 +57,7 @@ class IngestionRunTriggerTest {
     /** Sources no other test class uses; the shared database outlives each class. */
     private static final String PSP = "PSP_TRIGGER_RANGE";
     private static final String BANK = "BANK_TRIGGER_RANGE";
+    private static final Optional<SourceCode> SETTLES_TO = Optional.of(SourceCode.of(BANK));
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
@@ -74,7 +76,8 @@ class IngestionRunTriggerTest {
     }
 
     @Test
-    @DisplayName("a PSP file gives its id, its source and the earliest and latest value dates of its lines")
+    @DisplayName("FR-MAT-1 (v1.14): a PSP file gives its id, its source, the bank source it settles to and the earliest "
+            + "and latest value dates of its lines")
     void pspFileGivesItsValueDates() throws IOException {
         String id = unique();
 
@@ -82,19 +85,19 @@ class IngestionRunTriggerTest {
                 pspLine(id + "-1", "2026-09-23"), pspLine(id + "-2", "2026-09-21"), pspLine(id + "-3", "2026-09-25"))));
 
         assertThat(file.status()).isEqualTo(StatementFileStatus.INGESTED);
-        assertThat(trigger.files).containsExactly(new IngestedFile(file.id(), SourceCode.of(PSP),
+        assertThat(trigger.files).containsExactly(new IngestedFile(file.id(), SourceCode.of(PSP), SETTLES_TO,
                 LocalDate.of(2026, 9, 21), LocalDate.of(2026, 9, 25)));
     }
 
     @Test
-    @DisplayName("a bank file gives the value dates of its lines too")
+    @DisplayName("FR-MAT-1 (v1.14): a bank file gives the value dates of its lines too, and settles to no other source")
     void bankFileGivesItsValueDates() throws IOException {
         String id = unique();
 
         StatementFile file = ingest.ingest(upload(BANK, "STMT-" + id,
                 bank(List.of(bankLine(id + "-1", "2026-09-29"), bankLine(id + "-2", "2026-09-25")))));
 
-        assertThat(trigger.files).containsExactly(new IngestedFile(file.id(), SourceCode.of(BANK),
+        assertThat(trigger.files).containsExactly(new IngestedFile(file.id(), SourceCode.of(BANK), Optional.empty(),
                 LocalDate.of(2026, 9, 25), LocalDate.of(2026, 9, 29)));
     }
 
@@ -109,7 +112,7 @@ class IngestionRunTriggerTest {
                 pspLine(id + "-1", "2026-09-10"), pspLine(id + "-2", "2026-09-17"))));
 
         assertThat(second.lines().duplicateLineCount()).isOne();
-        assertThat(trigger.files).containsExactly(new IngestedFile(second.id(), SourceCode.of(PSP),
+        assertThat(trigger.files).containsExactly(new IngestedFile(second.id(), SourceCode.of(PSP), SETTLES_TO,
                 LocalDate.of(2026, 9, 17), LocalDate.of(2026, 9, 17)));
     }
 

@@ -80,7 +80,13 @@ import static org.awaitility.Awaitility.await;
         "recon.sources[5].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
         "recon.sources[6].code=BANK_AFTER_UPLOAD_PSP",
         "recon.sources[6].type=BANK_STATEMENT",
-        "recon.sources[6].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
+        "recon.sources[6].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
+        "recon.sources[7].code=PSP_AFTER_UPLOAD_SETTLES",
+        "recon.sources[7].type=PSP_SETTLEMENT",
+        "recon.sources[7].settles-to=BANK_AFTER_UPLOAD_SETTLES",
+        "recon.sources[8].code=BANK_AFTER_UPLOAD_SETTLES",
+        "recon.sources[8].type=BANK_STATEMENT",
+        "recon.sources[8].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @Import(HeldLedgerEntryStore.Injection.class)
 @ExtendWith(OutputCaptureExtension.class)
@@ -158,6 +164,29 @@ class RunAfterUploadTest {
         await().atMost(WAIT).untilAsserted(() -> assertThat(runsOf(source))
                 .extracting(RunRow::status, RunRow::from, RunRow::to)
                 .containsExactly(tuple("COMPLETED", "2026-09-25", "2026-09-25")));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-1 (v1.14): an ingested PSP file also leads to a COMPLETED run of its settles-to bank source over "
+            + "the same range, started once the PSP run has finished")
+    void ingestedPspFileAlsoRunsItsBankSource(CapturedOutput output) throws Exception {
+        String psp = "PSP_AFTER_UPLOAD_SETTLES";
+        String bank = "BANK_AFTER_UPLOAD_SETTLES";
+        String id = unique();
+        assertThat(runsOf(bank)).as("no run of the bank source before the upload").isEmpty();
+
+        Response uploaded = api.upload(psp, "STMT-" + id, psp(
+                pspLine(id + "-1", "2026-09-24"), pspLine(id + "-2", "2026-09-22")));
+
+        assertThat(uploaded.status()).isEqualTo(201);
+        await().atMost(WAIT).untilAsserted(() -> assertThat(runsOf(bank))
+                .extracting(RunRow::status, RunRow::from, RunRow::to, RunRow::triggeredBy)
+                .containsExactly(tuple("COMPLETED", "2026-09-22", "2026-09-24", "system")));
+        assertThat(runsOf(psp)).extracting(RunRow::status, RunRow::from, RunRow::to)
+                .containsExactly(tuple("COMPLETED", "2026-09-22", "2026-09-24"));
+        assertThat(runsOf(bank).get(0).startedAt()).as("the bank run started after the PSP run had finished")
+                .isAfterOrEqualTo(runsOf(psp).get(0).finishedAt());
+        assertThat(output).contains("for statement file " + uploaded.id("id") + " on source " + bank + " is COMPLETED");
     }
 
     @Test

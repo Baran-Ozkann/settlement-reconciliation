@@ -15,21 +15,25 @@ import java.util.concurrent.TimeUnit;
 
 import com.baran.recon.application.port.RunTrigger;
 import com.baran.recon.domain.breaks.Actor;
+import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.run.ReconciliationRun;
 
 /**
- * The run that follows an ingestion (FR-MAT-1, TDD 5.3), started on a background thread so the
- * upload does not wait for it. Runs are taken one at a time, in the order their files were
- * ingested, and recorded as triggered by the system.
+ * The runs that follow an ingestion (FR-MAT-1, TDD 5.3), started on a background thread so the
+ * upload does not wait for them: a run of the file's source, and after a PSP file then a run of the
+ * bank source it settles to, over the same range. Files are taken one at a time, in the order they
+ * were ingested, each file's runs in that order, and every run is recorded as triggered by the
+ * system.
  *
- * <p>While the file's source has a running run, the run is refused when it tries to record itself
+ * <p>While a run's source has a running run, the run is refused when it tries to record itself
  * RUNNING, by the database's one-running-run index; it then waits and tries again until it starts,
  * or until the source has been busy for the give-up bound. So it never runs alongside another run of
  * its source, one stuck run cannot hold every later file's run, and no run is dropped silently: a run
- * that cannot be started, is given up, or whose work fails, is logged at WARN with the file's id, so
- * an operator can start it by hand.
+ * that cannot be started, is given up, or whose work fails, is logged at WARN with the file's id and
+ * the run's source, so an operator can start it by hand. One run's outcome does not stop the file's
+ * next run: the file's lines are committed whatever became of the first.
  *
- * <p>The files waiting for the thread are bounded. When the queue is full, the file's run is refused
+ * <p>The files waiting for the thread are bounded. When the queue is full, the file's runs are refused
  * at once and logged at WARN with the file's id: the upload is answered without waiting for a place.
  * Only ids and reasons are logged, never a line's content.
  */
@@ -88,23 +92,28 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
     @Override
     public void fileIngested(IngestedFile file) {
         try {
-            executor.execute(new TriggeredRun(file));
+            executor.execute(new TriggeredRuns(file));
         } catch (RejectedExecutionException refused) {
-            LOG.log(System.Logger.Level.WARNING, "Run for statement file {0} on source {1} was not queued: the run "
-                    + "queue is full or the application is stopping" + BY_HAND, file.fileId(), file.source().value());
+            for (SourceCode source : file.runSources()) {
+                LOG.log(System.Logger.Level.WARNING, "Run for statement file {0} on source {1} was not queued: the "
+                        + "run queue is full or the application is stopping" + BY_HAND, file.fileId(), source.value());
+            }
         }
     }
 
     /**
-     * Stops taking files. A file still queued, or a run still waiting for its source, is not started
-     * and is logged; a run already working is given {@link #CLOSE_WAIT} to finish.
+     * Stops taking files. The runs of a file still queued, a run still waiting for its source, and a
+     * file's later run, are not started and are logged; a run already working is given
+     * {@link #CLOSE_WAIT} to finish.
      */
     @Override
     public void close() throws InterruptedException {
         List<Runnable> notStarted = executor.shutdownNow();
         for (Runnable waiting : notStarted) {
-            if (waiting instanceof TriggeredRun run) {
-                notStarted(run.file(), "the application is stopping");
+            if (waiting instanceof TriggeredRuns runs) {
+                for (SourceCode source : runs.file().runSources()) {
+                    notStarted(runs.file(), source, "the application is stopping");
+                }
             }
         }
         if (!executor.awaitTermination(CLOSE_WAIT.toMillis(), TimeUnit.MILLISECONDS)) {
@@ -112,9 +121,9 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
         }
     }
 
-    private static void notStarted(IngestedFile file, String reason) {
+    private static void notStarted(IngestedFile file, SourceCode source, String reason) {
         LOG.log(System.Logger.Level.WARNING, "Run for statement file {0} on source {1} was not started: {2}" + BY_HAND,
-                file.fileId(), file.source().value(), reason);
+                file.fileId(), source.value(), reason);
     }
 
     /** The chain of exception classes, outermost first: a message can quote a row or a path. */
@@ -156,11 +165,12 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
         }
     }
 
-    private final class TriggeredRun implements Runnable {
+    /** One file's runs, in order, on the trigger's thread. */
+    private final class TriggeredRuns implements Runnable {
 
         private final IngestedFile file;
 
-        TriggeredRun(IngestedFile file) {
+        TriggeredRuns(IngestedFile file) {
             this.file = file;
         }
 
@@ -170,40 +180,54 @@ public final class AutomaticRunTrigger implements RunTrigger, AutoCloseable {
 
         @Override
         public void run() {
+            List<SourceCode> sources = file.runSources();
+            for (int next = 0; next < sources.size(); next++) {
+                // Interrupted while the previous run worked or waited: the application is stopping.
+                if (next > 0 && Thread.currentThread().isInterrupted()) {
+                    for (SourceCode source : sources.subList(next, sources.size())) {
+                        notStarted(file, source, "the application is stopping");
+                    }
+                    return;
+                }
+                runOnce(sources.get(next));
+            }
+        }
+
+        private void runOnce(SourceCode source) {
             Instant busySince = null;
             while (true) {
                 try {
-                    ReconciliationRun run = starter.start(file.source().value(), file.valueDateFrom(),
-                            file.valueDateTo(), Actor.SYSTEM.name());
+                    ReconciliationRun run = starter.start(source.value(), file.valueDateFrom(), file.valueDateTo(),
+                            Actor.SYSTEM.name());
                     LOG.log(System.Logger.Level.INFO, "Run {0} for statement file {1} on source {2} is {3}", run.id(),
-                            file.fileId(), file.source().value(), run.status());
+                            file.fileId(), source.value(), run.status());
                     return;
                 } catch (RunRefusedException refused) {
                     if (refused.reason() != RunRefusedException.Reason.SOURCE_BUSY) {
-                        notStarted(file, "refused as " + refused.reason());
+                        notStarted(file, source, "refused as " + refused.reason());
                         return;
                     }
                     if (busySince == null) {
                         busySince = clock.instant();
                         LOG.log(System.Logger.Level.INFO, "Run for statement file {0} waits: source {1} has a running "
-                                + "run {2}", file.fileId(), file.source().value(),
+                                + "run {2}", file.fileId(), source.value(),
                                 refused.runningRunId().map(Object::toString).orElse("that has just finished"));
                     } else if (!clock.instant().isBefore(busySince.plus(busyGiveUpAfter))) {
-                        notStarted(file, "its source was still busy after " + busyGiveUpAfter);
+                        notStarted(file, source, "its source was still busy after " + busyGiveUpAfter);
                         return;
                     }
                     if (!busyWait.waitBeforeRetry()) {
-                        notStarted(file, "its source was busy");
+                        notStarted(file, source, "its source was busy");
                         return;
                     }
                 } catch (RunFailedException failed) {
                     LOG.log(System.Logger.Level.WARNING, "Run {0} for statement file {1} on source {2} failed and is "
-                            + "FAILED, caused by {3}" + BY_HAND, failed.runId(), file.fileId(), file.source().value(),
+                            + "FAILED, caused by {3}" + BY_HAND, failed.runId(), file.fileId(), source.value(),
                             causes(failed.getCause()));
                     return;
                 } catch (RuntimeException failure) {
                     LOG.log(System.Logger.Level.WARNING, "Run for statement file {0} on source {1} failed, caused by {2}"
-                            + BY_HAND, file.fileId(), file.source().value(), causes(failure));
+                            + BY_HAND, file.fileId(), source.value(), causes(failure));
                     return;
                 }
             }

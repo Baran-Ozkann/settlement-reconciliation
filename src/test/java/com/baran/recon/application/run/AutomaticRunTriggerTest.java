@@ -41,6 +41,7 @@ class AutomaticRunTriggerTest {
 
     private static final Duration WAIT = Duration.ofSeconds(10);
     private static final SourceCode SOURCE = SourceCode.of("PSP_TRIGGER_UNIT");
+    private static final SourceCode BANK = SourceCode.of("BANK_TRIGGER_UNIT");
     private static final LocalDate FROM = LocalDate.of(2026, 9, 22);
     private static final LocalDate TO = LocalDate.of(2026, 9, 24);
     /** The application's bound; a test that does not reach it runs on the system clock. */
@@ -280,6 +281,105 @@ class AutomaticRunTriggerTest {
         assertThat(started).containsExactly("2026-09-22");
     }
 
+    @Test
+    @DisplayName("FR-MAT-1 (v1.14): a PSP file's run is followed by a run of its settles-to bank source over the same "
+            + "range, both triggered by the system")
+    void pspFileRunIsFollowedByItsBankSourceRun() {
+        trigger = AutomaticRunTrigger.onOneThread((source, from, to, by) -> {
+            started.add(source + " " + from + " " + to + " " + by);
+            return completed(source, from, to);
+        }, 10, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
+
+        trigger.fileIngested(settlingFile(FROM, TO));
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started).containsExactly(
+                "PSP_TRIGGER_UNIT 2026-09-22 2026-09-24 system", "BANK_TRIGGER_UNIT 2026-09-22 2026-09-24 system"));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-1 (v1.14): the bank source's run follows whether the PSP run failed or was refused")
+    void bankSourceRunFollowsAFailedOrRefusedPspRun() {
+        trigger = AutomaticRunTrigger.onOneThread((source, from, to, by) -> {
+            started.add(source + " " + from);
+            if (source.equals(SOURCE.value()) && from.equals(FROM)) {
+                throw new IllegalStateException("the run's work failed");
+            }
+            if (source.equals(SOURCE.value())) {
+                throw RunRefusedException.unknownSource();
+            }
+            return completed(source, from, to);
+        }, 10, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
+
+        trigger.fileIngested(settlingFile(FROM, FROM));
+        trigger.fileIngested(settlingFile(TO, TO));
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started).containsExactly(
+                "PSP_TRIGGER_UNIT 2026-09-22", "BANK_TRIGGER_UNIT 2026-09-22",
+                "PSP_TRIGGER_UNIT 2026-09-24", "BANK_TRIGGER_UNIT 2026-09-24"));
+    }
+
+    @Test
+    @DisplayName("TDD 5.3: while the bank source is busy its run waits and tries again, as the PSP run does")
+    void busyBankSourceIsTriedAgain() {
+        AtomicInteger refusals = new AtomicInteger(2);
+        trigger = new AutomaticRunTrigger((source, from, to, by) -> {
+            started.add(source);
+            if (source.equals(BANK.value()) && refusals.getAndDecrement() > 0) {
+                throw RunRefusedException.sourceBusy(Optional.of(UUID.randomUUID()), null);
+            }
+            return completed(source, from, to);
+        }, oneThread(), () -> true, Clock.systemUTC(), GIVE_UP);
+
+        trigger.fileIngested(settlingFile(FROM, TO));
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started).containsExactly(
+                "PSP_TRIGGER_UNIT", "BANK_TRIGGER_UNIT", "BANK_TRIGGER_UNIT", "BANK_TRIGGER_UNIT"));
+    }
+
+    @Test
+    @DisplayName("FR-MAT-1: a file takes one place in the queue whatever its runs, so a full queue refuses the next "
+            + "file's two runs at once")
+    void aFileWithTwoRunsTakesOnePlaceInTheQueue() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        trigger = AutomaticRunTrigger.onOneThread((source, from, to, by) -> {
+            started.add(source + " " + from);
+            running.countDown();
+            hold(finish);
+            return completed(source, from, to);
+        }, 1, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
+        trigger.fileIngested(settlingFile(FROM, FROM));
+        assertThat(running.await(WAIT.toSeconds(), TimeUnit.SECONDS)).as("the first run holds the thread").isTrue();
+        trigger.fileIngested(settlingFile(FROM.plusDays(1), FROM.plusDays(1)));
+
+        trigger.fileIngested(settlingFile(TO, TO));
+
+        finish.countDown();
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started).containsExactly(
+                "PSP_TRIGGER_UNIT 2026-09-22", "BANK_TRIGGER_UNIT 2026-09-22",
+                "PSP_TRIGGER_UNIT 2026-09-23", "BANK_TRIGGER_UNIT 2026-09-23"));
+        trigger.close();
+        assertThat(started).noneMatch(run -> run.endsWith("2026-09-24"));
+    }
+
+    @Test
+    @DisplayName("closing while a PSP run works does not start the file's bank source run")
+    void closeDuringThePspRunDoesNotStartTheBankRun() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        trigger = AutomaticRunTrigger.onOneThread((source, from, to, by) -> {
+            started.add(source);
+            running.countDown();
+            hold(new CountDownLatch(1));
+            return completed(source, from, to);
+        }, 10, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
+        trigger.fileIngested(settlingFile(FROM, TO));
+        assertThat(running.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+
+        trigger.close();
+
+        assertThat(started).containsExactly("PSP_TRIGGER_UNIT");
+    }
+
     /** A clock the test moves on, here from the busy wait, so a bound of minutes takes no time. */
     private static final class ManualClock extends Clock {
 
@@ -311,7 +411,12 @@ class AutomaticRunTriggerTest {
     }
 
     private static IngestedFile file(LocalDate from, LocalDate to) {
-        return new IngestedFile(UUID.randomUUID(), SOURCE, from, to);
+        return new IngestedFile(UUID.randomUUID(), SOURCE, Optional.empty(), from, to);
+    }
+
+    /** A PSP file whose source settles to {@link #BANK}. */
+    private static IngestedFile settlingFile(LocalDate from, LocalDate to) {
+        return new IngestedFile(UUID.randomUUID(), SOURCE, Optional.of(BANK), from, to);
     }
 
     private static ReconciliationRun completed(String source, LocalDate from, LocalDate to) {
