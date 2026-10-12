@@ -1,10 +1,64 @@
 # Progress
 
-**Current milestone:** 5.1 — part B1 (NFR-PERF-2 measured and decided by the rule in design doc
-§4.6): the keys stay immediate, and the target goes back to the owner (every run above 180 s);
-part B2 waits for that decision
-**Branch:** `milestone-5.1/part-b1` (one branch per session from Milestone 5.1 on)
-**Last updated:** 2026-10-09
+**Current milestone:** 5.1 — part B2 (NFR-PERF-2's target settled by step 3 of the rule in design doc
+§4.6, with three official runs of the immediate keys under controlled machine conditions)
+**Branch:** `milestone-5.1/part-b2` (one branch per session from Milestone 5.1 on)
+**Last updated:** 2026-10-12
+
+## Milestone 5.1 part B2 — NFR-PERF-2's three official runs
+
+Three official runs of the immediate form (part B1 kept both match keys immediate), in one sitting
+on 2026-10-12 from 09:52 to 10:05 (+03:00), under the measurement conditions of design doc v1.13
+§4.6 and CLAUDE.md §8. Nothing under `src/main` or the schema has changed since `0a9fba8`; the runs
+are at `3cc9792`, the head of `main` from which this branch starts.
+
+### Machine context
+
+- The same machine as part B1: CPU AMD Ryzen 5 7535HS, 6 cores / 12 logical processors; 15.2 GB
+  RAM; Windows 11 Pro 10.0.26200 (build 26200).
+- Docker Desktop 29.7.2 on WSL 2 (kernel 6.18.33.2-microsoft-standard-WSL2), `docker info`: 12 CPUs,
+  7.38 GiB memory. No container running before or between the runs (five stopped containers of the
+  ledger's compose project exist, stopped for two weeks); each run starts its own throwaway
+  PostgreSQL through Testcontainers, and `docker ps` showed none left after each run.
+- Java: Temurin 21.0.12+8-LTS. The test JVM runs under `-Xmx512m` (the `perf` profile).
+- Conditions, confirmed by the owner before the first run: laptop on mains power, Windows power mode
+  "Best performance", the browser and other heavy applications closed, nothing else in Docker.
+- Checked read-only before the runs: on AC (`Win32_Battery` status 2, charge 100 %). The power mode
+  overlay first read "Best power efficiency"; the owner switched it, and it read "Best performance"
+  (`ded574b5-45a0-4f42-8737-46345c09c238`) before the first run, on the Balanced plan. No Chrome,
+  Edge or Firefox process. One `WhatsApp.Root` process was still running, idle. Total CPU 2–4 %
+  and 5.2 GB RAM free just before run 1.
+
+### The immediate keys, three official runs
+
+Command, at `3cc9792`, each run's console teed to the session scratchpad:
+
+```
+.\mvnw.cmd -q -B test -Pperf "-Dtest=StageAPerformanceTest"
+```
+
+Each run fails on its 120 s assertion (line 171) after printing its figures; every other assertion
+(run COMPLETED, the expected matches and breaks) passed. Seconds; statistics is `itemTotals` plus
+the two ledger counts; peak heap is the sum of the heap pools' peaks, of 512 MB.
+
+| Run | Total | RUNNING row | A1 | Reference breaks | A3 | MATCHED_LATE | Grace breaks | Statistics | Commit | Peak heap | Load and analyse (not timed) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 159.974 | 0.058 | 126.586 | 9.072 | 11.779 | 0.013 | 7.402 | 5.029 | 0.002 | 102 MB | 64.6 |
+| 2 | 159.425 | 0.022 | 129.343 | 7.457 | 10.738 | 0.014 | 7.224 | 4.602 | 0.002 | 92 MB | 64.3 |
+| 3 | 154.554 | 0.020 | 125.618 | 7.145 | 10.217 | 0.013 | 6.895 | 4.634 | 0.002 | 101 MB | 63.6 |
+
+**Median: 159.425 s** (run 2). A1 is 79–81 % of every run (126.586 / 159.974 = 79.1 %,
+129.343 / 159.425 = 81.1 %, 125.618 / 154.554 = 81.3 %).
+
+### Against the earlier measurements of the same SQL
+
+- Part B1's immediate runs (2026-10-09, laptop on battery by the owner's later statement, Chrome
+  open): 226.386, 238.028, 239.819 s, median 238.028 s. Today's median is 78.603 s lower,
+  (238.028 − 159.425) / 238.028 = **33.0 %**; A1 fell from 184–196 s to 126–129 s, and the load
+  phase from 92–100 s to 64–65 s.
+- Milestone 5's three runs at `0a9fba8` (never committed, recorded in the design doc): 161–162 s,
+  A1 129.9–131.5 s, peak heap 44–104 MB. Today's runs are within 1–7 s of them, A1 within
+  about 4 s, peak heap in the same range.
 
 ## Milestone 5.1 part B1 — NFR-PERF-2 measured and decided by the rule
 
@@ -26,6 +80,8 @@ this part.
 - The same SQL as Milestone 5's `0a9fba8` (nothing under `src/main` has changed since): Milestone 5
   measured 161–162 s for it, this sitting measures 226–240 s. The machine was slower today, which is
   why both forms are measured here and compared only with each other.
+- Power, stated by the owner on 2026-10-12 (before part B2): during part B1 the laptop was **on
+  battery**, not on mains power.
 
 ### Baseline: the immediate keys, three runs
 
