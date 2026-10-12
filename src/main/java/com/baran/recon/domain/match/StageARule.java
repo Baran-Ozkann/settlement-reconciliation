@@ -8,7 +8,10 @@ import java.util.Optional;
  * run's snapshot records the versions it ran (FR-MAT-8).
  */
 public enum StageARule {
-    /** Same reference, currency and amount, value dates within the window: a match. */
+    /**
+     * Same reference, currency and amount: a match, whatever the two value dates, since the reference
+     * is the transaction's own id (TDD 8.2, v1.10).
+     */
     A1_EXACT_REFERENCE(1, Optional.of(RuleId.A1_EXACT_REFERENCE)),
     /** Same reference, but the currency or the amount differs: a break, never a match. */
     A2_REFERENCE_CONFLICT(1, Optional.empty()),
