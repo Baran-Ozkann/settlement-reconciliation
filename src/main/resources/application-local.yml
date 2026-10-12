@@ -24,6 +24,8 @@ recon:
       value-date-window-days: 2
       grace-days-ledger-unmatched: 3
       grace-days-psp-unmatched: 1
+      settles-to: BANK_MAIN
     - code: BANK_MAIN
       type: BANK_STATEMENT
       batch-id-pattern: "BATCH[-_]?([A-Za-z0-9_-]{1,64})"
+      grace-days-batch-unpaid: 2

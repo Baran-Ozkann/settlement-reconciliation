@@ -54,25 +54,32 @@ import static org.awaitility.Awaitility.await;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_RUN_SOLO",
         "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_RUN",
         "recon.sources[0].value-date-window-days=1",
         "recon.sources[0].grace-days-psp-unmatched=4",
         "recon.business-calendar.holidays[0]=2026-10-29",
         "recon.business-calendar.holidays[1]=2026-05-19",
         "recon.sources[1].code=PSP_RUN_SCOPE",
         "recon.sources[1].type=PSP_SETTLEMENT",
+        "recon.sources[1].settles-to=BANK_RUN",
         "recon.sources[2].code=PSP_RUN_FAIL",
         "recon.sources[2].type=PSP_SETTLEMENT",
+        "recon.sources[2].settles-to=BANK_RUN",
         "recon.sources[3].code=PSP_RUN_BUSY",
         "recon.sources[3].type=PSP_SETTLEMENT",
+        "recon.sources[3].settles-to=BANK_RUN",
         "recon.sources[4].code=PSP_RUN_LEFT",
         "recon.sources[4].type=PSP_SETTLEMENT",
+        "recon.sources[4].settles-to=BANK_RUN",
         "recon.sources[5].code=PSP_RUN_RIGHT",
         "recon.sources[5].type=PSP_SETTLEMENT",
+        "recon.sources[5].settles-to=BANK_RUN",
         "recon.sources[6].code=BANK_RUN",
         "recon.sources[6].type=BANK_STATEMENT",
         "recon.sources[6].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
         "recon.sources[7].code=PSP_RUN_ROLLBACK",
-        "recon.sources[7].type=PSP_SETTLEMENT"})
+        "recon.sources[7].type=PSP_SETTLEMENT",
+        "recon.sources[7].settles-to=BANK_RUN"})
 @ActiveProfiles("test")
 @Import({HeldLedgerEntryStore.Injection.class, FailingRunStore.Injection.class})
 @DisplayName("TDD 5.3: a matching run is recorded RUNNING, does its work in one transaction, and ends COMPLETED or FAILED")

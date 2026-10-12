@@ -89,11 +89,14 @@ recon:
   # TDD 8.1. Ledger entries are stored only for accounts listed here (FR-LED-2). Empty until OQ-3
   # settles which ledger account a PSP clears through; no such account exists in any ledger yet.
   # A PSP source's value-date-window-days, grace-days-ledger-unmatched and grace-days-psp-unmatched
-  # are 2, 3 and 1 business days unless it sets its own.
+  # are 2, 3 and 1 business days unless it sets its own, and a bank source's grace-days-batch-unpaid
+  # is 2. A PSP source must set settles-to, naming the bank statement source its batches are paid
+  # into; startup stops without it.
   sources: []
   # FR-MAT-1: after a file is ingested, a run for its source and the value-date range of the lines it
-  # stored goes to one background thread, and the upload does not wait for it. While the source has a
-  # running run it waits and tries again; it never runs alongside one.
+  # stored goes to one background thread, and the upload does not wait for it; after a PSP file, a run
+  # of its settles-to bank source over the same range follows. While a run's source has a running run
+  # it waits and tries again; it never runs alongside one.
   matching:
     automatic-trigger:
       enabled: true

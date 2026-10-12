@@ -43,8 +43,13 @@ import static org.assertj.core.groups.Tuple.tuple;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_SNAPSHOT_UNSEEN",
         "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_SNAPSHOT",
         "recon.sources[1].code=PSP_SNAPSHOT_SERIAL",
-        "recon.sources[1].type=PSP_SETTLEMENT"})
+        "recon.sources[1].type=PSP_SETTLEMENT",
+        "recon.sources[1].settles-to=BANK_SNAPSHOT",
+        "recon.sources[2].code=BANK_SNAPSHOT",
+        "recon.sources[2].type=BANK_STATEMENT",
+        "recon.sources[2].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @Import({FixedRunClock.class, HeldStageAStore.Injection.class})
 @DisplayName("TDD 5.3: every statement of a run reads the snapshot its work transaction took")

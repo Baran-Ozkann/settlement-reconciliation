@@ -22,7 +22,9 @@ import com.baran.recon.domain.match.RuleId;
 
 import static com.baran.recon.adapters.out.persistence.SqlValues.currency;
 import static com.baran.recon.adapters.out.persistence.SqlValues.instant;
+import static com.baran.recon.adapters.out.persistence.SqlValues.integerOrNull;
 import static com.baran.recon.adapters.out.persistence.SqlValues.money;
+import static com.baran.recon.adapters.out.persistence.SqlValues.optionalInt;
 import static com.baran.recon.adapters.out.persistence.SqlValues.timestamp;
 import static com.baran.recon.adapters.out.persistence.SqlValues.uuid;
 
@@ -33,9 +35,9 @@ class JdbcMatchStore implements MatchStore {
 
     private static final String INSERT_MATCH = """
             INSERT INTO matches (id, run_id, rule_id, rule_version, cardinality, status, amount_difference,
-                                 currency, low_confidence, created_at)
+                                 currency, low_confidence, created_at, batch_line_count)
             VALUES (:id, :runId, :ruleId, :ruleVersion, :cardinality, :status, :amountDifference,
-                    :currency, :lowConfidence, :createdAt)
+                    :currency, :lowConfidence, :createdAt, :batchLineCount)
             """;
 
     private static final String INSERT_ITEM = """
@@ -50,7 +52,8 @@ class JdbcMatchStore implements MatchStore {
             """;
 
     private static final String SELECT_MATCH = """
-            SELECT id, run_id, rule_id, rule_version, status, amount_difference, currency, created_at
+            SELECT id, run_id, rule_id, rule_version, status, amount_difference, currency, created_at,
+                   batch_line_count
               FROM matches
              WHERE id = :id
             """;
@@ -79,6 +82,7 @@ class JdbcMatchStore implements MatchStore {
                 .param("currency", match.amountDifference().currency().code())
                 .param("lowConfidence", match.lowConfidence())
                 .param("createdAt", timestamp(match.createdAt()))
+                .param("batchLineCount", integerOrNull(match.batchLineCount()))
                 .update();
         boolean active = match.status() == MatchStatus.ACTIVE;
         try {
@@ -121,6 +125,7 @@ class JdbcMatchStore implements MatchStore {
                 MatchStatus.valueOf(row.getString("status")),
                 money(row, "amount_difference", currency(row, "currency")),
                 instant(row, "created_at"),
-                items);
+                items,
+                optionalInt(row, "batch_line_count"));
     }
 }

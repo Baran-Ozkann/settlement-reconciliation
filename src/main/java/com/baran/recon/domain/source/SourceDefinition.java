@@ -2,6 +2,7 @@ package com.baran.recon.domain.source;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 
@@ -13,9 +14,19 @@ import com.baran.recon.domain.item.SourceCode;
  * event carries, so it is the only thing a mapping can key on. {@code batchIdPattern} finds the PSP
  * batch id in a bank line's reference. {@code stageA} holds the windows and grace periods Stage A
  * reads, which only a PSP source has.
+ *
+ * <p>Stage B pairs a PSP source's batches with the lines of the bank source it pays into, and runs
+ * in that bank source's run (TDD 5.3). So a PSP source names that bank source in {@code settlesTo},
+ * and the bank source holds {@code graceDaysBatchUnpaid}, the business days a batch may wait for its
+ * bank line before it is MISSING_SETTLEMENT. Whether {@code settlesTo} names a configured bank source
+ * is checked with the other sources, by {@link ConfiguredSources}.
  */
 public record SourceDefinition(SourceCode code, SourceType type, Set<UUID> ledgerAccounts,
-                               Optional<BatchIdPattern> batchIdPattern, Optional<StageASettings> stageA) {
+                               Optional<BatchIdPattern> batchIdPattern, Optional<StageASettings> stageA,
+                               Optional<SourceCode> settlesTo, OptionalInt graceDaysBatchUnpaid) {
+
+    /** The value TDD 8.1 configures, for a bank source that sets none of its own. */
+    public static final int TDD_GRACE_DAYS_BATCH_UNPAID = 2;
 
     public SourceDefinition {
         Objects.requireNonNull(code, "code");
@@ -23,6 +34,8 @@ public record SourceDefinition(SourceCode code, SourceType type, Set<UUID> ledge
         ledgerAccounts = Set.copyOf(ledgerAccounts);
         Objects.requireNonNull(batchIdPattern, "batchIdPattern");
         Objects.requireNonNull(stageA, "stageA");
+        Objects.requireNonNull(settlesTo, "settlesTo");
+        Objects.requireNonNull(graceDaysBatchUnpaid, "graceDaysBatchUnpaid");
         // Only Stage A compares ledger entries with a source's lines, and Stage A reads PSP lines. A
         // bank source with ledger accounts would project entries nothing ever reconciles.
         if (type == SourceType.BANK_STATEMENT && !ledgerAccounts.isEmpty()) {
@@ -48,20 +61,49 @@ public record SourceDefinition(SourceCode code, SourceType type, Set<UUID> ledge
             throw new InvalidSourceConfigurationException("source " + code
                     + " is a bank statement source; only a PSP source has a value-date window and grace periods");
         }
+        // Without settles-to, no bank run would read the PSP source's batches, so they would never be
+        // reconciled and never reported missing.
+        if (type == SourceType.PSP_SETTLEMENT && settlesTo.isEmpty()) {
+            throw new InvalidSourceConfigurationException("PSP source " + code
+                    + " needs settles-to, the bank statement source its batches are paid into");
+        }
+        if (type == SourceType.BANK_STATEMENT && settlesTo.isPresent()) {
+            throw new InvalidSourceConfigurationException(
+                    "source " + code + " is a bank statement source; only a PSP source has settles-to");
+        }
+        // A batch is reported missing by its bank source's run, so the bank source holds the grace.
+        if (type == SourceType.BANK_STATEMENT && graceDaysBatchUnpaid.isEmpty()) {
+            throw new InvalidSourceConfigurationException(
+                    "bank statement source " + code + " needs grace-days-batch-unpaid");
+        }
+        if (type == SourceType.PSP_SETTLEMENT && graceDaysBatchUnpaid.isPresent()) {
+            throw new InvalidSourceConfigurationException(
+                    "source " + code + " is a PSP source; only a bank statement source has grace-days-batch-unpaid");
+        }
+        if (graceDaysBatchUnpaid.isPresent() && graceDaysBatchUnpaid.getAsInt() < 0) {
+            throw new InvalidSourceConfigurationException("grace-days-batch-unpaid of bank statement source " + code
+                    + " is a number of business days, not negative");
+        }
     }
 
     /** A PSP source with the windows and grace periods of TDD 8.1. */
-    public static SourceDefinition psp(SourceCode code, Set<UUID> ledgerAccounts) {
-        return psp(code, ledgerAccounts, StageASettings.TDD_DEFAULTS);
+    public static SourceDefinition psp(SourceCode code, Set<UUID> ledgerAccounts, SourceCode settlesTo) {
+        return psp(code, ledgerAccounts, StageASettings.TDD_DEFAULTS, settlesTo);
     }
 
-    public static SourceDefinition psp(SourceCode code, Set<UUID> ledgerAccounts, StageASettings stageA) {
+    public static SourceDefinition psp(SourceCode code, Set<UUID> ledgerAccounts, StageASettings stageA,
+                                       SourceCode settlesTo) {
         return new SourceDefinition(code, SourceType.PSP_SETTLEMENT, ledgerAccounts, Optional.empty(),
-                Optional.of(stageA));
+                Optional.of(stageA), Optional.of(settlesTo), OptionalInt.empty());
     }
 
+    /** A bank source with the batch grace period of TDD 8.1. */
     public static SourceDefinition bank(SourceCode code, BatchIdPattern batchIdPattern) {
+        return bank(code, batchIdPattern, TDD_GRACE_DAYS_BATCH_UNPAID);
+    }
+
+    public static SourceDefinition bank(SourceCode code, BatchIdPattern batchIdPattern, int graceDaysBatchUnpaid) {
         return new SourceDefinition(code, SourceType.BANK_STATEMENT, Set.of(), Optional.of(batchIdPattern),
-                Optional.empty());
+                Optional.empty(), Optional.empty(), OptionalInt.of(graceDaysBatchUnpaid));
     }
 }

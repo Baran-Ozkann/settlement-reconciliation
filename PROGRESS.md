@@ -1,10 +1,73 @@
 # Progress
 
-**Current milestone:** 6 — Stage B matching, started in part A: authenticated image pulls in CI and
-the Stage B questions answered in the milestone review; no Stage B code yet (the owner settles
-Stage B in design doc v1.14, part B builds it)
-**Branch:** `milestone-6/part-a` (one branch per session from Milestone 5.1 on)
+**Current milestone:** 6 — Stage B matching. Part B laid Stage B's foundations from design doc
+v1.14; no Stage B rule is written yet (part C builds the rules, part D the scheduled run and the
+end-to-end three-way test)
+**Branch:** `milestone-6/part-b` (one branch per session from Milestone 5.1 on)
 **Last updated:** 2026-10-12
+
+## Milestone 6 part B — Stage B foundations
+
+Design doc v1.14 settled Stage B from part A's questions. Part B builds what the rules will stand
+on and writes no rule: after it, a bank source's run still matches nothing, and
+`RunMatchingTest.bankSourceRunCompletes` and `RunAfterUploadTest.ingestedBankFileLeadsToACompletedRun`
+still pass unchanged.
+
+### What was built, by commit
+
+- `7c305d5` corrects `StageARule.A1_EXACT_REFERENCE`'s comment, which still named the value-date
+  window v1.10 removed from A1 (part A question 26).
+- `60cee2d` binds and validates the two Stage B source keys (TDD 8.1). `settles-to` is required on a
+  PSP source and must name a configured `BANK_STATEMENT` source. `grace-days-batch-unpaid` belongs
+  to a bank source: it may not be negative, and it defaults to 2. Either key on the wrong type of
+  source, a missing `settles-to`, or a wrong value stops startup with a message naming the source and
+  the key. Every test class that configures a PSP source now also configures a bank source of its own
+  for it to settle to, and `application-local.yml` sets both keys.
+- `170c200` is migration V13: `matches.batch_line_count` (positive, set exactly for B1) and
+  `breaks.details` (a JSON object, set exactly for `BATCH_AMOUNT_MISMATCH`). There are four new
+  CHECKs, each a `DatabaseMechanism` entry with its proof. No grant changed, and
+  `ApplicationRoleGrantsTest` is unchanged.
+- `5ab2626` gives `Match`'s MANY_TO_ONE shape exactly one `BATCH` and one `BANK` item, with the
+  batch's line count carried on the match. PSP lines with a bank line, the old shape, are refused.
+- `7a1c7c0` is the batch item id in SQL (`BatchItemIdSql`). It is one SQL fragment in Java, not a
+  database function: a function would be a new object whose EXECUTE PostgreSQL grants to PUBLIC by
+  default, and a migration once committed can only be corrected by another. A jqwik property (seed
+  20261012, 2,000 tries, as `recon_app`) pins it equal to `BatchKey.itemId()`.
+- `dd0ac88` makes Stage A's "named" check read only breaks on `LEDGER` and `PSP` items (defence in
+  depth, TDD 8.2).
+- `5b20a9e` makes a PSP ingestion also trigger its bank source's run (FR-MAT-1, TDD 5.3). The trigger
+  runs the PSP source's run and then the `settles-to` bank source's run over the same range. A file
+  still takes one place in the trigger's queue.
+
+### Break proofs
+
+Recorded in `docs/break-proofs.md`, section "Milestone 6, part B":
+
+- Permanent: the source keys (`SourcesConfigurationTest`, `StageBSourceKeysTest`), the four V13
+  checks (`DatabaseMechanismTest`), and the SQL batch id (`BatchItemIdSqlPropertiesTest`).
+- Recorded one-offs:
+  - The "named" filter: the test written first and run against the statement before the change;
+    it failed with no `MISSING_IN_LEDGER`.
+  - The trigger's second run: a throwaway edit leaving it out made 5 of 24 trigger tests fail.
+
+### Verification (part B)
+
+At `5b20a9e`, the last code commit, in the default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 173 s, 1157 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 %, overall 96.7 %.
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0.
+- Two more full builds ran before commits that change what most test classes start with or add a
+  migration (CLAUDE.md §6):
+  - before `60cee2d`: exit 0 in 172 s, 1139 tests, 0 failures, 3 skipped;
+  - before `170c200`: exit 0 in 167 s, 1147 tests, 0 failures, 3 skipped.
+
+### Part A's open questions, answered by the owner
+
+- A failing `docker login` keeps failing the job: a revoked or expired token must show up as a red
+  step, not as timeouts. The token expires after 90 days, and the owner renews it.
+- The re-runs of #12 and #13 both passed (below).
 
 ## Milestone 6 part A — authenticated Docker Hub pulls, and the Stage B questions
 
@@ -21,8 +84,7 @@ Stage B in design doc v1.14, part B builds it)
 - Cause: every job pulled its images anonymously on a fresh runner, the per-commit matrix multiplies
   the pulls, and Docker Hub counts the anonymous limit per shared IP address, so other users of the
   same runner addresses use up the same allowance. Nothing in the code under test failed.
-- The owner re-ran both runs. Their outcome was not recorded in this session (no call to GitHub is
-  made from here); the owner adds it.
+- The owner re-ran both runs, and both passed (recorded in part B, from the owner's answer).
 
 ### The two CI changes
 

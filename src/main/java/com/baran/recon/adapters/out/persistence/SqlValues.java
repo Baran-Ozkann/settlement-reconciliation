@@ -7,6 +7,7 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.UUID;
 
 import com.baran.recon.domain.money.CurrencyCode;
@@ -53,6 +54,15 @@ final class SqlValues {
 
     static Optional<String> optionalText(ResultSet row, String column) throws SQLException {
         return Optional.ofNullable(row.getString(column));
+    }
+
+    static OptionalInt optionalInt(ResultSet row, String column) throws SQLException {
+        Integer value = row.getObject(column, Integer.class);
+        return value == null ? OptionalInt.empty() : OptionalInt.of(value);
+    }
+
+    static Integer integerOrNull(OptionalInt value) {
+        return value.isPresent() ? value.getAsInt() : null;
     }
 
     static Money money(ResultSet row, String amountColumn, CurrencyCode currency) throws SQLException {

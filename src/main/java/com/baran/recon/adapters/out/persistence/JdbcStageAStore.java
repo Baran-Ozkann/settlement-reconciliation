@@ -322,14 +322,16 @@ class JdbcStageAStore implements StageAStore {
 
     /**
      * The items named among the related items of an unresolved break: such an item is BROKEN, not
-     * pending, and gets no break of its own (TDD 8.2).
+     * pending, and gets no break of its own (TDD 8.2). Only a break on a ledger entry or a PSP line
+     * counts. Stage B's breaks are on bank lines and batches and name no PSP line (v1.14); should one
+     * ever name one, a bank run's break still does not change the line's Stage A status.
      */
     private static final String NAMED = """
             named AS MATERIALIZED (
                 SELECT related.item ->> 'side' AS side, CAST(related.item ->> 'id' AS UUID) AS id
                   FROM breaks open_break
                  CROSS JOIN LATERAL jsonb_array_elements(open_break.related_items) AS related(item)
-                 WHERE open_break.status <> 'RESOLVED'
+                 WHERE open_break.status <> 'RESOLVED' AND open_break.item_side IN ('LEDGER', 'PSP')
             )""";
 
     /** Pending items of the range past their side's grace period. */

@@ -53,10 +53,10 @@ import com.baran.recon.domain.statement.StatementFileStatus;
  *   <li>if the file breaks its header or the invalid-line threshold (FR-ING-7), that transaction is
  *       rolled back, so none of its lines and no break remain, and the file is recorded REJECTED with
  *       its line errors in a transaction of its own;</li>
- *   <li>once an INGESTED file has committed, its source and the earliest and latest value dates of
- *       the lines it stored go to the run trigger (FR-MAT-1, TDD 5.3), which does not make the
- *       upload wait. A file that stored no line, a rejected file, a refusal and a failure trigger
- *       nothing.</li>
+ *   <li>once an INGESTED file has committed, its source, the bank source a PSP source settles to,
+ *       and the earliest and latest value dates of the lines it stored go to the run trigger
+ *       (FR-MAT-1, TDD 5.3), which does not make the upload wait. A file that stored no line, a
+ *       rejected file, a refusal and a failure trigger nothing.</li>
  * </ol>
  *
  * <p>Nothing else is recorded. A file over the line limit is refused as a file over the size limit
@@ -134,7 +134,7 @@ public final class IngestStatement {
                 return new Ingested(file, parsed.storedValueDates());
             });
             ingested.storedValueDates().ifPresent(dates -> runTrigger.fileIngested(
-                    new IngestedFile(fileId, source.code(), dates.first(), dates.last())));
+                    new IngestedFile(fileId, source.code(), source.settlesTo(), dates.first(), dates.last())));
             return ingested.file();
         } catch (Rejected rejected) {
             StatementFile file = recorder.record(StatementFileStatus.REJECTED, rejected.withoutDuplicates());

@@ -49,7 +49,11 @@ import static org.assertj.core.groups.Tuple.tuple;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_SNAPSHOT_READ_COMMITTED",
-        "recon.sources[0].type=PSP_SETTLEMENT"})
+        "recon.sources[0].type=PSP_SETTLEMENT",
+        "recon.sources[0].settles-to=BANK_SNAPSHOT_READ_COMMITTED",
+        "recon.sources[1].code=BANK_SNAPSHOT_READ_COMMITTED",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @Import({FixedRunClock.class, HeldStageAStore.Injection.class, RunSnapshotBreakProofTest.ReadCommittedWork.class})
 @DirtiesContext

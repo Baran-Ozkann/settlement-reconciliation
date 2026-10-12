@@ -45,7 +45,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_ALPHA",
         "recon.sources[0].type=PSP_SETTLEMENT",
-        "recon.sources[0].ledger-accounts[0]=" + OffsetCommitBreakProofTest.CLEARING_ACCOUNT})
+        "recon.sources[0].settles-to=BANK_OFFSET_COMMIT",
+        "recon.sources[0].ledger-accounts[0]=" + OffsetCommitBreakProofTest.CLEARING_ACCOUNT,
+        "recon.sources[1].code=BANK_OFFSET_COMMIT",
+        "recon.sources[1].type=BANK_STATEMENT",
+        "recon.sources[1].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
 @ActiveProfiles("test")
 @DirtiesContext
 @Import({FailingLedgerEntryStore.Injection.class, OffsetCommitBreakProofTest.BoundedRetries.class})

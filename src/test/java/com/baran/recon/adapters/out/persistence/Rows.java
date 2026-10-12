@@ -95,7 +95,8 @@ final class Rows {
             "amount_difference", "0",
             "currency", text("TRY"),
             "low_confidence", "false",
-            "created_at", text("2026-09-26T10:00:30Z"));
+            "created_at", text("2026-09-26T10:00:30Z"),
+            "batch_line_count", "NULL");
 
     static final Row MATCH_ITEM = Row.of("match_items",
             "match_id", MATCH.literal("id"),
@@ -122,7 +123,8 @@ final class Rows {
             "opened_run_id", RUN.literal("id"),
             "previous_break_id", "NULL",
             "opened_at", text("2026-09-26T10:00:45Z"),
-            "resolved_at", "NULL");
+            "resolved_at", "NULL",
+            "details", "NULL");
 
     static final Row BREAK_EVENT = Row.of("break_events",
             "id", "1",
@@ -135,6 +137,20 @@ final class Rows {
             "occurred_at", text("2026-09-26T10:00:45Z"));
 
     static final Row SECOND_MATCH = MATCH.with("id", text("ad000000-0000-4000-8000-000000000002"));
+
+    /** A Stage B match: one batch paid by one bank line, with the batch's line count (V13). */
+    static final Row B1_MATCH = MATCH.with("id", text("ad000000-0000-4000-8000-000000000003"))
+            .with("rule_id", text("B1_BATCH_TOTAL"))
+            .with("cardinality", text("MANY_TO_ONE"))
+            .with("batch_line_count", "3");
+
+    /** B2 on a bank line, with the figures that disagree (V13). */
+    static final Row BATCH_MISMATCH_BREAK = BREAK.with("id", text("b0000000-0000-4000-8000-000000000003"))
+            .with("break_type", text("BATCH_AMOUNT_MISMATCH"))
+            .with("item_side", text("BANK"))
+            .with("item_id", BANK_LINE.literal("id"))
+            .with("related_items", text("[{\"side\": \"BATCH\", \"id\": \"0b000000-0000-3000-8000-000000000001\"}]"))
+            .with("details", text("{\"bank_amount\": 12250, \"bank_currency\": \"TRY\", \"batch_sums\": {\"TRY\": 12000}, \"batch_line_count\": 1}"));
 
     static final Row RESOLVED_BREAK = BREAK
             .with("status", text("RESOLVED"))
