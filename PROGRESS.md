@@ -1,7 +1,8 @@
 # Progress
 
-**Current milestone:** 5.1 — part B2 (NFR-PERF-2's target settled by step 3 of the rule in design doc
-§4.6, with three official runs of the immediate keys under controlled machine conditions)
+**Current milestone:** 5.1 — **closed** in part B2: NFR-PERF-2's target settled at 180 s by step 3
+of the rule in design doc §4.6, three official runs of the immediate keys under controlled machine
+conditions, and the perf test asserts it
 **Branch:** `milestone-5.1/part-b2` (one branch per session from Milestone 5.1 on)
 **Last updated:** 2026-10-12
 
@@ -59,6 +60,42 @@ the two ledger counts; peak heap is the sum of the heap pools' peaks, of 512 MB.
 - Milestone 5's three runs at `0a9fba8` (never committed, recorded in the design doc): 161–162 s,
   A1 129.9–131.5 s, peak heap 44–104 MB. Today's runs are within 1–7 s of them, A1 within
   about 4 s, peak heap in the same range.
+
+### Step 3 of the rule applied (design doc v1.13 §4.6)
+
+Step 2 was settled in part B1: both keys stay immediate, so the kept form is the immediate one, and
+step 3 applies to the three runs above, exactly as written:
+
+- All three ≤ 120 s? No: 159.974, 159.425 and 154.554 s are each above 120 s (the fastest by
+  34.554 s). The target does not stand at 120 s.
+- Otherwise, all three ≤ 180 s? Yes: the slowest, 159.974 s, is 20.026 s below 180 s (the median
+  20.575 s below). **The target becomes 180 s.**
+- Any run above 180 s? No; nothing goes back to the owner.
+
+`04f0778` changes the perf test's assertion from 120 s to 180 s, in its own commit, citing design doc
+v1.13 §4.6 and this entry. Nothing under `src/main` changed; no constraint, foreign key, CHECK, index
+or trigger was dropped or disabled; no durability or isolation setting changed.
+
+### Confirmation run (not an official run)
+
+One run after the assertion change, on the same working tree as `04f0778`, to show the test passes
+its settled assertion; it is not one of the three official runs and does not count for step 3:
+
+```
+.\mvnw.cmd -q -B test -Pperf "-Dtest=StageAPerformanceTest"
+```
+
+Passed (1 test, 0 failures, 0 errors): run COMPLETED in 154.441 s (target 180 s); RUNNING row
+0.020 s, A1 124.281 s, reference breaks 7.082 s, A3 10.929 s, MATCHED_LATE 0.013 s, grace breaks
+7.311 s, statistics 4.794 s, commit 0.002 s; peak heap 80 MB of 512 MB; load and analyse 63.0 s.
+
+### Milestone 5.1 closed
+
+Part A's exit criterion was met in part A; part B's is met here: NFR-PERF-2 measured and committed
+per §4.6, the perf test asserting the settled 180 s target. The deferred keys were not kept, so no
+pin test or break proof for them is due. The margin to 180 s is 20–25 s on the developer machine
+under the measurement conditions; on part B1's battery-powered evening the same SQL took 226–240 s,
+above it, which is why official runs need those conditions.
 
 ## Milestone 5.1 part B1 — NFR-PERF-2 measured and decided by the rule
 
