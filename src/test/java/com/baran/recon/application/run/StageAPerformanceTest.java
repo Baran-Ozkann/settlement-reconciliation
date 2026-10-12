@@ -84,8 +84,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("NFR-PERF-2: Stage A over 1,000,000 PSP lines and 1,000,000 ledger entries under -Xmx512m")
 class StageAPerformanceTest {
 
-    /** NFR-PERF-2 (TDD 4.6). A miss fails this test; the numbers are printed first either way. */
-    private static final Duration TARGET = Duration.ofSeconds(120);
+    /**
+     * NFR-PERF-2 (design doc v1.13, 4.6): 180 s, settled by step 3 of its rule in Milestone 5.1 part B2,
+     * whose three official runs (PROGRESS.md) were all above 120 s and none above 180 s. A miss fails
+     * this test; the numbers are printed first either way.
+     */
+    private static final Duration TARGET = Duration.ofSeconds(180);
     private static final long MAX_HEAP = 512L * 1024 * 1024;
     private static final String SOURCE = "PSP_STAGE_A_PERF";
     private static final LocalDate FROM = LocalDate.of(2026, 9, 1);
@@ -133,7 +137,7 @@ class StageAPerformanceTest {
     }
 
     @Test
-    @DisplayName("NFR-PERF-2: one run over a million lines and a million entries completes in 120 s or less, with the "
+    @DisplayName("NFR-PERF-2: one run over a million lines and a million entries completes in 180 s or less, with the "
             + "heap capped at 512 MB")
     void millionItemsUnderTheHeapCap() throws Exception {
         assertThat(Runtime.getRuntime().maxMemory()).as("run under -Pperf, which sets -Xmx512m").isLessThanOrEqualTo(MAX_HEAP);
