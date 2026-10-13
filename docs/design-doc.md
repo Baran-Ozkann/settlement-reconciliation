@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.15 — Milestone 6 part B's questions settled: `details` keys, the "named" check's side, the bank run after any PSP run, a bank source nothing settles to; part C split into C1 and C2
+Version: 1.16 — Milestone 6 part C split into C1, C2 and C3 (v1.15: part B's questions settled)
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -1025,11 +1025,12 @@ write technique is settled here first.
   for `matches.batch_line_count` and `breaks.details`; `Match`'s MANY_TO_ONE shape; the batch item id
   in SQL; a PSP ingestion also triggering its bank source's run; Stage A's "named" check restricted to
   `LEDGER` and `PSP`. Its open questions are settled in v1.15.
-- Part C1, Stage B matching: the bank run's stage and its snapshot (pattern, batch grace); `Break`
-  carrying `details`; rules B1–B2, ambiguity, `UNEXPECTED_BANK_LINE`, both duplicate cases; the bank
-  run's statistics (INV-1/INV-4 per currency); idempotent re-runs; the WARN for a bank source nothing
-  settles to.
-- Part C2, Stage B over time: `MATCHED_LATE` for Stage B, `MISSING_SETTLEMENT` with grace, the
+- Part C1, the bank run's ground: its snapshot (pattern, batch grace); `Break` carrying `details`;
+  the bank run's scope, statuses and statistics (INV-1/INV-4 per currency); the WARN for a bank source
+  nothing settles to. Still no Stage B rule.
+- Part C2, Stage B matching: rules B1–B2, ambiguity, `UNEXPECTED_BANK_LINE`, both duplicate cases in
+  v1.15's precedence; idempotent re-runs.
+- Part C3, Stage B over time: `MATCHED_LATE` for Stage B, `MISSING_SETTLEMENT` with grace, the
   late-line break (`BATCH_CHANGED_AFTER_MATCH`), and Stage A's settings messages naming the source.
 - Part D: the daily scheduled run (§5.3); INV-1/INV-4/INV-5 property tests extended to Stage B; the
   end-to-end three-way test.
