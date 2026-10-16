@@ -297,8 +297,9 @@ class RunMatchingTest {
     }
 
     @Test
-    @DisplayName("TDD 5.3, FR-MAT-8: a bank source's run completes too, snapshotting its batch-id-pattern and batch "
-            + "grace period; Stage A's configuration is for a PSP source only")
+    @DisplayName("TDD 5.3, FR-MAT-8: a bank source's run completes too, snapshotting its batch-id-pattern, batch grace "
+            + "period, the PSP sources settling to it in configuration order and the Stage B rule versions (v1.17); "
+            + "Stage A's configuration is for a PSP source only")
     void bankSourceRunCompletes() {
         ReconciliationRun completed = matching.run("BANK_RUN", FROM, TO, "system");
 
@@ -306,7 +307,11 @@ class RunMatchingTest {
         assertThat(completed.configSnapshot()).containsExactlyInAnyOrderEntriesOf(Map.of(
                 RunMatching.VALUE_DATE_ZONE, "Europe/Istanbul",
                 RunMatching.BATCH_ID_PATTERN, "BATCH[-_]?([A-Za-z0-9_-]{1,64})",
-                RunMatching.GRACE_DAYS_BATCH_UNPAID, "5"));
+                RunMatching.GRACE_DAYS_BATCH_UNPAID, "5",
+                RunMatching.SETTLING_PSP_SOURCES,
+                "PSP_RUN_SOLO,PSP_RUN_SCOPE,PSP_RUN_FAIL,PSP_RUN_BUSY,PSP_RUN_LEFT,PSP_RUN_RIGHT,PSP_RUN_ROLLBACK",
+                "rule_version.B1_BATCH_TOTAL", "1",
+                "rule_version.B2_BATCH_CONFLICT", "1"));
         assertThat(runs.findById(completed.id())).contains(completed);
     }
 

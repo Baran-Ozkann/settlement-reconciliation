@@ -237,11 +237,14 @@ class BankRunStatisticsTest {
     }
 
     @Test
-    @DisplayName("TDD 8.1 (v1.15): a bank source no PSP source settles to counts its bank lines and no batch")
+    @DisplayName("TDD 8.1 (v1.15), FR-MAT-8 (v1.17): a bank source no PSP source settles to snapshots none and counts its "
+            + "bank lines and no batch")
     void bankSourceNothingSettlesToCountsItsLinesOnly() {
         fixture().bankFile(ALONE, List.of(new Bank("S-ALONE-1", 1_250, "TRY", TUESDAY, Optional.of("B-NONE"))));
 
         ReconciliationRun completed = matching.run(ALONE.value(), MONDAY, FRIDAY, "operator-001");
+
+        assertThat(completed.configSnapshot()).containsEntry(RunMatching.SETTLING_PSP_SOURCES, "");
 
         assertThat(completed.stats()).hasValueSatisfying(stats -> assertThat(stats).containsOnly(
                 entry("bank.TRY.matched.count", 0L), entry("bank.TRY.matched.sum", 0L),
