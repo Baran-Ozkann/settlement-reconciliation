@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.16 — Milestone 6 part C split into C1, C2 and C3 (v1.15: part B's questions settled)
+Version: 1.17 — Milestone 6 part C1's questions settled: the bank run's snapshot, `details` keys, `settles-to` changes, Stage B measured in part D
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -142,7 +142,9 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-MAT-7** An operator can reverse a match (`POST /api/v1/matches/{id}/reversal`, reason required).
   The match becomes `REVERSED` (never deleted) and its items return to the unmatched pool.
 - **FR-MAT-8** A run's configuration (tolerances, windows, grace periods, rule versions, the value-date
-  zone) is snapshotted onto the run record.
+  zone) is snapshotted onto the run record. A bank source's run also snapshots its `batch-id-pattern`
+  and the PSP sources whose batches it reads, those settling to it (v1.17), and, like a PSP run, the
+  rule versions and business calendar it applies.
 - **FR-MAT-9** A ledger entry with no `value_date` falls in no date window and is excluded from run
   scope. Missing data is not a reconciliation discrepancy, so it must never produce a break.
 - **FR-MAT-10** Each run's `stats` records `ledger_entries_without_value_date` for its source, counted
@@ -481,6 +483,9 @@ recon:
       # A bank source that no PSP source settles to is allowed (v1.15): every line it carries is
       # UNEXPECTED_BANK_LINE, which is true. Startup logs one WARN naming it, so a forgotten
       # settles-to is seen.
+      # Changing a PSP source's settles-to is a configuration migration (v1.17): its batches leave the
+      # old bank's scope and join the new one's, and matches made under the old one stay active. v1
+      # supports no more than that; a run's snapshot records which PSP sources it read.
   # ISO 4217 codes accepted as supported. A ledger entry in another ISO currency is still projected,
   # WARNed once per code and counted (money that really moved); a non-ISO code is SCHEMA_INVALID.
   # A non-ISO entry or an empty list stops startup.
@@ -598,7 +603,8 @@ Stage B details (settled in v1.14, Milestone 6 part A):
 - **`details` of a `BATCH_AMOUNT_MISMATCH` (v1.15).** A JSON object written once, when the break
   opens; a later run never changes it (INV-7 keeps the one open break). Amounts are integers in minor
   units, exact in JSONB; how the API renders them is Milestone 7's. `sums` lists one entry per
-  currency, ordered by currency code (INV-5). Two shapes, told apart by `kind`:
+  currency, ordered by currency code (INV-5). The keys are fixed, not their order: JSONB keeps no
+  object's key order, only a list's (v1.17). Two shapes, told apart by `kind`:
   ```json
   {"kind": "BATCH_TOTAL_CONFLICT",
    "bank":  {"amount": 125000, "currency": "TRY"},
@@ -613,7 +619,8 @@ Stage B details (settled in v1.14, Milestone 6 part A):
   on the `BATCH` item (a line arriving after its batch was matched). `matched` is what the match
   recorded: `batch_line_count`, and the bank line's amount, which B1 made equal to the batch's sum.
   `Break` carries `details` as a typed value in the domain; the persistence adapter alone turns it into
-  JSON, bound as a parameter.
+  JSON, bound as a parameter. A reopened break (FR-BRK-3) keeps the details of the break it reopens;
+  what an operator's reopen records is decided with Milestone 7's endpoint (v1.17).
 - **Item status and statistics.** A batch and a bank line take `MATCHED`, `BROKEN` or `PENDING` in the
   same order as Stage A. A bank run's statistics cover `BANK` (the line's amount) and `BATCH` (the
   batch's net sum) per currency; a mixed-currency batch counts once in each of its currencies, so
@@ -1025,15 +1032,18 @@ write technique is settled here first.
   for `matches.batch_line_count` and `breaks.details`; `Match`'s MANY_TO_ONE shape; the batch item id
   in SQL; a PSP ingestion also triggering its bank source's run; Stage A's "named" check restricted to
   `LEDGER` and `PSP`. Its open questions are settled in v1.15.
-- Part C1, the bank run's ground: its snapshot (pattern, batch grace); `Break` carrying `details`;
-  the bank run's scope, statuses and statistics (INV-1/INV-4 per currency); the WARN for a bank source
-  nothing settles to. Still no Stage B rule.
+- Part C1 (done), the bank run's ground: its snapshot (pattern, batch grace); `Break` carrying
+  `details`; the bank run's scope, statuses and statistics (INV-1/INV-4 per currency); the WARN for a
+  bank source nothing settles to. Its open questions are settled in v1.17.
 - Part C2, Stage B matching: rules B1–B2, ambiguity, `UNEXPECTED_BANK_LINE`, both duplicate cases in
-  v1.15's precedence; idempotent re-runs.
+  v1.15's precedence; idempotent re-runs; the bank run's snapshot gains the PSP sources settling to it
+  and the B rule versions.
 - Part C3, Stage B over time: `MATCHED_LATE` for Stage B, `MISSING_SETTLEMENT` with grace, the
-  late-line break (`BATCH_CHANGED_AFTER_MATCH`), and Stage A's settings messages naming the source.
+  late-line break (`BATCH_CHANGED_AFTER_MATCH`), the business calendar in the bank run's snapshot,
+  and Stage A's settings messages naming the source.
 - Part D: the daily scheduled run (§5.3); INV-1/INV-4/INV-5 property tests extended to Stage B; the
-  end-to-end three-way test.
+  end-to-end three-way test; Stage B measured at NFR-PERF-2's scale, recorded, with an index on the
+  batch-id columns added only if the measurement shows it is needed (v1.17).
 - Exit: Stage B rules and details of §8.2 covered, each by name; INV-1/INV-4/INV-5 extended to Stage B
   (shuffled inputs, fixed seed); a test pins the SQL batch id equal to `BatchKey.itemId()`; the
   scheduled run opens a grace break no file-triggered run would; break proofs for every new
