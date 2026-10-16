@@ -9,7 +9,12 @@ import org.springframework.stereotype.Repository;
 
 import com.baran.recon.application.port.ItemTotals;
 import com.baran.recon.application.port.StageBStore;
+import com.baran.recon.domain.breaks.Actor;
 import com.baran.recon.domain.item.SourceCode;
+import com.baran.recon.domain.match.RuleId;
+import com.baran.recon.domain.match.StageBRule;
+
+import static com.baran.recon.adapters.out.persistence.SqlValues.timestamp;
 
 /**
  * Stage B as SQL (TDD 8.2), on the bank source's lines and the batches of the PSP sources that
@@ -34,22 +39,32 @@ class JdbcStageBStore implements StageBStore {
                  WHERE open_break.status <> 'RESOLVED' AND open_break.item_side IN ('BANK', 'BATCH')
             )""";
 
+    /** The lines of the PSP sources settling to the bank, whatever their dates and files. */
+    private static final String SETTLING_LINES = """
+            settling_line AS (
+                SELECT line.source_code, line.batch_id, line.currency, line.net_amount, line.value_date
+                  FROM psp_lines line
+                 WHERE line.source_code = ANY (CAST(:pspSources AS TEXT[]))
+            )""";
+
     /**
-     * The batches dated in the range, one row per batch and currency (TDD 8.2): the lines of a PSP
-     * source settling to the bank with one batch id, from whatever file, in the snapshot. A batch's
-     * date is the latest value date of all its lines, in every currency, so a line outside the range
-     * still counts in its batch's sum. A sum that does not fit a BIGINT fails the cast, and the run
-     * with it (INV-8).
+     * The batches of the settling lines, one row per batch and currency (TDD 8.2): the lines of a PSP
+     * source with one batch id, from whatever file, in the snapshot. A batch's date is the latest
+     * value date of all its lines, in every currency, so a line outside the range still counts in its
+     * batch's sum. A sum that does not fit a BIGINT fails the cast, and the run with it (INV-8).
      */
-    private static final String DATED_BATCHES = """
+    private static final String BATCH_CURRENCY = """
             batch_currency AS (
                 SELECT line.source_code, line.batch_id, line.currency, count(*) AS lines,
                        CAST(sum(line.net_amount) AS BIGINT) AS amount,
                        max(max(line.value_date)) OVER (PARTITION BY line.source_code, line.batch_id) AS batch_date
-                  FROM psp_lines line
-                 WHERE line.source_code = ANY (CAST(:pspSources AS TEXT[]))
+                  FROM settling_line line
                  GROUP BY line.source_code, line.batch_id, line.currency
-            ),
+            )""";
+
+    /** The batches dated in the range, one row per batch and currency, with their item ids. */
+    private static final String DATED_BATCHES = BATCH_CURRENCY + """
+            ,
             batch AS MATERIALIZED (
                 SELECT %s AS id, dated.source_code, dated.batch_id, dated.currency, dated.lines, dated.amount
                   FROM batch_currency dated
@@ -63,7 +78,7 @@ class JdbcStageBStore implements StageBStore {
      * counts an item twice or misses one disagrees with it: bank lines straight from their table, and
      * batches as the distinct batch ids of the lines whose batch is dated in the range.
      */
-    private static final String ITEM_TOTALS = "WITH " + String.join(",\n", NAMED, DATED_BATCHES) + """
+    private static final String ITEM_TOTALS = "WITH " + String.join(",\n", NAMED, SETTLING_LINES, DATED_BATCHES) + """
             ,
             bank_item AS (
                 SELECT line.currency, line.amount,
@@ -117,6 +132,120 @@ class JdbcStageBStore implements StageBStore {
              GROUP BY line.currency
             """;
 
+    /**
+     * The bank source's lines without an active match (FR-MAT-2), in the range or not: a line outside
+     * it still names its batch, as a PSP line outside Stage A's range still carries its reference.
+     */
+    private static final String UNMATCHED_BANK = """
+            unmatched_bank AS MATERIALIZED (
+                SELECT line.id, line.amount, line.currency, line.extracted_batch_id AS batch_id,
+                       line.value_date BETWEEN :from AND :to AS in_range
+                  FROM bank_lines line
+                 WHERE line.source_code = :bank
+                   AND NOT EXISTS (SELECT 1 FROM match_items item
+                                    WHERE item.side = 'BANK' AND item.item_id = line.id AND item.active)
+            )""";
+
+    /**
+     * The settling lines of the batches some unmatched bank line names: no other batch can be matched
+     * or named by a rule, so no other is summed.
+     */
+    private static final String CLAIMED_LINES = """
+            settling_line AS (
+                SELECT line.source_code, line.batch_id, line.currency, line.net_amount, line.value_date
+                  FROM psp_lines line
+                 WHERE line.source_code = ANY (CAST(:pspSources AS TEXT[]))
+                   AND line.batch_id IN (SELECT claim.batch_id FROM unmatched_bank claim)
+            )""";
+
+    /**
+     * Each unmatched bank line's one outcome, in TDD 8.2's precedence (v1.15):
+     * <ol>
+     *   <li>UNEXPECTED: no batch id, or one naming no batch of a settling PSP source;</li>
+     *   <li>AMBIGUOUS: an id naming batches of several settling PSP sources, whatever other lines
+     *       name (FR-MAT-4);</li>
+     *   <li>DUPLICATE: an id naming one batch that is already matched, or that another unmatched bank
+     *       line names too, in the range or not;</li>
+     *   <li>B1: the batch has lines in one currency only, the line's, and its sum is the line's
+     *       amount;</li>
+     *   <li>B2: otherwise: the sum or the currency differs.</li>
+     * </ol>
+     * Each batch comes with its line count, whether it is dated in the range, and, when already
+     * matched, the bank line it was matched to. A line meets at most one batch, so it has exactly one
+     * row here.
+     */
+    private static final String DECIDED = """
+            batch AS MATERIALIZED (
+                SELECT totals.id, totals.source_code, totals.batch_id, totals.currencies, totals.lines,
+                       totals.in_range, paid.item_id AS paid_by
+                  FROM (SELECT %s AS id, source_code, batch_id, count(*) AS currencies,
+                               CAST(sum(lines) AS INTEGER) AS lines, max(batch_date) BETWEEN :from AND :to AS in_range
+                          FROM batch_currency
+                         GROUP BY source_code, batch_id) totals
+                  LEFT JOIN match_items matched
+                         ON matched.side = 'BATCH' AND matched.item_id = totals.id AND matched.active
+                  LEFT JOIN match_items paid
+                         ON paid.match_id = matched.match_id AND paid.side = 'BANK' AND paid.active
+            ),
+            naming AS (
+                SELECT batch_id, count(*) AS batches FROM batch GROUP BY batch_id
+            ),
+            claims AS (
+                SELECT batch_id, count(*) AS lines FROM unmatched_bank WHERE batch_id IS NOT NULL GROUP BY batch_id
+            ),
+            decided AS MATERIALIZED (
+                SELECT line.id, line.amount, line.currency, line.in_range, line.batch_id,
+                       batch.id AS batch_item, batch.in_range AS batch_in_range, batch.lines AS batch_lines,
+                       CASE WHEN naming.batches IS NULL THEN 'UNEXPECTED'
+                            WHEN naming.batches > 1 THEN 'AMBIGUOUS'
+                            WHEN batch.paid_by IS NOT NULL OR claims.lines > 1 THEN 'DUPLICATE'
+                            WHEN batch.currencies = 1 AND same_currency.amount = line.amount THEN 'B1'
+                            ELSE 'B2' END AS outcome
+                  FROM unmatched_bank line
+                  LEFT JOIN naming ON naming.batch_id = line.batch_id
+                  LEFT JOIN batch ON batch.batch_id = line.batch_id AND naming.batches = 1
+                  LEFT JOIN batch_currency same_currency
+                         ON same_currency.source_code = batch.source_code AND same_currency.batch_id = batch.batch_id
+                        AND same_currency.currency = line.currency
+                  LEFT JOIN claims ON claims.batch_id = line.batch_id
+            )""".formatted(BatchItemIdSql.of("source_code", "batch_id"));
+
+    /** The rules' common ground: the unmatched bank lines, the batches they name, each line's outcome. */
+    private static final String RULES = String.join(",\n", UNMATCHED_BANK, CLAIMED_LINES, BATCH_CURRENCY, DECIDED);
+
+    /**
+     * B1: a match per pair whose bank line or batch is in the range, active, with its BATCH and BANK
+     * items and its creation event (FR-MAT-6), as Stage A writes its matches. The totals agree, so the
+     * difference is zero, in the pair's currency; the batch's line count is the N of N:1 (TDD 8.2).
+     */
+    private static final String MATCH_BY_BATCH_TOTAL = "WITH " + RULES + """
+            ,
+            pair AS MATERIALIZED (
+                SELECT gen_random_uuid() AS match_id, id AS bank_id, batch_item, currency, batch_lines
+                  FROM decided
+                 WHERE outcome = 'B1' AND (in_range OR batch_in_range)
+            ),
+            new_match AS (
+                INSERT INTO matches (id, run_id, rule_id, rule_version, cardinality, status, amount_difference,
+                                     currency, low_confidence, created_at, batch_line_count)
+                SELECT match_id, :runId, :ruleId, :ruleVersion, :cardinality, 'ACTIVE', 0, currency, :lowConfidence,
+                       :at, batch_lines
+                  FROM pair
+            ),
+            new_item AS (
+                INSERT INTO match_items (match_id, side, item_id, active)
+                SELECT match_id, 'BATCH', batch_item, TRUE FROM pair
+                UNION ALL
+                SELECT match_id, 'BANK', bank_id, TRUE FROM pair
+            ),
+            new_match_event AS (
+                INSERT INTO match_events (match_id, event_type, actor, reason, occurred_at)
+                SELECT match_id, 'CREATED', :actor, NULL, :at FROM pair
+                RETURNING match_id
+            )
+            SELECT count(*) FROM new_match_event
+            """;
+
     private final JdbcClient jdbc;
 
     JdbcStageBStore(JdbcClient jdbc) {
@@ -124,14 +253,40 @@ class JdbcStageBStore implements StageBStore {
     }
 
     @Override
+    public int matchBatchTotals(StageBPass pass) {
+        RuleId rule = StageBRule.B1_BATCH_TOTAL.matchRule().orElseThrow();
+        return Math.toIntExact(pass(MATCH_BY_BATCH_TOTAL, pass)
+                .param("ruleId", rule.name())
+                .param("ruleVersion", StageBRule.B1_BATCH_TOTAL.version())
+                .param("cardinality", rule.cardinality().name())
+                .param("lowConfidence", rule.lowConfidence())
+                .query(Long.class).single());
+    }
+
+    @Override
     public ItemTotals itemTotals(SourceCode bank, List<SourceCode> pspSources, LocalDate valueDateFrom,
                                  LocalDate valueDateTo) {
         return ItemTotals.partitioned(jdbc.sql(ITEM_TOTALS)
                 .param("bank", bank.value())
-                .param("pspSources", new SqlArrayValue("text", pspSources.stream().map(SourceCode::value).toArray()))
+                .param("pspSources", sourceArray(pspSources))
                 .param("from", valueDateFrom)
                 .param("to", valueDateTo)
                 .query(SqlValues::itemTotal)
                 .list());
+    }
+
+    private JdbcClient.StatementSpec pass(String sql, StageBPass pass) {
+        return jdbc.sql(sql)
+                .param("runId", pass.runId())
+                .param("bank", pass.bank().value())
+                .param("pspSources", sourceArray(pass.pspSources()))
+                .param("from", pass.valueDateFrom())
+                .param("to", pass.valueDateTo())
+                .param("actor", Actor.SYSTEM.name())
+                .param("at", timestamp(pass.at()));
+    }
+
+    private static SqlArrayValue sourceArray(List<SourceCode> sources) {
+        return new SqlArrayValue("text", sources.stream().map(SourceCode::value).toArray());
     }
 }

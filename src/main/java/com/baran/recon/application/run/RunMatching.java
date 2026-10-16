@@ -23,6 +23,7 @@ import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.StageAStore.FallbackOutcome;
 import com.baran.recon.application.port.StageAStore.StageAPass;
 import com.baran.recon.application.port.StageBStore;
+import com.baran.recon.application.port.StageBStore.StageBPass;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.calendar.BusinessDayIndex;
@@ -46,8 +47,9 @@ import com.baran.recon.domain.source.StageASettings;
  *   <li>in one transaction at REPEATABLE READ: Stage A for a PSP source, the run's statistics
  *       (FR-MAT-10), and the run set COMPLETED. Every statement reads the snapshot the first one
  *       took, so an item committed while the run works is seen by none of its steps, never by
- *       some and not others; the next run takes it up. A bank source's run counts its bank lines
- *       and the batches of the PSP sources that settle to it (TDD 8.2);</li>
+ *       some and not others; the next run takes it up. A bank source's run does Stage B over its
+ *       bank lines and the batches of the PSP sources that settle to it, then counts them
+ *       (TDD 8.2);</li>
  *   <li>if that transaction fails it is rolled back, so nothing of the run's work remains
  *       (NFR-REL-2), and the run is set FAILED in a transaction of its own. A serialization
  *       failure is such a failure.</li>
@@ -221,8 +223,10 @@ public final class RunMatching {
             stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
         });
         if (source.type() == SourceType.BANK_STATEMENT) {
-            ItemTotals totals = stageB.itemTotals(running.source(), settlingSources(running),
-                    running.valueDateFrom(), running.valueDateTo());
+            List<SourceCode> settling = settlingSources(running);
+            matchStageB(running, settling);
+            ItemTotals totals = stageB.itemTotals(running.source(), settling, running.valueDateFrom(),
+                    running.valueDateTo());
             stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
         }
         stats.put(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE,
@@ -259,6 +263,21 @@ public final class RunMatching {
                 running.id(), running.source().value(), Integer.toString(byReference),
                 Integer.toString(byAmount.matched()), Integer.toString(referenceBreaks),
                 Integer.toString(byAmount.breaksOpened()), Integer.toString(graceBreaks), Integer.toString(matchedLate));
+    }
+
+    /**
+     * Stage B (TDD 8.2) for a bank source, inside the work transaction, over its bank lines and the
+     * batches of the PSP sources settling to it, as the run snapshotted them. As in Stage A, each
+     * rule is a statement over the unmatched items, and each sees what the ones before it wrote.
+     * Only ids and counts are logged.
+     */
+    private void matchStageB(ReconciliationRun running, List<SourceCode> settling) {
+        StageBPass pass = new StageBPass(running.id(), running.source(), settling, running.valueDateFrom(),
+                running.valueDateTo(), now());
+        int byBatchTotal = stageB.matchBatchTotals(pass);
+        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage B matched {2} by B1 over {3} settling PSP "
+                        + "sources", running.id(), running.source().value(), Integer.toString(byBatchTotal),
+                Integer.toString(settling.size()));
     }
 
     /**

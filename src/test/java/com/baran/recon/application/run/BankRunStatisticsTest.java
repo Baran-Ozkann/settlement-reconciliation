@@ -284,7 +284,8 @@ class BankRunStatisticsTest {
 
     @Test
     @DisplayName("break proof, INV-1/INV-4 (TDD 9.1): a bank run whose bank lines or batches by status miscount the "
-            + "scope by one item fails, keeping no statistics; the same run counted right completes")
+            + "scope by one item fails, keeping no statistics; the same run counted right completes, its line and "
+            + "batch matched by B1")
     void miscountedBankRunFails() {
         StageBFixture fixture = fixture();
         fixture.pspFile(MISCOUNT, List.of(new Psp("M-1", "B-MISCOUNT", 900, 0, "TRY", TUESDAY)));
@@ -301,7 +302,7 @@ class BankRunStatisticsTest {
 
         ReconciliationRun counted = matching.run(BANK_MISCOUNT.value(), MONDAY, FRIDAY, "operator-001");
         assertThat(counted.stats()).hasValueSatisfying(stats -> assertThat(stats)
-                .containsEntry("bank.TRY.pending.count", 1L).containsEntry("batch.TRY.pending.count", 1L));
+                .containsEntry("bank.TRY.matched.count", 1L).containsEntry("batch.TRY.matched.count", 1L));
     }
 
     /** The batch statistics of a run of the dated bank source over the range. */

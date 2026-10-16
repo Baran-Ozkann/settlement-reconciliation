@@ -45,6 +45,11 @@ public final class MiscountingStageBStore implements StageBStore {
     }
 
     @Override
+    public int matchBatchTotals(StageBPass pass) {
+        return delegate.matchBatchTotals(pass);
+    }
+
+    @Override
     public ItemTotals itemTotals(SourceCode bank, List<SourceCode> pspSources, LocalDate valueDateFrom,
                                  LocalDate valueDateTo) {
         ItemTotals counted = delegate.itemTotals(bank, pspSources, valueDateFrom, valueDateTo);

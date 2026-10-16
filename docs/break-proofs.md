@@ -366,3 +366,17 @@ Part C1 prepares the bank run (design doc v1.16) and writes no Stage B rule: mat
 | Rule | Broken by | Test | What it reported |
 |---|---|---|---|
 | TDD 8.2 (v1.15): a bank line's or batch's status reads only unresolved breaks whose subject is a `BANK` or `BATCH` item (`open_break.item_side IN ('BANK', 'BATCH')` in `JdbcStageBStore.NAMED`) | a throwaway edit, never committed: the condition removed. The file was copied to the session scratchpad first and copied back afterwards (`cmp` identical) | `BankRunStatisticsTest#bankRunCountsEachStatusPerCurrency` | 1 test, 1 failure: `map entries not expected: ["bank.TRY.broken.count"=4L, "bank.TRY.broken.sum"=9700L, "bank.TRY.pending.count"=1L, "bank.TRY.pending.sum"=50L, "batch.TRY.broken.count"=3L, "batch.TRY.broken.sum"=5600L, …]`: S-7 and B-Q, named only by a break on a PSP line, counted BROKEN. Restored: the test passes |
+
+## Milestone 6, part C2
+
+Part C2 writes Stage B's rules (design doc v1.17, §8.2): B1, B2, `UNEXPECTED_BANK_LINE`, ambiguity
+and both duplicate cases, in one precedence (`JdbcStageBStore.DECIDED`). Every one-off below edited
+`JdbcStageBStore.java` after copying it to the session scratchpad, ran the named test, and copied the
+file back (`cmp` identical); the test then passed again. Nothing was committed broken.
+
+### Recorded one-offs
+
+| Rule | Broken by | Test | What it reported |
+|---|---|---|---|
+| B1 keeps a match exact: the batch has lines in one currency only (`batch.currencies = 1` in `DECIDED`) | the condition removed, so only the batch's sum in the line's currency was compared | `StageBMatchingTest#conflictingTotalsAreNotMatched` | 1 test, 1 failure: `Expecting empty but was: [Match[… rule=B1_BATCH_TOTAL … batchLineCount=OptionalInt[2]]]`: the mixed batch `B-MIXED` (TRY 3,000 and EUR 500) matched to the TRY 3,000 bank line. Restored: the test passes |
+| B1 keeps a match exact: the batch's sum equals the bank line's amount (`same_currency.amount = line.amount` in `DECIDED`) | the condition replaced by `same_currency.currency = line.currency`, so a one-currency batch in the line's currency matched whatever its sum | `StageBMatchingTest#conflictingTotalsAreNotMatched` | 1 test, 1 failure: `Expecting empty but was: [Match[… rule=B1_BATCH_TOTAL … batchLineCount=OptionalInt[1]]]`: `B-AMOUNT` (1,000) matched to the 1,001 bank line. Restored: the test passes |
