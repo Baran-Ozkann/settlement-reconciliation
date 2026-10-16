@@ -2,25 +2,18 @@ package com.baran.recon.adapters.out.persistence;
 
 import java.time.Instant;
 import java.time.LocalDate;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.SqlArrayValue;
 import org.springframework.stereotype.Repository;
 
+import com.baran.recon.application.port.ItemTotals;
 import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.domain.breaks.Actor;
-import com.baran.recon.domain.item.ItemSide;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.RuleId;
 import com.baran.recon.domain.match.StageARule;
-import com.baran.recon.domain.money.CurrencyCode;
-import com.baran.recon.domain.run.ItemStatus;
-import com.baran.recon.domain.run.ItemTotal;
 
 import static com.baran.recon.adapters.out.persistence.SqlValues.timestamp;
 
@@ -467,18 +460,12 @@ class JdbcStageAStore implements StageAStore {
 
     @Override
     public ItemTotals itemTotals(SourceCode source, LocalDate valueDateFrom, LocalDate valueDateTo) {
-        List<ItemTotal> totals = jdbc.sql(ITEM_TOTALS)
+        return ItemTotals.partitioned(jdbc.sql(ITEM_TOTALS)
                 .param("source", source.value())
                 .param("from", valueDateFrom)
                 .param("to", valueDateTo)
-                .query((row, n) -> new ItemTotal(ItemSide.valueOf(row.getString("side")),
-                        CurrencyCode.of(row.getString("currency")),
-                        Optional.ofNullable(row.getString("status")).map(ItemStatus::valueOf),
-                        row.getLong("items"), row.getLong("amount")))
-                .list();
-        Map<Boolean, List<ItemTotal>> byKind = totals.stream()
-                .collect(Collectors.partitioningBy(total -> total.status().isPresent()));
-        return new ItemTotals(byKind.get(true), byKind.get(false));
+                .query(SqlValues::itemTotal)
+                .list());
     }
 
     private JdbcClient.StatementSpec matching(String sql, StageAPass pass, StageARule rule) {

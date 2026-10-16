@@ -10,8 +10,11 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 
+import com.baran.recon.domain.item.ItemSide;
 import com.baran.recon.domain.money.CurrencyCode;
 import com.baran.recon.domain.money.Money;
+import com.baran.recon.domain.run.ItemStatus;
+import com.baran.recon.domain.run.ItemTotal;
 
 /** Conversions between column values and domain values, in one place for every repository. */
 final class SqlValues {
@@ -71,5 +74,15 @@ final class SqlValues {
 
     static CurrencyCode currency(ResultSet row, String column) throws SQLException {
         return CurrencyCode.of(row.getString(column));
+    }
+
+    /**
+     * A row of a run's item totals: its side, currency, status (NULL for the total of every
+     * status), number of items and amount.
+     */
+    static ItemTotal itemTotal(ResultSet row, int rowNumber) throws SQLException {
+        return new ItemTotal(ItemSide.valueOf(row.getString("side")), CurrencyCode.of(row.getString("currency")),
+                Optional.ofNullable(row.getString("status")).map(ItemStatus::valueOf),
+                row.getLong("items"), row.getLong("amount"));
     }
 }

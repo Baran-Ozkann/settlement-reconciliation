@@ -14,12 +14,12 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import com.baran.recon.application.port.ItemTotals;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunAlreadyRunningException;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.StageAStore.FallbackOutcome;
-import com.baran.recon.application.port.StageAStore.ItemTotals;
 import com.baran.recon.application.port.StageAStore.StageAPass;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
