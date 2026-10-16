@@ -2,12 +2,14 @@ package com.baran.recon.application.run;
 
 import java.time.LocalDate;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -477,8 +479,186 @@ class StageBMatchingTest {
                 .containsExactly(tuple(BreakType.UNEXPECTED_BANK_LINE, bank(line.get("S-1")), List.of()));
     }
 
+    @Test
+    @DisplayName("TDD 8.2: re-running the same range with no new data writes its run row and nothing else: no match, "
+            + "no break, no event")
+    void reRunWithNoNewDataWritesOnlyItsRunRow() {
+        storeEveryOutcome(alpha, beta, bankSource);
+        run();
+        fixture.bankFile(bankSource, List.of(bankLine("S-PAID-AGAIN", 600, TRY, THURSDAY, "B-EXACT")));
+        ReconciliationRun first = run();
+        List<String> matchesBefore = matchRows();
+        List<String> breaksBefore = breakRows();
+        assertThat(matchesBefore).as("B1 matched").hasSize(1);
+        assertThat(breaksOfTheBank()).extracting(Break::type).as("and a break of every Stage B kind opened")
+                .contains(BreakType.BATCH_AMOUNT_MISMATCH, BreakType.UNEXPECTED_BANK_LINE, BreakType.AMBIGUOUS_MATCH,
+                        BreakType.DUPLICATE_LINE);
+
+        ReconciliationRun second = run();
+
+        assertThat(matchRows()).isEqualTo(matchesBefore);
+        assertThat(breakRows()).isEqualTo(breaksBefore);
+        assertThat(second.stats()).isEqualTo(first.stats());
+        assertThat(jdbc.sql("SELECT count(*) FROM reconciliation_runs WHERE source_code = :bank")
+                .param("bank", bankSource.value()).query(Long.class).single()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("FR-MAT-5, INV-5 (TDD 8.2): the same lines stored in another order, in other files, give the same "
+            + "matches, breaks and statistics (an example; part D adds the property)")
+    void insertionOrderDoesNotChangeTheResults() {
+        storeEveryOutcome(alpha, beta, bankSource);
+        int other = NEXT_BANK.getAndIncrement();
+        SourceCode otherBank = SourceCode.of(bankCode(other));
+        SourceCode otherAlpha = SourceCode.of(alphaCode(other));
+        SourceCode otherBeta = SourceCode.of(betaCode(other));
+        storeEveryOutcomeReversed(otherAlpha, otherBeta, otherBank);
+
+        ReconciliationRun run = run();
+        ReconciliationRun reversed = matching.run(otherBank.value(), MONDAY, FRIDAY, "operator-001");
+
+        List<String> results = results(bankSource, alpha, beta);
+        assertThat(results).as("a match and six breaks; S-CLAIMED-LATER is outside the range").hasSize(7);
+        assertThat(results(otherBank, otherAlpha, otherBeta)).isEqualTo(results);
+        assertThat(reversed.stats()).isEqualTo(run.stats());
+    }
+
+    @Test
+    @DisplayName("INV-7 (TDD 8.2): a bank line with an open UNEXPECTED_BANK_LINE whose batch arrives later with another "
+            + "sum keeps that break, gets no BATCH_AMOUNT_MISMATCH and no event; once the sum agrees, B1 matches it and, "
+            + "until part C3, the break stays open on a MATCHED line")
+    void anUnresolvedBreakIsNeverOpenedTwice() {
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-LATE")));
+        run();
+        Break unexpected = breaksOfTheBank().getFirst();
+        assertThat(unexpected.type()).isEqualTo(BreakType.UNEXPECTED_BANK_LINE);
+
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-LATE", 700, 0, TRY, TUESDAY)));
+        ReconciliationRun conflicting = run();
+
+        assertThat(matchesOfTheBank()).isEmpty();
+        assertThat(breaksOfTheBank()).containsExactly(unexpected);
+        assertThat(openingEventsOfTheBank()).containsExactly("->OPEN:-:system");
+        assertThat(conflicting.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.broken.count", 1L, "batch.TRY.pending.count", 1L)));
+
+        fixture.pspFile(alpha, List.of(new Psp("A-2", "B-LATE", 300, 0, TRY, WEDNESDAY)));
+        ReconciliationRun agreeing = run();
+
+        assertThat(matchesOfTheBank()).extracting(Match::items, Match::batchLineCount).containsExactly(
+                tuple(List.of(item(bank(line.get("S-1"))), item(batch(alpha, "B-LATE"))), OptionalInt.of(2)));
+        assertThat(breaksOfTheBank()).containsExactly(unexpected);
+        assertThat(agreeing.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.matched.count", 1L, "bank.TRY.broken.count", 0L, "batch.TRY.matched.count", 1L)));
+    }
+
     private ReconciliationRun run() {
         return matching.run(bankSource.value(), MONDAY, FRIDAY, "operator-001");
+    }
+
+    /**
+     * Batches and bank lines giving every Stage B outcome in the working week: B1, B2, an unknown id, no
+     * id, an id naming batches of both PSP sources, two lines claiming one batch, and a line outside
+     * the range. Each PSP source's lines in one file, the bank lines in one file, in this order.
+     */
+    private void storeEveryOutcome(SourceCode first, SourceCode second, SourceCode bank) {
+        fixture.pspFile(first, List.of(
+                new Psp("A-1", "B-EXACT", 500, 0, TRY, TUESDAY),
+                new Psp("A-2", "B-EXACT", 100, 0, TRY, WEDNESDAY),
+                new Psp("A-3", "B-CONFLICT", 400, 0, TRY, TUESDAY),
+                new Psp("A-4", "B-CONFLICT", 50, 0, EUR, TUESDAY),
+                new Psp("A-5", "B-AMBIGUOUS", 100, 0, TRY, TUESDAY),
+                new Psp("A-6", "B-CLAIMED", 200, 0, TRY, TUESDAY)));
+        fixture.pspFile(second, List.of(new Psp("B-1", "B-AMBIGUOUS", 100, 0, TRY, TUESDAY)));
+        fixture.bankFile(bank, everyOutcomeBankLines());
+    }
+
+    /** As {@link #storeEveryOutcome}, every list reversed and the PSP lines spread over one file each. */
+    private void storeEveryOutcomeReversed(SourceCode first, SourceCode second, SourceCode bank) {
+        fixture.bankFile(bank, everyOutcomeBankLines().reversed());
+        fixture.pspFile(second, List.of(new Psp("B-1", "B-AMBIGUOUS", 100, 0, TRY, TUESDAY)));
+        fixture.pspFile(first, List.of(new Psp("A-6", "B-CLAIMED", 200, 0, TRY, TUESDAY)));
+        fixture.pspFile(first, List.of(new Psp("A-5", "B-AMBIGUOUS", 100, 0, TRY, TUESDAY)));
+        fixture.pspFile(first, List.of(new Psp("A-4", "B-CONFLICT", 50, 0, EUR, TUESDAY)));
+        fixture.pspFile(first, List.of(new Psp("A-3", "B-CONFLICT", 400, 0, TRY, TUESDAY)));
+        fixture.pspFile(first, List.of(new Psp("A-2", "B-EXACT", 100, 0, TRY, WEDNESDAY)));
+        fixture.pspFile(first, List.of(new Psp("A-1", "B-EXACT", 500, 0, TRY, TUESDAY)));
+    }
+
+    private static List<Bank> everyOutcomeBankLines() {
+        return List.of(
+                bankLine("S-EXACT", 600, TRY, WEDNESDAY, "B-EXACT"),
+                bankLine("S-CONFLICT", 400, TRY, WEDNESDAY, "B-CONFLICT"),
+                bankLine("S-UNKNOWN", 300, TRY, WEDNESDAY, "B-UNKNOWN"),
+                new Bank("S-FEE", -5, TRY, THURSDAY, Optional.empty()),
+                bankLine("S-AMBIGUOUS", 100, TRY, THURSDAY, "B-AMBIGUOUS"),
+                bankLine("S-CLAIMED-1", 200, TRY, THURSDAY, "B-CLAIMED"),
+                bankLine("S-CLAIMED-2", 200, TRY, FRIDAY, "B-CLAIMED"),
+                bankLine("S-CLAIMED-LATER", 200, TRY, MONDAY_AFTER, "B-CLAIMED"));
+    }
+
+    /**
+     * The bank source's matches and breaks by the names a person would use - a bank line by its line
+     * id, a batch by its PSP source's role and batch id - one sorted line each, so two banks given the
+     * same data in another order compare equal. Related items are compared as a set, as their order
+     * follows generated ids.
+     */
+    private List<String> results(SourceCode bank, SourceCode first, SourceCode second) {
+        Map<UUID, String> names = new HashMap<>();
+        jdbc.sql("SELECT id, line_id FROM bank_lines WHERE source_code = :bank").param("bank", bank.value())
+                .query((row, n) -> Map.entry(row.getObject("id", UUID.class), "BANK " + row.getString("line_id")))
+                .list().forEach(line -> names.put(line.getKey(), line.getValue()));
+        for (String batchId : List.of("B-EXACT", "B-CONFLICT", "B-AMBIGUOUS", "B-CLAIMED")) {
+            names.put(batch(first, batchId).id(), "BATCH first/" + batchId);
+            names.put(batch(second, batchId).id(), "BATCH second/" + batchId);
+        }
+        Function<ItemRef, String> name = ref -> names.getOrDefault(ref.id(), "unknown " + ref);
+        Stream<String> matched = matchIdsOf(bank).stream().map(id -> matches.findById(id).orElseThrow())
+                .map(match -> "match " + match.rule() + " v" + match.ruleVersion() + " " + match.batchLineCount()
+                        + " " + match.amountDifference() + " " + match.items().stream()
+                        .map(item -> name.apply(new ItemRef(item.side(), item.itemId()))).sorted().toList());
+        Stream<String> broken = breakIdsOf(bank).stream().map(id -> breaks.findById(id).orElseThrow())
+                .map(found -> "break " + found.type() + " " + found.status() + " " + name.apply(found.item()) + " "
+                        + found.relatedItems().stream().map(name).sorted().toList() + " " + found.details());
+        return Stream.concat(matched, broken).sorted().toList();
+    }
+
+    /** Every stored column of the bank's matches, their items and events, in match id order (FR-MAT-2). */
+    private List<String> matchRows() {
+        return jdbc.sql("""
+                        SELECT concat_ws('|', m.id, m.run_id, m.rule_id, m.rule_version, m.cardinality, m.status,
+                                         m.amount_difference, m.currency, m.low_confidence, m.created_at,
+                                         m.batch_line_count,
+                                         (SELECT string_agg(i.side || ':' || i.item_id || ':' || i.active, ','
+                                                            ORDER BY i.side, i.item_id)
+                                            FROM match_items i WHERE i.match_id = m.id),
+                                         (SELECT string_agg(e.event_type || ':' || e.actor || ':' || e.occurred_at, ','
+                                                            ORDER BY e.id)
+                                            FROM match_events e WHERE e.match_id = m.id))
+                          FROM matches m
+                         WHERE m.id IN (SELECT item.match_id FROM match_items item
+                                          JOIN bank_lines line ON item.side = 'BANK' AND line.id = item.item_id
+                                         WHERE line.source_code = :bank)
+                         ORDER BY m.id
+                        """)
+                .param("bank", bankSource.value()).query(String.class).list();
+    }
+
+    /** Every stored column of the breaks about the bank's lines, with their events, in break id order. */
+    private List<String> breakRows() {
+        return jdbc.sql("""
+                        SELECT concat_ws('|', b.id, b.break_type, b.item_side, b.item_id, b.related_items, b.status,
+                                         b.resolution_code, b.opened_run_id, b.previous_break_id, b.opened_at,
+                                         b.resolved_at, b.details,
+                                         (SELECT string_agg(coalesce(e.from_status, '-') || '>' || e.to_status || ':'
+                                                            || e.actor || ':' || e.occurred_at, ',' ORDER BY e.id)
+                                            FROM break_events e WHERE e.break_id = b.id))
+                          FROM breaks b
+                          JOIN bank_lines line ON b.item_side = 'BANK' AND line.id = b.item_id
+                         WHERE line.source_code = :bank
+                         ORDER BY b.id
+                        """)
+                .param("bank", bankSource.value()).query(String.class).list();
     }
 
     private static Bank bankLine(String lineId, long amount, String currency, LocalDate valueDate, String batchId) {
@@ -501,6 +681,11 @@ class StageBMatchingTest {
     }
 
     private List<UUID> matchIds() {
+        return matchIdsOf(bankSource);
+    }
+
+    /** The ids of the matches holding a bank line of the bank source, in line-id order. */
+    private List<UUID> matchIdsOf(SourceCode bank) {
         return jdbc.sql("""
                         SELECT item.match_id
                           FROM match_items item
@@ -508,11 +693,16 @@ class StageBMatchingTest {
                          WHERE item.side = 'BANK' AND line.source_code = :bank
                          ORDER BY line.line_id COLLATE "C"
                         """)
-                .param("bank", bankSource.value()).query(UUID.class).list();
+                .param("bank", bank.value()).query(UUID.class).list();
     }
 
     /** The breaks about a bank line of this test's bank source, in line-id order, read back through the break store. */
     private List<Break> breaksOfTheBank() {
+        return breakIdsOf(bankSource).stream().map(id -> breaks.findById(id).orElseThrow()).toList();
+    }
+
+    /** The ids of the breaks about a bank line of the bank source, in line-id order. */
+    private List<UUID> breakIdsOf(SourceCode bank) {
         return jdbc.sql("""
                         SELECT found.id
                           FROM breaks found
@@ -520,8 +710,7 @@ class StageBMatchingTest {
                          WHERE line.source_code = :bank
                          ORDER BY line.line_id COLLATE "C", found.opened_at
                         """)
-                .param("bank", bankSource.value()).query(UUID.class).list().stream()
-                .map(id -> breaks.findById(id).orElseThrow()).toList();
+                .param("bank", bank.value()).query(UUID.class).list();
     }
 
     /** The opening events of the breaks about this test's bank lines, as from>to:code:actor. */
