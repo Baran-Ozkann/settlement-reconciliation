@@ -190,10 +190,12 @@ class BreakLifecycleTest {
     @DisplayName("a resolved break without its resolution code or time cannot be built")
     void resolvedStateIsConsistent() {
         assertThatThrownBy(() -> new Break(UUID.randomUUID(), BreakType.AMOUNT_MISMATCH, PSP_LINE, List.of(),
-                RESOLVED, Optional.empty(), Optional.empty(), Optional.empty(), OPENED, Optional.of(LATER)))
+                RESOLVED, Optional.empty(), Optional.empty(), Optional.empty(), OPENED, Optional.of(LATER),
+                Optional.empty()))
                 .isInstanceOf(InvalidBreakException.class);
         assertThatThrownBy(() -> new Break(UUID.randomUUID(), BreakType.AMOUNT_MISMATCH, PSP_LINE, List.of(),
-                OPEN, Optional.of(ResolutionCode.WRITTEN_OFF), Optional.empty(), Optional.empty(), OPENED, Optional.empty()))
+                OPEN, Optional.of(ResolutionCode.WRITTEN_OFF), Optional.empty(), Optional.empty(), OPENED, Optional.empty(),
+                Optional.empty()))
                 .isInstanceOf(InvalidBreakException.class);
     }
 
