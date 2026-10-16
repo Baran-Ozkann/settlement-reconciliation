@@ -1,11 +1,67 @@
 # Progress
 
-**Current milestone:** 6 — Stage B matching. Part C1 prepared the bank run from design doc v1.16:
-its snapshot, `Break` carrying `details`, and its scope, statuses and statistics. No Stage B rule is
-written yet (part C2 writes the rules, part C3 what happens over time, part D the scheduled run and
-the end-to-end three-way test)
-**Branch:** `milestone-6/part-c1` (one branch per session from Milestone 5.1 on)
+**Current milestone:** 6 — Stage B matching. Part C2 wrote Stage B's rules from design doc v1.17:
+B1, B2, `UNEXPECTED_BANK_LINE`, ambiguity and both duplicate cases, in one precedence. Part C3 adds
+what happens over time (`MATCHED_LATE` for Stage B, `MISSING_SETTLEMENT`, the late-line break), part
+D the scheduled run, the Stage B properties, the end-to-end test and the measurement
+**Branch:** `milestone-6/part-c2` (one branch per session from Milestone 5.1 on)
 **Last updated:** 2026-10-16
+
+## Milestone 6 part C2 — Stage B matching
+
+A bank source's run now matches and opens breaks. Each unmatched bank line of the source gets exactly
+one outcome, in §8.2's precedence (v1.15): no batch id or one naming no batch of a settling PSP
+source, `UNEXPECTED_BANK_LINE`; an id naming batches of several settling sources, `AMBIGUOUS_MATCH`;
+an id naming one batch that another unmatched line also names or that is already matched,
+`DUPLICATE_LINE`; otherwise B1 when the batch has one currency, the line's, and its net sum is the
+line's amount, else B2's `BATCH_AMOUNT_MISMATCH`. Matches are made when the line or the batch is in
+the range; breaks open only on lines in the range, as in Stage A. A PSP source's run and Stage A's
+statements are unchanged. Until part C3, a B1 match leaves an earlier break on its bank line open,
+and an unmatched batch with no break is `PENDING`.
+
+### What was built, by commit
+
+- `39807d4` snapshots on a bank run the PSP sources settling to it, in configuration order
+  (`settling_psp_sources`, empty when none does), and `rule_version.B1_BATCH_TOTAL` /
+  `rule_version.B2_BATCH_CONFLICT` (FR-MAT-8, v1.17). The run reads the list back from its snapshot.
+  `StageBRule` holds the two rules and their versions.
+- `abf068b` is B1: one set-based statement over the classification `DECIDED`, writing the match
+  (`MANY_TO_ONE`, `batch_line_count`, zero difference in the pair's currency), its `BATCH` and `BANK`
+  items and its `CREATED` event. C1's batch rows now read a `settling_line` set: every settling line
+  for the statistics, only the lines of batches an unmatched bank line names for the rules.
+- `b6c0c61` opens B2's `BATCH_AMOUNT_MISMATCH` (related the `BATCH`, `BATCH_TOTAL_CONFLICT` details
+  built in SQL with `BreakDetailsJson`'s keys) and `UNEXPECTED_BANK_LINE`, skipping an item that has
+  an unresolved break (INV-7). `BankRunStatisticsTest`'s main case now counts straight from the store,
+  since the rules would give its hand-built pending lines breaks of their own.
+- `8444ad0` opens `AMBIGUOUS_MATCH` (related all the batches the id names) and `DUPLICATE_LINE`
+  (related the other claimants, in the range or not, the line the batch is matched to, and the
+  `BATCH`). Related items are in side and id order.
+- `bd57170` proves a re-run with no new data writes only its run row, that the same lines in another
+  order give the same results (an example; part D adds the property), and the INV-7 case: a line with
+  an open `UNEXPECTED_BANK_LINE` keeps it when its batch arrives with another sum.
+
+### Break proofs
+
+Recorded in `docs/break-proofs.md`, section "Milestone 6, part C2", all one-offs on
+`JdbcStageBStore.java`, each restored `cmp`-identical and the test passing again:
+
+- B1's one-currency condition and its equal-sum condition: without either, a conflicting pair was
+  matched;
+- FR-MAT-4's ambiguity guard and duplicate guard: without either, a line was matched by a guess;
+- the matched-batch guard: without it, INV-2's index failed the whole run;
+- INV-7: without the `ON CONFLICT` clause, `breaks_one_unresolved_per_item` failed the run;
+- part C1's "named" filter, repeated against the changed statistics test: the same failure as in C1.
+
+### Verification (part C2)
+
+At `bd57170`, the last code commit, in the default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 256 s, 1199 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic-link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 % (711/715), overall 96.9 % (2645/2731).
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0.
+- Targeted tests ran before every other commit. No commit added a migration or changed a shared test
+  fixture. No grant changed.
 
 ## Milestone 6 part C1 — the bank run's ground
 

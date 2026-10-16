@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -22,11 +23,14 @@ import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.StageAStore.FallbackOutcome;
 import com.baran.recon.application.port.StageAStore.StageAPass;
 import com.baran.recon.application.port.StageBStore;
+import com.baran.recon.application.port.StageBStore.BankLineBreaks;
+import com.baran.recon.application.port.StageBStore.StageBPass;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.calendar.BusinessDayIndex;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.StageARule;
+import com.baran.recon.domain.match.StageBRule;
 import com.baran.recon.domain.run.ItemStatistics;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.source.ConfiguredSources;
@@ -44,8 +48,9 @@ import com.baran.recon.domain.source.StageASettings;
  *   <li>in one transaction at REPEATABLE READ: Stage A for a PSP source, the run's statistics
  *       (FR-MAT-10), and the run set COMPLETED. Every statement reads the snapshot the first one
  *       took, so an item committed while the run works is seen by none of its steps, never by
- *       some and not others; the next run takes it up. A bank source's run counts its bank lines
- *       and the batches of the PSP sources that settle to it (TDD 8.2);</li>
+ *       some and not others; the next run takes it up. A bank source's run does Stage B over its
+ *       bank lines and the batches of the PSP sources that settle to it, then counts them
+ *       (TDD 8.2);</li>
  *   <li>if that transaction fails it is rolled back, so nothing of the run's work remains
  *       (NFR-REL-2), and the run is set FAILED in a transaction of its own. A serialization
  *       failure is such a failure.</li>
@@ -70,7 +75,7 @@ public final class RunMatching {
     public static final String GRACE_DAYS_LEDGER_UNMATCHED = "grace_days_ledger_unmatched";
     /** FR-MAT-8, TDD 8.1: business days a PSP line may stay unmatched before it is MISSING_IN_LEDGER. */
     public static final String GRACE_DAYS_PSP_UNMATCHED = "grace_days_psp_unmatched";
-    /** FR-MAT-8: followed by a Stage A rule id, the version of that rule the run ran. */
+    /** FR-MAT-8: followed by a Stage A or Stage B rule id, the version of that rule the run ran. */
     public static final String RULE_VERSION_PREFIX = "rule_version.";
     /**
      * FR-MAT-8, TDD 8.2: the bank source's batch-id-pattern. Batch ids were extracted with the pattern
@@ -79,6 +84,12 @@ public final class RunMatching {
     public static final String BATCH_ID_PATTERN = "batch_id_pattern";
     /** FR-MAT-8, TDD 8.2: business days a batch may wait for its bank line before it is MISSING_SETTLEMENT. */
     public static final String GRACE_DAYS_BATCH_UNPAID = "grace_days_batch_unpaid";
+    /**
+     * FR-MAT-8 (v1.17): the PSP sources settling to the bank source, in configuration order,
+     * comma-separated; empty when none does. Their batches are the ones the run reads, so a later
+     * change of a PSP source's settles-to leaves the record of what this run covered (TDD 8.1).
+     */
+    public static final String SETTLING_PSP_SOURCES = "settling_psp_sources";
 
     private static final Pattern SOURCE_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
 
@@ -168,7 +179,8 @@ public final class RunMatching {
     /**
      * FR-MAT-8: everything the run reads from configuration. A PSP source's run adds what Stage A
      * reads: the business calendar, the source's window and grace periods, and the rule versions. A
-     * bank source's run adds its batch-id-pattern and its batch grace period (TDD 8.2).
+     * bank source's run adds its batch-id-pattern, its batch grace period, the PSP sources settling to
+     * it and the Stage B rule versions (TDD 8.2, v1.17).
      */
     private Map<String, String> configSnapshot(SourceDefinition source) {
         Map<String, String> snapshot = new TreeMap<>();
@@ -187,6 +199,13 @@ public final class RunMatching {
         });
         source.batchIdPattern().ifPresent(pattern -> snapshot.put(BATCH_ID_PATTERN, pattern.toString()));
         source.graceDaysBatchUnpaid().ifPresent(days -> snapshot.put(GRACE_DAYS_BATCH_UNPAID, Integer.toString(days)));
+        if (source.type() == SourceType.BANK_STATEMENT) {
+            snapshot.put(SETTLING_PSP_SOURCES, sources.settlingTo(source.code()).stream()
+                    .map(SourceCode::value).collect(Collectors.joining(",")));
+            for (StageBRule rule : StageBRule.values()) {
+                snapshot.put(RULE_VERSION_PREFIX + rule.name(), Integer.toString(rule.version()));
+            }
+        }
         return snapshot;
     }
 
@@ -205,8 +224,10 @@ public final class RunMatching {
             stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
         });
         if (source.type() == SourceType.BANK_STATEMENT) {
-            ItemTotals totals = stageB.itemTotals(running.source(), sources.settlingTo(running.source()),
-                    running.valueDateFrom(), running.valueDateTo());
+            List<SourceCode> settling = settlingSources(running);
+            matchStageB(running, settling);
+            ItemTotals totals = stageB.itemTotals(running.source(), settling, running.valueDateFrom(),
+                    running.valueDateTo());
             stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
         }
         stats.put(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE,
@@ -243,6 +264,35 @@ public final class RunMatching {
                 running.id(), running.source().value(), Integer.toString(byReference),
                 Integer.toString(byAmount.matched()), Integer.toString(referenceBreaks),
                 Integer.toString(byAmount.breaksOpened()), Integer.toString(graceBreaks), Integer.toString(matchedLate));
+    }
+
+    /**
+     * Stage B (TDD 8.2) for a bank source, inside the work transaction, over its bank lines and the
+     * batches of the PSP sources settling to it, as the run snapshotted them. As in Stage A, each
+     * rule is a statement over the unmatched items, and each sees what the ones before it wrote.
+     * Only ids and counts are logged.
+     */
+    private void matchStageB(ReconciliationRun running, List<SourceCode> settling) {
+        StageBPass pass = new StageBPass(running.id(), running.source(), settling, running.valueDateFrom(),
+                running.valueDateTo(), now());
+        int byBatchTotal = stageB.matchBatchTotals(pass);
+        BankLineBreaks opened = stageB.openBankLineBreaks(pass);
+        LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage B matched {2} by B1 over {3} settling PSP "
+                        + "sources, and opened {4} batch amount mismatch, {5} unexpected bank line, {6} ambiguity and "
+                        + "{7} duplicate line breaks",
+                running.id(), running.source().value(), Integer.toString(byBatchTotal), Integer.toString(settling.size()),
+                Integer.toString(opened.batchConflicts()), Integer.toString(opened.unexpectedLines()),
+                Integer.toString(opened.ambiguousLines()), Integer.toString(opened.duplicateLines()));
+    }
+
+    /**
+     * The PSP sources whose batches a bank source's run reads, as its snapshot recorded them when the
+     * run started (FR-MAT-8, v1.17), not as configuration says now: what the run read and what it
+     * records it read are one list.
+     */
+    private static List<SourceCode> settlingSources(ReconciliationRun running) {
+        String listed = running.configSnapshot().get(SETTLING_PSP_SOURCES);
+        return listed.isEmpty() ? List.of() : Arrays.stream(listed.split(",")).map(SourceCode::of).toList();
     }
 
     /**
