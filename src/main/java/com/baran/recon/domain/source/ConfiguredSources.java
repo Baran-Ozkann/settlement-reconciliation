@@ -53,4 +53,16 @@ public final class ConfiguredSources {
     public List<SourceDefinition> all() {
         return List.copyOf(byCode.values());
     }
+
+    /**
+     * The PSP sources whose {@code settles-to} names the source, in configuration order: their
+     * batches are matched by its run (TDD 5.3). Empty for a PSP source, and for a bank source no PSP
+     * source settles to.
+     */
+    public List<SourceCode> settlingTo(SourceCode bank) {
+        return byCode.values().stream()
+                .filter(source -> source.settlesTo().filter(bank::equals).isPresent())
+                .map(SourceDefinition::code)
+                .toList();
+    }
 }

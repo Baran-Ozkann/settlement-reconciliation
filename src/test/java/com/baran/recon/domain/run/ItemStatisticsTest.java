@@ -79,6 +79,33 @@ class ItemStatisticsTest {
     }
 
     @Test
+    @DisplayName("TDD 8.2, INV-4: a bank run's lines and batches are conserved per currency, a mixed-currency batch "
+            + "counted once in each of its currencies")
+    void bankAndBatchTotalsAreConservedPerCurrency() {
+        Map<String, Long> statistics = ItemStatistics.conserved(
+                List.of(status(ItemSide.BANK, TRY, ItemStatus.MATCHED, 1, 1_200),
+                        status(ItemSide.BATCH, TRY, ItemStatus.MATCHED, 1, 1_200),
+                        status(ItemSide.BATCH, TRY, ItemStatus.PENDING, 1, 800),
+                        status(ItemSide.BATCH, EUR, ItemStatus.PENDING, 1, -50)),
+                List.of(scope(ItemSide.BANK, TRY, 1, 1_200), scope(ItemSide.BATCH, TRY, 2, 2_000),
+                        scope(ItemSide.BATCH, EUR, 1, -50)));
+
+        assertThat(statistics).containsEntry("bank.TRY.matched.sum", 1_200L)
+                .containsEntry("batch.TRY.pending.count", 1L).containsEntry("batch.EUR.pending.sum", -50L)
+                .containsEntry("batch.EUR.matched.count", 0L).doesNotContainKey("bank.EUR.pending.count");
+    }
+
+    @Test
+    @DisplayName("break proof, INV-1 for Stage B: a batch counted under two statuses in one currency fails the check")
+    void batchCountedTwiceIsRefused() {
+        assertThatThrownBy(() -> ItemStatistics.conserved(
+                List.of(status(ItemSide.BATCH, TRY, ItemStatus.MATCHED, 1, 800),
+                        status(ItemSide.BATCH, TRY, ItemStatus.BROKEN, 1, 800)),
+                List.of(scope(ItemSide.BATCH, TRY, 1, 800))))
+                .isInstanceOf(ScopeNotConservedException.class).hasMessageContaining("BATCH TRY");
+    }
+
+    @Test
     @DisplayName("a total without a status among the statuses, or one with a status in the scope, is a caller's mistake")
     void misplacedTotalsAreRefused() {
         assertThatThrownBy(() -> ItemStatistics.conserved(List.of(scope(ItemSide.PSP, TRY, 1, 1)), List.of()))

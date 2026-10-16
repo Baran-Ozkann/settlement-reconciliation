@@ -21,6 +21,7 @@ import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.StageAStore.FallbackOutcome;
 import com.baran.recon.application.port.StageAStore.StageAPass;
+import com.baran.recon.application.port.StageBStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.calendar.BusinessDayIndex;
@@ -30,6 +31,7 @@ import com.baran.recon.domain.run.ItemStatistics;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.source.ConfiguredSources;
 import com.baran.recon.domain.source.SourceDefinition;
+import com.baran.recon.domain.source.SourceType;
 import com.baran.recon.domain.source.StageASettings;
 
 /**
@@ -42,7 +44,8 @@ import com.baran.recon.domain.source.StageASettings;
  *   <li>in one transaction at REPEATABLE READ: Stage A for a PSP source, the run's statistics
  *       (FR-MAT-10), and the run set COMPLETED. Every statement reads the snapshot the first one
  *       took, so an item committed while the run works is seen by none of its steps, never by
- *       some and not others; the next run takes it up;</li>
+ *       some and not others; the next run takes it up. A bank source's run counts its bank lines
+ *       and the batches of the PSP sources that settle to it (TDD 8.2);</li>
  *   <li>if that transaction fails it is rolled back, so nothing of the run's work remains
  *       (NFR-REL-2), and the run is set FAILED in a transaction of its own. A serialization
  *       failure is such a failure.</li>
@@ -50,6 +53,8 @@ import com.baran.recon.domain.source.StageASettings;
  *
  * <p>A run's scope is its source's items with a value date in the range. A ledger entry with no
  * value date is in no range (FR-MAT-9); the run counts how many its source has instead (FR-MAT-10).
+ * A bank source's run also covers the batches, of every PSP source that settles to it, whose latest
+ * line is dated in the range.
  */
 public final class RunMatching {
 
@@ -84,17 +89,20 @@ public final class RunMatching {
     private final RunStore runs;
     private final LedgerEntryStore ledgerEntries;
     private final StageAStore stageA;
+    private final StageBStore stageB;
     private final Transactions transactions;
     private final Clock clock;
     private final ZoneId valueDateZone;
     private final BusinessCalendar calendar;
 
     public RunMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries, StageAStore stageA,
-                       Transactions transactions, Clock clock, ZoneId valueDateZone, BusinessCalendar calendar) {
+                       StageBStore stageB, Transactions transactions, Clock clock, ZoneId valueDateZone,
+                       BusinessCalendar calendar) {
         this.sources = Objects.requireNonNull(sources, "sources");
         this.runs = Objects.requireNonNull(runs, "runs");
         this.ledgerEntries = Objects.requireNonNull(ledgerEntries, "ledgerEntries");
         this.stageA = Objects.requireNonNull(stageA, "stageA");
+        this.stageB = Objects.requireNonNull(stageB, "stageB");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.valueDateZone = Objects.requireNonNull(valueDateZone, "valueDateZone");
@@ -183,9 +191,11 @@ public final class RunMatching {
     }
 
     /**
-     * The run's statistics (FR-MAT-10, FR-API-4). After Stage A they hold its items per side,
-     * currency and status, which must add up to its scope (INV-1, INV-4): if they do not, the run
-     * fails here, inside its work transaction, and nothing it wrote is kept.
+     * The run's statistics (FR-MAT-10, FR-API-4). They hold its items per side, currency and status
+     * - ledger entries and PSP lines after Stage A, bank lines and batches in a bank source's run -
+     * which must add up to its scope (INV-1, INV-4): if they do not, the run fails here, inside its
+     * work transaction, and nothing it wrote is kept. The ledger counts are recorded for every run,
+     * and are 0 for a bank source, which maps no ledger account.
      */
     private ReconciliationRun work(SourceDefinition source, ReconciliationRun running) {
         Map<String, Long> stats = new TreeMap<>();
@@ -194,6 +204,11 @@ public final class RunMatching {
             ItemTotals totals = stageA.itemTotals(running.source(), running.valueDateFrom(), running.valueDateTo());
             stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
         });
+        if (source.type() == SourceType.BANK_STATEMENT) {
+            ItemTotals totals = stageB.itemTotals(running.source(), sources.settlingTo(running.source()),
+                    running.valueDateFrom(), running.valueDateTo());
+            stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
+        }
         stats.put(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE,
                 ledgerEntries.countInScope(running.source(), running.valueDateFrom(), running.valueDateTo()));
         stats.put(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE,
