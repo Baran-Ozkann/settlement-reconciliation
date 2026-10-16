@@ -67,6 +67,13 @@ public final class RunMatching {
     public static final String GRACE_DAYS_PSP_UNMATCHED = "grace_days_psp_unmatched";
     /** FR-MAT-8: followed by a Stage A rule id, the version of that rule the run ran. */
     public static final String RULE_VERSION_PREFIX = "rule_version.";
+    /**
+     * FR-MAT-8, TDD 8.2: the bank source's batch-id-pattern. Batch ids were extracted with the pattern
+     * configured when each line was ingested; the snapshot says which one was configured for the run.
+     */
+    public static final String BATCH_ID_PATTERN = "batch_id_pattern";
+    /** FR-MAT-8, TDD 8.2: business days a batch may wait for its bank line before it is MISSING_SETTLEMENT. */
+    public static final String GRACE_DAYS_BATCH_UNPAID = "grace_days_batch_unpaid";
 
     private static final Pattern SOURCE_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
 
@@ -152,7 +159,8 @@ public final class RunMatching {
 
     /**
      * FR-MAT-8: everything the run reads from configuration. A PSP source's run adds what Stage A
-     * reads: the business calendar, the source's window and grace periods, and the rule versions.
+     * reads: the business calendar, the source's window and grace periods, and the rule versions. A
+     * bank source's run adds its batch-id-pattern and its batch grace period (TDD 8.2).
      */
     private Map<String, String> configSnapshot(SourceDefinition source) {
         Map<String, String> snapshot = new TreeMap<>();
@@ -169,6 +177,8 @@ public final class RunMatching {
                 snapshot.put(RULE_VERSION_PREFIX + rule.name(), Integer.toString(rule.version()));
             }
         });
+        source.batchIdPattern().ifPresent(pattern -> snapshot.put(BATCH_ID_PATTERN, pattern.toString()));
+        source.graceDaysBatchUnpaid().ifPresent(days -> snapshot.put(GRACE_DAYS_BATCH_UNPAID, Integer.toString(days)));
         return snapshot;
     }
 
