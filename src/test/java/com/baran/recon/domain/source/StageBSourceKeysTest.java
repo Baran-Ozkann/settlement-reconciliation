@@ -34,6 +34,25 @@ class StageBSourceKeysTest {
     }
 
     @Test
+    @DisplayName("TDD 5.3: a bank source's run reads the batches of every PSP source that settles to it, in "
+            + "configuration order, and of no other")
+    void settlingToNamesThePspSourcesOfABank() {
+        SourceCode other = SourceCode.of("BANK_OTHER");
+        ConfiguredSources sources = ConfiguredSources.of(List.of(
+                SourceDefinition.psp(SourceCode.of("PSP_GAMMA"), Set.of(), BANK),
+                SourceDefinition.bank(BANK, PATTERN),
+                SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(), other),
+                SourceDefinition.psp(SourceCode.of("PSP_BETA"), Set.of(), BANK),
+                SourceDefinition.bank(other, PATTERN),
+                SourceDefinition.bank(SourceCode.of("BANK_UNSETTLED"), PATTERN)));
+
+        assertThat(sources.settlingTo(BANK)).containsExactly(SourceCode.of("PSP_GAMMA"), SourceCode.of("PSP_BETA"));
+        assertThat(sources.settlingTo(other)).containsExactly(SourceCode.of("PSP_ALPHA"));
+        assertThat(sources.settlingTo(SourceCode.of("BANK_UNSETTLED"))).isEmpty();
+        assertThat(sources.settlingTo(SourceCode.of("PSP_BETA"))).isEmpty();
+    }
+
+    @Test
     @DisplayName("TDD 8.1: a PSP source without settles-to is refused, naming the source and the key")
     void pspSourceNeedsSettlesTo() {
         assertThatThrownBy(() -> new SourceDefinition(PSP, SourceType.PSP_SETTLEMENT, Set.of(), Optional.empty(),

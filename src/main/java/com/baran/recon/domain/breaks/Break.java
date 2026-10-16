@@ -15,6 +15,9 @@ import com.baran.recon.domain.item.ItemRef;
  *
  * <p>A resolved break stays resolved. Reopening one creates a new break that points back at it
  * (FR-BRK-3), so the history of the first is never rewritten.
+ *
+ * <p>A BATCH_AMOUNT_MISMATCH carries the figures that disagreed in {@code details}, and no other
+ * type carries any (TDD 8.2, 10). The details' kind fixes the side of item the break is about.
  */
 public record Break(
         UUID id,
@@ -26,7 +29,8 @@ public record Break(
         Optional<UUID> openedRunId,
         Optional<UUID> previousBreakId,
         Instant openedAt,
-        Optional<Instant> resolvedAt) {
+        Optional<Instant> resolvedAt,
+        Optional<BreakDetails> details) {
 
     /** FR-BRK-4. */
     public static final int MAX_REASON_LENGTH = 1000;
@@ -41,6 +45,14 @@ public record Break(
         if (status.isResolved() != resolutionCode.isPresent() || status.isResolved() != resolvedAt.isPresent()) {
             throw new InvalidBreakException("a break has a resolution code and time exactly when it is resolved");
         }
+        Objects.requireNonNull(details, "details");
+        if ((type == BreakType.BATCH_AMOUNT_MISMATCH) != details.isPresent()) {
+            throw new InvalidBreakException("a break carries details exactly when it is a BATCH_AMOUNT_MISMATCH");
+        }
+        if (details.filter(figures -> figures.subjectSide() != item.side()).isPresent()) {
+            throw new InvalidBreakException(details.get().getClass().getSimpleName() + " is about a "
+                    + details.get().subjectSide() + " item, not a " + item.side() + " item");
+        }
     }
 
     /**
@@ -50,9 +62,16 @@ public record Break(
      */
     public static Transition open(UUID id, BreakType type, ItemRef item, List<ItemRef> relatedItems,
                                   Optional<UUID> openedRunId, Actor actor, Optional<String> reason, Instant at) {
+        return open(id, type, item, relatedItems, Optional.empty(), openedRunId, actor, reason, at);
+    }
+
+    /** As {@link #open(UUID, BreakType, ItemRef, List, Optional, Actor, Optional, Instant)}, with details. */
+    public static Transition open(UUID id, BreakType type, ItemRef item, List<ItemRef> relatedItems,
+                                  Optional<BreakDetails> details, Optional<UUID> openedRunId, Actor actor,
+                                  Optional<String> reason, Instant at) {
         reason.ifPresent(Break::requireReason);
         Break opened = new Break(id, type, item, relatedItems, BreakStatus.OPEN, Optional.empty(), openedRunId,
-                Optional.empty(), at, Optional.empty());
+                Optional.empty(), at, Optional.empty(), details);
         return new Transition(opened, new BreakEvent(id, Optional.empty(), BreakStatus.OPEN, Optional.empty(),
                 actor, reason, at));
     }
@@ -86,7 +105,7 @@ public record Break(
         require(BreakAction.REOPEN, at);
         requireOperator(operator);
         Break reopened = new Break(newId, type, item, relatedItems, BreakStatus.OPEN, Optional.empty(),
-                Optional.empty(), Optional.of(id), at, Optional.empty());
+                Optional.empty(), Optional.of(id), at, Optional.empty(), details);
         return new Transition(reopened, new BreakEvent(newId, Optional.empty(), BreakStatus.OPEN, Optional.empty(),
                 operator, Optional.of(requireReason(reason)), at));
     }
@@ -95,7 +114,7 @@ public record Break(
                               Instant at) {
         Optional<Instant> resolved = to.isResolved() ? Optional.of(at) : Optional.empty();
         Break changed = new Break(id, type, item, relatedItems, to, code, openedRunId, previousBreakId, openedAt,
-                resolved);
+                resolved, details);
         return new Transition(changed, new BreakEvent(id, Optional.of(status), to, code, actor, reason, at));
     }
 

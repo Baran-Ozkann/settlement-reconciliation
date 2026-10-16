@@ -17,6 +17,7 @@ import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.RunTrigger;
 import com.baran.recon.application.port.StageAStore;
+import com.baran.recon.application.port.StageBStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.application.run.AutomaticRunTrigger;
 import com.baran.recon.application.run.RunMatching;
@@ -34,9 +35,10 @@ class MatchingConfiguration {
     /** {@code recon.value-date-zone} and the business calendar are snapshotted onto a run (FR-MAT-8). */
     @Bean
     RunMatching runMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries, StageAStore stageA,
-                            Transactions transactions, Clock clock,
+                            StageBStore stageB, Transactions transactions, Clock clock,
                             @Value("${recon.value-date-zone}") ZoneId valueDateZone, BusinessCalendar calendar) {
-        return new RunMatching(sources, runs, ledgerEntries, stageA, transactions, clock, valueDateZone, calendar);
+        return new RunMatching(sources, runs, ledgerEntries, stageA, stageB, transactions, clock, valueDateZone,
+                calendar);
     }
 
     @Bean

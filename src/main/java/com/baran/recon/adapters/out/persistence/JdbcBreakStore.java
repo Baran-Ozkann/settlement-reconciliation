@@ -42,9 +42,9 @@ class JdbcBreakStore implements BreakStore {
 
     private static final String INSERT_BREAK = """
             INSERT INTO breaks (id, break_type, item_side, item_id, related_items, status, resolution_code,
-                                opened_run_id, previous_break_id, opened_at, resolved_at)
+                                opened_run_id, previous_break_id, opened_at, resolved_at, details)
             VALUES (:id, :breakType, :itemSide, :itemId, CAST(:relatedItems AS JSONB), :status, :resolutionCode,
-                    :openedRunId, :previousBreakId, :openedAt, :resolvedAt)
+                    :openedRunId, :previousBreakId, :openedAt, :resolvedAt, CAST(:details AS JSONB))
             """;
 
     private static final String INSERT_BREAK_UNLESS_UNRESOLVED = INSERT_BREAK
@@ -73,7 +73,7 @@ class JdbcBreakStore implements BreakStore {
 
     private static final String SELECT_BREAK = """
             SELECT id, break_type, item_side, item_id, related_items, status, resolution_code, opened_run_id,
-                   previous_break_id, opened_at, resolved_at
+                   previous_break_id, opened_at, resolved_at, details
               FROM breaks
              WHERE id = :id
             """;
@@ -91,10 +91,12 @@ class JdbcBreakStore implements BreakStore {
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
+    private final BreakDetailsJson details;
 
     JdbcBreakStore(JdbcClient jdbc, JsonMapper json) {
         this.jdbc = jdbc;
         this.json = json;
+        this.details = new BreakDetailsJson(json);
     }
 
     @Override
@@ -150,6 +152,7 @@ class JdbcBreakStore implements BreakStore {
                 .param("previousBreakId", created.previousBreakId().orElse(null), Types.OTHER)
                 .param("openedAt", timestamp(created.openedAt()))
                 .param("resolvedAt", timestampOrNull(created.resolvedAt()), Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("details", created.details().map(details::write).orElse(null), Types.VARCHAR)
                 .update();
     }
 
@@ -207,7 +210,8 @@ class JdbcBreakStore implements BreakStore {
                 optionalUuid(row, "opened_run_id"),
                 optionalUuid(row, "previous_break_id"),
                 instant(row, "opened_at"),
-                optionalInstant(row, "resolved_at"));
+                optionalInstant(row, "resolved_at"),
+                optionalText(row, "details").map(details::read));
     }
 
     private static BreakEvent mapEvent(ResultSet row, int rowNumber) throws SQLException {

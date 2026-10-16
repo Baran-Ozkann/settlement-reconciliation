@@ -25,7 +25,9 @@ import com.baran.recon.application.port.ItemAlreadyHasOpenBreakException;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StaleBreakTransitionException;
 import com.baran.recon.domain.breaks.Actor;
+import com.baran.recon.domain.breaks.BatchFigures;
 import com.baran.recon.domain.breaks.Break;
+import com.baran.recon.domain.breaks.BreakDetails;
 import com.baran.recon.domain.breaks.BreakEvent;
 import com.baran.recon.domain.breaks.BreakStatus;
 import com.baran.recon.domain.breaks.BreakType;
@@ -34,6 +36,8 @@ import com.baran.recon.domain.breaks.Transition;
 import com.baran.recon.domain.item.ItemRef;
 import com.baran.recon.domain.item.ItemSide;
 import com.baran.recon.domain.item.SourceCode;
+import com.baran.recon.domain.money.CurrencyCode;
+import com.baran.recon.domain.money.Money;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.support.ReconPostgres;
 
@@ -94,6 +98,58 @@ class BreakStoreTest {
 
         assertThat(breaks.findById(opened.result().id())).contains(opened.result());
         assertThat(breaks.eventsOf(opened.result().id())).containsExactly(opened.event());
+    }
+
+    @Test
+    @DisplayName("TDD 8.2 (v1.15): a BATCH_AMOUNT_MISMATCH on a bank line is stored with its BATCH_TOTAL_CONFLICT "
+            + "details, a two-currency sums list in currency-code order, and read back unchanged")
+    void batchTotalConflictRoundTrips() {
+        BreakDetails conflict = new BreakDetails.BatchTotalConflict(Money.of(125_000, CurrencyCode.of("TRY")),
+                new BatchFigures(3, List.of(Money.of(124_500, CurrencyCode.of("TRY")),
+                        Money.of(-500, CurrencyCode.of("EUR")))));
+        Transition opened = Break.open(UUID.randomUUID(), BreakType.BATCH_AMOUNT_MISMATCH, item(ItemSide.BANK),
+                List.of(item(ItemSide.BATCH)), Optional.of(conflict), Optional.of(runId), Actor.SYSTEM,
+                Optional.empty(), OPENED);
+
+        breaks.open(opened);
+
+        assertThat(breaks.findById(opened.result().id())).contains(opened.result());
+        assertThat(storedDetailsEqual(opened.result().id(), """
+                {"kind": "BATCH_TOTAL_CONFLICT", "bank": {"amount": 125000, "currency": "TRY"},
+                 "batch": {"lineCount": 3, "sums": [{"currency": "EUR", "amount": -500},
+                                                    {"currency": "TRY", "amount": 124500}]}}""")).isTrue();
+    }
+
+    @Test
+    @DisplayName("TDD 8.2 (v1.15): a BATCH_AMOUNT_MISMATCH on a batch is stored with its BATCH_CHANGED_AFTER_MATCH "
+            + "details through openUnlessUnresolved, and read back unchanged")
+    void batchChangedAfterMatchRoundTrips() {
+        UUID matchId = UUID.randomUUID();
+        BreakDetails changed = new BreakDetails.BatchChangedAfterMatch(matchId,
+                new BatchFigures(3, List.of(Money.of(125_000, CurrencyCode.of("TRY")))),
+                new BatchFigures(4, List.of(Money.of(124_000, CurrencyCode.of("TRY")))));
+        Transition opened = Break.open(UUID.randomUUID(), BreakType.BATCH_AMOUNT_MISMATCH, item(ItemSide.BATCH),
+                List.of(), Optional.of(changed), Optional.of(runId), Actor.SYSTEM, Optional.empty(), OPENED);
+
+        assertThat(breaks.openUnlessUnresolved(opened)).isEqualTo(new BreakStore.Opening(opened.result().id(), true));
+
+        assertThat(breaks.findById(opened.result().id())).contains(opened.result());
+        assertThat(storedDetailsEqual(opened.result().id(), """
+                {"kind": "BATCH_CHANGED_AFTER_MATCH", "matchId": "%s",
+                 "matched": {"lineCount": 3, "sums": [{"currency": "TRY", "amount": 125000}]},
+                 "current": {"lineCount": 4, "sums": [{"currency": "TRY", "amount": 124000}]}}""".formatted(matchId)))
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("TDD 10: a break of another type is stored with no details")
+    void otherBreaksStoreNoDetails() {
+        Transition opened = open(item(ItemSide.PSP));
+
+        breaks.open(opened);
+
+        assertThat(jdbc.sql("SELECT details IS NULL FROM breaks WHERE id = :id").param("id", opened.result().id())
+                .query(Boolean.class).single()).isTrue();
     }
 
     @Test
@@ -234,6 +290,12 @@ class BreakStoreTest {
         assertThatThrownBy(() -> jdbc.sql(sql).param("id", id).update())
                 .hasRootCauseInstanceOf(SQLException.class)
                 .satisfies(e -> assertThat(rootCause(e).getSQLState()).isEqualTo(INSUFFICIENT_PRIVILEGE));
+    }
+
+    /** JSONB equality: keys in any order, lists in their order. */
+    private boolean storedDetailsEqual(UUID breakId, String expected) {
+        return jdbc.sql("SELECT details = CAST(:expected AS JSONB) FROM breaks WHERE id = :id")
+                .param("expected", expected).param("id", breakId).query(Boolean.class).single();
     }
 
     private Transition open(ItemRef item) {

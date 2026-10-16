@@ -1,10 +1,70 @@
 # Progress
 
-**Current milestone:** 6 — Stage B matching. Part B laid Stage B's foundations from design doc
-v1.14; no Stage B rule is written yet (part C builds the rules, part D the scheduled run and the
-end-to-end three-way test)
-**Branch:** `milestone-6/part-b` (one branch per session from Milestone 5.1 on)
-**Last updated:** 2026-10-12
+**Current milestone:** 6 — Stage B matching. Part C1 prepared the bank run from design doc v1.16:
+its snapshot, `Break` carrying `details`, and its scope, statuses and statistics. No Stage B rule is
+written yet (part C2 writes the rules, part C3 what happens over time, part D the scheduled run and
+the end-to-end three-way test)
+**Branch:** `milestone-6/part-c1` (one branch per session from Milestone 5.1 on)
+**Last updated:** 2026-10-16
+
+## Milestone 6 part C1 — the bank run's ground
+
+Design doc v1.16 split part C in three. Part C1 prepares the bank run and writes no Stage B rule:
+after it, a bank source's run still matches nothing and opens no break, so every bank line and batch
+in its scope is `PENDING` unless a match or break was made some other way (in this part, only by
+tests). A PSP source's run is unchanged.
+
+### What was built, by commit
+
+- `94a5a72` snapshots a bank run's `batch_id_pattern` and `grace_days_batch_unpaid` (FR-MAT-8). A PSP
+  run's snapshot is unchanged. `RunMatchingTest.bankSourceRunCompletes` asserted a bank snapshot of
+  the zone alone, so it changed in this commit, deliberately.
+- `4eb150a` gives `Break` a typed `details` (`BreakDetails`: `BatchTotalConflict` on a bank line,
+  `BatchChangedAfterMatch` on a batch; `BatchFigures` keeps sums in currency-code order). It is
+  present exactly for `BATCH_AMOUNT_MISMATCH`, and the kind fixes the subject's side. Only the
+  persistence adapter (`BreakDetailsJson`) turns it into JSON, with TDD 8.2's keys and order, bound
+  as a parameter, using the Jackson the adapter already had. Opening a `BATCH_AMOUNT_MISMATCH`
+  through `BreakStore` works again (part B's note (e)).
+- `dd31826` moves `ItemTotals` out of `StageAStore` to a port type of its own, so the bank run
+  returns the same type. No behaviour change.
+- `f08abc1` gives a bank run its statistics. The scope is its bank lines with a value date in the
+  range, and the batches, of every PSP source whose `settles-to` names it, whose latest line is dated
+  in the range. Each item is `MATCHED`, `BROKEN` or `PENDING` in Stage A's order, and `BROKEN` reads
+  only breaks about a `BANK` or `BATCH` item. A bank line counts its amount and a batch its net sum
+  per currency (a mixed-currency batch once in each). The totals come from one set-based statement
+  (`StageBStore.itemTotals`) and go through the run's finalization check. A batch sum past BIGINT
+  fails the run.
+- `9d03e94` logs one WARN at startup for each bank source that no PSP source settles to, naming it
+  (v1.15).
+
+### Break proofs
+
+Recorded in `docs/break-proofs.md`, section "Milestone 6, part C1":
+
+- Permanent:
+  - the finalization check over `BANK` and `BATCH`: `MiscountingStageBStore` makes the run fail
+    on a miscount of either side (`BankRunStatisticsTest.miscountedBankRunFails`);
+  - `details` exactly for `BATCH_AMOUNT_MISMATCH` in the domain (`BreakDetailsTest`); in the
+    database it was proven by V13's CHECKs in part B;
+  - INV-8 on a batch sum (`batchSumPastBigintFailsTheRun`);
+  - the WARN (`SourcesConfigurationTest`, a pair of tests).
+- Recorded one-off: the Stage B "named" filter removed made
+  `bankRunCountsEachStatusPerCurrency` fail, with S-7 and B-Q counted `BROKEN`.
+
+### Verification (part C1)
+
+At `9d03e94`, the last code commit, in the default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 282 s, 1182 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic-link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 % (702/706), overall 96.8 % (2583/2669).
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0.
+- Targeted tests ran before every other commit. No commit added a migration.
+
+### Part B's pull request CI
+
+The owner reports that part B's pull request (#9, `milestone-6/part-b`) was all green: every
+per-commit job and the reverse-order run passed on the first attempt.
 
 ## Milestone 6 part B — Stage B foundations
 

@@ -77,6 +77,7 @@ import static org.awaitility.Awaitility.await;
         "recon.sources[6].code=BANK_RUN",
         "recon.sources[6].type=BANK_STATEMENT",
         "recon.sources[6].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
+        "recon.sources[6].grace-days-batch-unpaid=5",
         "recon.sources[7].code=PSP_RUN_ROLLBACK",
         "recon.sources[7].type=PSP_SETTLEMENT",
         "recon.sources[7].settles-to=BANK_RUN"})
@@ -296,13 +297,16 @@ class RunMatchingTest {
     }
 
     @Test
-    @DisplayName("TDD 5.3: a bank source's run completes too; Stage A is for a PSP source only")
+    @DisplayName("TDD 5.3, FR-MAT-8: a bank source's run completes too, snapshotting its batch-id-pattern and batch "
+            + "grace period; Stage A's configuration is for a PSP source only")
     void bankSourceRunCompletes() {
         ReconciliationRun completed = matching.run("BANK_RUN", FROM, TO, "system");
 
         assertThat(completed.status()).isEqualTo(RunStatus.COMPLETED);
-        assertThat(completed.configSnapshot()).as("Stage A's configuration is not read for a bank source")
-                .containsOnlyKeys(RunMatching.VALUE_DATE_ZONE);
+        assertThat(completed.configSnapshot()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                RunMatching.VALUE_DATE_ZONE, "Europe/Istanbul",
+                RunMatching.BATCH_ID_PATTERN, "BATCH[-_]?([A-Za-z0-9_-]{1,64})",
+                RunMatching.GRACE_DAYS_BATCH_UNPAID, "5"));
         assertThat(runs.findById(completed.id())).contains(completed);
     }
 

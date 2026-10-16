@@ -14,13 +14,14 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import com.baran.recon.application.port.ItemTotals;
 import com.baran.recon.application.port.LedgerEntryStore;
 import com.baran.recon.application.port.RunAlreadyRunningException;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.StageAStore.FallbackOutcome;
-import com.baran.recon.application.port.StageAStore.ItemTotals;
 import com.baran.recon.application.port.StageAStore.StageAPass;
+import com.baran.recon.application.port.StageBStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.calendar.BusinessDayIndex;
@@ -30,6 +31,7 @@ import com.baran.recon.domain.run.ItemStatistics;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.source.ConfiguredSources;
 import com.baran.recon.domain.source.SourceDefinition;
+import com.baran.recon.domain.source.SourceType;
 import com.baran.recon.domain.source.StageASettings;
 
 /**
@@ -42,7 +44,8 @@ import com.baran.recon.domain.source.StageASettings;
  *   <li>in one transaction at REPEATABLE READ: Stage A for a PSP source, the run's statistics
  *       (FR-MAT-10), and the run set COMPLETED. Every statement reads the snapshot the first one
  *       took, so an item committed while the run works is seen by none of its steps, never by
- *       some and not others; the next run takes it up;</li>
+ *       some and not others; the next run takes it up. A bank source's run counts its bank lines
+ *       and the batches of the PSP sources that settle to it (TDD 8.2);</li>
  *   <li>if that transaction fails it is rolled back, so nothing of the run's work remains
  *       (NFR-REL-2), and the run is set FAILED in a transaction of its own. A serialization
  *       failure is such a failure.</li>
@@ -50,6 +53,8 @@ import com.baran.recon.domain.source.StageASettings;
  *
  * <p>A run's scope is its source's items with a value date in the range. A ledger entry with no
  * value date is in no range (FR-MAT-9); the run counts how many its source has instead (FR-MAT-10).
+ * A bank source's run also covers the batches, of every PSP source that settles to it, whose latest
+ * line is dated in the range.
  */
 public final class RunMatching {
 
@@ -67,6 +72,13 @@ public final class RunMatching {
     public static final String GRACE_DAYS_PSP_UNMATCHED = "grace_days_psp_unmatched";
     /** FR-MAT-8: followed by a Stage A rule id, the version of that rule the run ran. */
     public static final String RULE_VERSION_PREFIX = "rule_version.";
+    /**
+     * FR-MAT-8, TDD 8.2: the bank source's batch-id-pattern. Batch ids were extracted with the pattern
+     * configured when each line was ingested; the snapshot says which one was configured for the run.
+     */
+    public static final String BATCH_ID_PATTERN = "batch_id_pattern";
+    /** FR-MAT-8, TDD 8.2: business days a batch may wait for its bank line before it is MISSING_SETTLEMENT. */
+    public static final String GRACE_DAYS_BATCH_UNPAID = "grace_days_batch_unpaid";
 
     private static final Pattern SOURCE_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
 
@@ -77,17 +89,20 @@ public final class RunMatching {
     private final RunStore runs;
     private final LedgerEntryStore ledgerEntries;
     private final StageAStore stageA;
+    private final StageBStore stageB;
     private final Transactions transactions;
     private final Clock clock;
     private final ZoneId valueDateZone;
     private final BusinessCalendar calendar;
 
     public RunMatching(ConfiguredSources sources, RunStore runs, LedgerEntryStore ledgerEntries, StageAStore stageA,
-                       Transactions transactions, Clock clock, ZoneId valueDateZone, BusinessCalendar calendar) {
+                       StageBStore stageB, Transactions transactions, Clock clock, ZoneId valueDateZone,
+                       BusinessCalendar calendar) {
         this.sources = Objects.requireNonNull(sources, "sources");
         this.runs = Objects.requireNonNull(runs, "runs");
         this.ledgerEntries = Objects.requireNonNull(ledgerEntries, "ledgerEntries");
         this.stageA = Objects.requireNonNull(stageA, "stageA");
+        this.stageB = Objects.requireNonNull(stageB, "stageB");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.valueDateZone = Objects.requireNonNull(valueDateZone, "valueDateZone");
@@ -152,7 +167,8 @@ public final class RunMatching {
 
     /**
      * FR-MAT-8: everything the run reads from configuration. A PSP source's run adds what Stage A
-     * reads: the business calendar, the source's window and grace periods, and the rule versions.
+     * reads: the business calendar, the source's window and grace periods, and the rule versions. A
+     * bank source's run adds its batch-id-pattern and its batch grace period (TDD 8.2).
      */
     private Map<String, String> configSnapshot(SourceDefinition source) {
         Map<String, String> snapshot = new TreeMap<>();
@@ -169,13 +185,17 @@ public final class RunMatching {
                 snapshot.put(RULE_VERSION_PREFIX + rule.name(), Integer.toString(rule.version()));
             }
         });
+        source.batchIdPattern().ifPresent(pattern -> snapshot.put(BATCH_ID_PATTERN, pattern.toString()));
+        source.graceDaysBatchUnpaid().ifPresent(days -> snapshot.put(GRACE_DAYS_BATCH_UNPAID, Integer.toString(days)));
         return snapshot;
     }
 
     /**
-     * The run's statistics (FR-MAT-10, FR-API-4). After Stage A they hold its items per side,
-     * currency and status, which must add up to its scope (INV-1, INV-4): if they do not, the run
-     * fails here, inside its work transaction, and nothing it wrote is kept.
+     * The run's statistics (FR-MAT-10, FR-API-4). They hold its items per side, currency and status
+     * - ledger entries and PSP lines after Stage A, bank lines and batches in a bank source's run -
+     * which must add up to its scope (INV-1, INV-4): if they do not, the run fails here, inside its
+     * work transaction, and nothing it wrote is kept. The ledger counts are recorded for every run,
+     * and are 0 for a bank source, which maps no ledger account.
      */
     private ReconciliationRun work(SourceDefinition source, ReconciliationRun running) {
         Map<String, Long> stats = new TreeMap<>();
@@ -184,6 +204,11 @@ public final class RunMatching {
             ItemTotals totals = stageA.itemTotals(running.source(), running.valueDateFrom(), running.valueDateTo());
             stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
         });
+        if (source.type() == SourceType.BANK_STATEMENT) {
+            ItemTotals totals = stageB.itemTotals(running.source(), sources.settlingTo(running.source()),
+                    running.valueDateFrom(), running.valueDateTo());
+            stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
+        }
         stats.put(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE,
                 ledgerEntries.countInScope(running.source(), running.valueDateFrom(), running.valueDateTo()));
         stats.put(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE,
