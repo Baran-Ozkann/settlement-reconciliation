@@ -40,6 +40,20 @@ public interface StageBStore {
     int matchBatchTotals(StageBPass pass);
 
     /**
+     * After B1, opens a break on each unmatched bank line in the run's range by the line's outcome; a
+     * line outside the range gets none here, and its own when a run covers it:
+     * <ul>
+     *   <li>B2: the id names one batch, but the batch's sum or currency differs from the line's - a
+     *       batch with lines in several currencies always does: BATCH_AMOUNT_MISMATCH, related item
+     *       the BATCH, with the line's amount and the batch's line count and per-currency sums as
+     *       details;</li>
+     *   <li>no batch id, or one naming no batch of the settling PSP sources: UNEXPECTED_BANK_LINE.</li>
+     * </ul>
+     * A line that already has an unresolved break gets no second one (INV-7).
+     */
+    BankLineBreaks openBankLineBreaks(StageBPass pass);
+
+    /**
      * The run's items, totalled per side and currency twice over, in one statement and so on one
      * snapshot: by status (INV-1, in the order of {@link com.baran.recon.domain.run.ItemStatus}) and
      * of every status.
@@ -55,6 +69,10 @@ public interface StageBStore {
      */
     ItemTotals itemTotals(SourceCode bank, List<SourceCode> pspSources, LocalDate valueDateFrom,
                           LocalDate valueDateTo);
+
+    /** The breaks {@link #openBankLineBreaks} opened, by type. */
+    record BankLineBreaks(int batchConflicts, int unexpectedLines) {
+    }
 
     /**
      * What a step works on: the run, its bank source and the PSP sources settling to it as the run

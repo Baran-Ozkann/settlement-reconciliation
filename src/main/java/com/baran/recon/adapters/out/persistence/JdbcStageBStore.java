@@ -170,16 +170,19 @@ class JdbcStageBStore implements StageBStore {
      *       amount;</li>
      *   <li>B2: otherwise: the sum or the currency differs.</li>
      * </ol>
-     * Each batch comes with its line count, whether it is dated in the range, and, when already
-     * matched, the bank line it was matched to. A line meets at most one batch, so it has exactly one
-     * row here.
+     * Each batch comes with its line count, its sum per currency in currency-code order (INV-5),
+     * whether it is dated in the range, and, when already matched, the bank line it was matched to. A
+     * line meets at most one batch, so it has exactly one row here.
      */
     private static final String DECIDED = """
             batch AS MATERIALIZED (
-                SELECT totals.id, totals.source_code, totals.batch_id, totals.currencies, totals.lines,
+                SELECT totals.id, totals.source_code, totals.batch_id, totals.currencies, totals.lines, totals.sums,
                        totals.in_range, paid.item_id AS paid_by
                   FROM (SELECT %s AS id, source_code, batch_id, count(*) AS currencies,
-                               CAST(sum(lines) AS INTEGER) AS lines, max(batch_date) BETWEEN :from AND :to AS in_range
+                               CAST(sum(lines) AS INTEGER) AS lines,
+                               jsonb_agg(jsonb_build_object('currency', currency, 'amount', amount) ORDER BY currency)
+                                   AS sums,
+                               max(batch_date) BETWEEN :from AND :to AS in_range
                           FROM batch_currency
                          GROUP BY source_code, batch_id) totals
                   LEFT JOIN match_items matched
@@ -196,6 +199,7 @@ class JdbcStageBStore implements StageBStore {
             decided AS MATERIALIZED (
                 SELECT line.id, line.amount, line.currency, line.in_range, line.batch_id,
                        batch.id AS batch_item, batch.in_range AS batch_in_range, batch.lines AS batch_lines,
+                       batch.sums AS batch_sums,
                        CASE WHEN naming.batches IS NULL THEN 'UNEXPECTED'
                             WHEN naming.batches > 1 THEN 'AMBIGUOUS'
                             WHEN batch.paid_by IS NOT NULL OR claims.lines > 1 THEN 'DUPLICATE'
@@ -246,6 +250,60 @@ class JdbcStageBStore implements StageBStore {
             SELECT count(*) FROM new_match_event
             """;
 
+    /**
+     * After B1, a break on each unmatched bank line in the run's range that B1 could not match. A line
+     * outside the range gets none, as a PSP line outside Stage A's range gets none, and gets its own
+     * when a run covers it.
+     * <ul>
+     *   <li>B2: BATCH_AMOUNT_MISMATCH, related item the BATCH, with the bank line's amount and the
+     *       batch's line count and sums as BATCH_TOTAL_CONFLICT details (TDD 8.2, v1.15), written
+     *       once, here;</li>
+     *   <li>UNEXPECTED_BANK_LINE, naming nothing: there is no grace for a bank line.</li>
+     * </ul>
+     */
+    private static final String BANK_LINE_FINDINGS = """
+            found AS (
+                SELECT 'BANK' AS item_side, id AS item_id, 'UNEXPECTED_BANK_LINE' AS break_type,
+                       CAST('[]' AS JSONB) AS related_items, CAST(NULL AS JSONB) AS details
+                  FROM decided
+                 WHERE in_range AND outcome = 'UNEXPECTED'
+                UNION ALL
+                SELECT 'BANK', id, 'BATCH_AMOUNT_MISMATCH',
+                       jsonb_build_array(jsonb_build_object('side', 'BATCH', 'id', batch_item)),
+                       jsonb_build_object('kind', 'BATCH_TOTAL_CONFLICT',
+                                          'bank', jsonb_build_object('amount', amount, 'currency', currency),
+                                          'batch', jsonb_build_object('lineCount', batch_lines, 'sums', batch_sums))
+                  FROM decided
+                 WHERE in_range AND outcome = 'B2'
+            )""";
+
+    /**
+     * A break per finding, OPEN, opened by this run, with its opening event (FR-BRK-6), as Stage A
+     * writes its breaks. An item that already has an unresolved break keeps it and gets no second
+     * one, whatever type this run would open: the insert names INV-7's partial index as its conflict
+     * target, so that rule alone is skipped, and only the breaks actually inserted get an event.
+     */
+    private static final String OPEN_BANK_LINE_BREAKS = "WITH " + String.join(",\n", RULES, BANK_LINE_FINDINGS) + """
+            ,
+            opened AS (
+                INSERT INTO breaks (id, break_type, item_side, item_id, related_items, status, resolution_code,
+                                    opened_run_id, previous_break_id, opened_at, resolved_at, details)
+                SELECT gen_random_uuid(), break_type, item_side, item_id, related_items, 'OPEN', NULL,
+                       :runId, NULL, :at, NULL, details
+                  FROM found
+                    ON CONFLICT (item_side, item_id) WHERE status <> 'RESOLVED' DO NOTHING
+                RETURNING id, break_type
+            ),
+            opened_event AS (
+                INSERT INTO break_events (break_id, from_status, to_status, resolution_code, actor, reason, occurred_at)
+                SELECT id, NULL, 'OPEN', NULL, :actor, NULL, :at FROM opened
+                RETURNING break_id
+            )
+            SELECT count(*) FILTER (WHERE break_type = 'BATCH_AMOUNT_MISMATCH') AS batch_conflicts,
+                   count(*) FILTER (WHERE break_type = 'UNEXPECTED_BANK_LINE') AS unexpected_lines
+              FROM opened
+            """;
+
     private final JdbcClient jdbc;
 
     JdbcStageBStore(JdbcClient jdbc) {
@@ -261,6 +319,14 @@ class JdbcStageBStore implements StageBStore {
                 .param("cardinality", rule.cardinality().name())
                 .param("lowConfidence", rule.lowConfidence())
                 .query(Long.class).single());
+    }
+
+    @Override
+    public BankLineBreaks openBankLineBreaks(StageBPass pass) {
+        return pass(OPEN_BANK_LINE_BREAKS, pass)
+                .query((row, n) -> new BankLineBreaks(Math.toIntExact(row.getLong("batch_conflicts")),
+                        Math.toIntExact(row.getLong("unexpected_lines"))))
+                .single();
     }
 
     @Override

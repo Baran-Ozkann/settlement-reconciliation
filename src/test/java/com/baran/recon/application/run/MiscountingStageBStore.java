@@ -50,6 +50,11 @@ public final class MiscountingStageBStore implements StageBStore {
     }
 
     @Override
+    public BankLineBreaks openBankLineBreaks(StageBPass pass) {
+        return delegate.openBankLineBreaks(pass);
+    }
+
+    @Override
     public ItemTotals itemTotals(SourceCode bank, List<SourceCode> pspSources, LocalDate valueDateFrom,
                                  LocalDate valueDateTo) {
         ItemTotals counted = delegate.itemTotals(bank, pspSources, valueDateFrom, valueDateTo);

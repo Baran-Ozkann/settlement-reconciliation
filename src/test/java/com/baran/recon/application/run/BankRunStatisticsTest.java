@@ -18,6 +18,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import com.baran.recon.application.port.BreakStore;
+import com.baran.recon.application.port.ItemTotals;
 import com.baran.recon.application.port.MatchStore;
 import com.baran.recon.application.port.RunStore;
 import com.baran.recon.application.port.StageBStore;
@@ -37,6 +38,7 @@ import com.baran.recon.domain.item.ItemSide;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.money.CurrencyCode;
 import com.baran.recon.domain.money.Money;
+import com.baran.recon.domain.run.ItemStatistics;
 import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.run.RunStatus;
 import com.baran.recon.domain.run.ScopeNotConservedException;
@@ -52,9 +54,11 @@ import static org.assertj.core.api.Assertions.entry;
  * A bank source's run (TDD 5.3, 8.2): its bank lines dated in the range and the batches, of every PSP
  * source that settles to it, whose latest line is dated in the range, each MATCHED, BROKEN or PENDING
  * in Stage A's order, and counted per side and currency through the run's finalization check (INV-1,
- * INV-4). No Stage B rule writes yet, so the matches and breaks are built directly, as the rules will
- * write them. Runs are at {@link FixedRunClock#NOW}, over the working week before it. Each test has
- * sources of its own; the database is shared.
+ * INV-4). The main test builds its matches and breaks directly, as Stage B's rules write them, and
+ * counts them straight from the store with the check the run applies, so the rules leave its states
+ * as built; {@link StageBMatchingTest} covers what the rules write. Runs are at
+ * {@link FixedRunClock#NOW}, over the working week before it. Each test has sources of its own; the
+ * database is shared.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "recon.sources[0].code=PSP_STATS_ALPHA",
@@ -148,7 +152,8 @@ class BankRunStatisticsTest {
     @Test
     @DisplayName("INV-1, INV-4 (TDD 8.2): each bank line and batch in scope is MATCHED, BROKEN or PENDING in Stage A's "
             + "order and counted once per currency: a batch over two files, a mixed-currency batch, a refund batch, "
-            + "and the same batch id from two PSP sources; only breaks about a BANK or BATCH item make one BROKEN")
+            + "and the same batch id from two PSP sources; only breaks about a BANK or BATCH item make one BROKEN. "
+            + "Counted straight from the store, as the run's finalization check counts them")
     void bankRunCountsEachStatusPerCurrency() {
         StageBFixture fixture = fixture();
         fixture.pspFile(ALPHA, List.of(
@@ -197,10 +202,9 @@ class BankRunStatisticsTest {
                 List.of(bank(line.get("S-7")), batch(ALPHA, "B-Q")));
         resolvedBreakOn(bank(line.get("S-9")));
 
-        ReconciliationRun completed = matching.run(BANK.value(), MONDAY, FRIDAY, "operator-001");
+        ItemTotals totals = stageB.itemTotals(BANK, List.of(ALPHA, BETA), MONDAY, FRIDAY);
 
-        assertThat(completed.status()).isEqualTo(RunStatus.COMPLETED);
-        assertThat(completed.stats()).hasValueSatisfying(stats -> assertThat(stats).containsOnly(
+        assertThat(ItemStatistics.conserved(totals.byStatus(), totals.inScope())).containsOnly(
                 entry("bank.TRY.matched.count", 2L), entry("bank.TRY.matched.sum", 1_800L),
                 entry("bank.TRY.broken.count", 3L), entry("bank.TRY.broken.sum", 9_000L),
                 entry("bank.TRY.pending.count", 2L), entry("bank.TRY.pending.sum", 750L),
@@ -212,10 +216,7 @@ class BankRunStatisticsTest {
                 entry("batch.TRY.pending.count", 4L), entry("batch.TRY.pending.sum", 1_600L),
                 entry("batch.EUR.matched.count", 0L), entry("batch.EUR.matched.sum", 0L),
                 entry("batch.EUR.broken.count", 0L), entry("batch.EUR.broken.sum", 0L),
-                entry("batch.EUR.pending.count", 1L), entry("batch.EUR.pending.sum", 500L),
-                entry(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE, 0L),
-                entry(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 0L)));
-        assertThat(runs.findById(completed.id())).contains(completed);
+                entry("batch.EUR.pending.count", 1L), entry("batch.EUR.pending.sum", 500L));
     }
 
     @Test
@@ -237,8 +238,8 @@ class BankRunStatisticsTest {
     }
 
     @Test
-    @DisplayName("TDD 8.1 (v1.15), FR-MAT-8 (v1.17): a bank source no PSP source settles to snapshots none and counts its "
-            + "bank lines and no batch")
+    @DisplayName("TDD 8.1 (v1.15), FR-MAT-8 (v1.17): a bank source no PSP source settles to snapshots none, counts its "
+            + "bank lines and no batch, and each line it carries is UNEXPECTED_BANK_LINE")
     void bankSourceNothingSettlesToCountsItsLinesOnly() {
         fixture().bankFile(ALONE, List.of(new Bank("S-ALONE-1", 1_250, "TRY", TUESDAY, Optional.of("B-NONE"))));
 
@@ -248,8 +249,8 @@ class BankRunStatisticsTest {
 
         assertThat(completed.stats()).hasValueSatisfying(stats -> assertThat(stats).containsOnly(
                 entry("bank.TRY.matched.count", 0L), entry("bank.TRY.matched.sum", 0L),
-                entry("bank.TRY.broken.count", 0L), entry("bank.TRY.broken.sum", 0L),
-                entry("bank.TRY.pending.count", 1L), entry("bank.TRY.pending.sum", 1_250L),
+                entry("bank.TRY.broken.count", 1L), entry("bank.TRY.broken.sum", 1_250L),
+                entry("bank.TRY.pending.count", 0L), entry("bank.TRY.pending.sum", 0L),
                 entry(ReconciliationRun.LEDGER_ENTRIES_IN_SCOPE, 0L),
                 entry(ReconciliationRun.LEDGER_ENTRIES_WITHOUT_VALUE_DATE, 0L)));
     }

@@ -26,6 +26,11 @@ import com.baran.recon.application.port.StatementStore;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.application.run.StageBFixture.Bank;
 import com.baran.recon.application.run.StageBFixture.Psp;
+import com.baran.recon.domain.breaks.BatchFigures;
+import com.baran.recon.domain.breaks.Break;
+import com.baran.recon.domain.breaks.BreakDetails;
+import com.baran.recon.domain.breaks.BreakStatus;
+import com.baran.recon.domain.breaks.BreakType;
 import com.baran.recon.domain.item.ItemRef;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.Match;
@@ -225,36 +230,101 @@ class StageBMatchingTest {
         assertThat(matchesOfTheBank()).extracting(Match::items).containsExactlyInAnyOrder(
                 List.of(item(bank(line.get("S-AFTER"))), item(batch(alpha, "B-IN"))),
                 List.of(item(bank(line.get("S-IN"))), item(batch(alpha, "B-BEFORE"))));
+        assertThat(breaksOfTheBank()).as("S-LATER is outside the range").isEmpty();
     }
 
     @Test
-    @DisplayName("TDD 8.2: batch ids compare exactly, case-sensitive")
+    @DisplayName("TDD 8.2: batch ids compare exactly, case-sensitive, so another case names no batch: UNEXPECTED_BANK_LINE")
     void batchIdsCompareExactly() {
         fixture.pspFile(alpha, List.of(new Psp("A-1", "B-case", 1_000, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, TUESDAY, "B-CASE")));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, TUESDAY, "B-CASE")));
 
         run();
 
         assertThat(matchesOfTheBank()).isEmpty();
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item)
+                .containsExactly(tuple(BreakType.UNEXPECTED_BANK_LINE, bank(line.get("S-1"))));
     }
 
     @Test
-    @DisplayName("B1_BATCH_TOTAL keeps a match exact (TDD 8.2): another amount, another currency, or a batch with lines "
-            + "in two currencies is not matched, even when the line's currency alone sums to the line's amount")
-    void conflictingTotalsAreNotMatched() {
+    @DisplayName("B2_BATCH_CONFLICT (TDD 8.2): another amount, another currency, or a batch with lines in two currencies "
+            + "is no match, even when the line's currency alone sums to the line's amount, but BATCH_AMOUNT_MISMATCH on "
+            + "the bank line, related item the BATCH, with BATCH_TOTAL_CONFLICT details listing each currency's sum")
+    void conflictingTotalsAreBatchAmountMismatches() {
         fixture.pspFile(alpha, List.of(
                 new Psp("A-1", "B-AMOUNT", 1_000, 0, TRY, TUESDAY),
                 new Psp("A-2", "B-CURRENCY", 2_000, 0, EUR, TUESDAY),
                 new Psp("A-3", "B-MIXED", 3_000, 0, TRY, TUESDAY),
                 new Psp("A-4", "B-MIXED", 500, 0, EUR, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
                 bankLine("S-AMOUNT", 1_001, TRY, TUESDAY, "B-AMOUNT"),
                 bankLine("S-CURRENCY", 2_000, TRY, TUESDAY, "B-CURRENCY"),
                 bankLine("S-MIXED", 3_000, TRY, TUESDAY, "B-MIXED")));
 
+        ReconciliationRun run = run();
+
+        assertThat(matchesOfTheBank()).isEmpty();
+        assertThat(breaksOfTheBank())
+                .extracting(Break::type, Break::item, Break::relatedItems, Break::details, Break::status, Break::openedRunId)
+                .containsExactly(
+                        tuple(BreakType.BATCH_AMOUNT_MISMATCH, bank(line.get("S-AMOUNT")), List.of(batch(alpha, "B-AMOUNT")),
+                                Optional.of(conflict(money(1_001, TRY), 1, money(1_000, TRY))), BreakStatus.OPEN,
+                                Optional.of(run.id())),
+                        tuple(BreakType.BATCH_AMOUNT_MISMATCH, bank(line.get("S-CURRENCY")),
+                                List.of(batch(alpha, "B-CURRENCY")),
+                                Optional.of(conflict(money(2_000, TRY), 1, money(2_000, EUR))), BreakStatus.OPEN,
+                                Optional.of(run.id())),
+                        tuple(BreakType.BATCH_AMOUNT_MISMATCH, bank(line.get("S-MIXED")), List.of(batch(alpha, "B-MIXED")),
+                                Optional.of(conflict(money(3_000, TRY), 2, money(500, EUR), money(3_000, TRY))),
+                                BreakStatus.OPEN, Optional.of(run.id())));
+        assertThat(storedSumsOf(line.get("S-MIXED"))).as("INV-5: sums stored in currency-code order")
+                .isEqualTo("[{\"amount\": 500, \"currency\": \"EUR\"}, {\"amount\": 3000, \"currency\": \"TRY\"}]");
+        assertThat(openingEventsOfTheBank()).containsOnly("->OPEN:-:system").hasSize(3);
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.broken.count", 3L, "bank.TRY.pending.count", 0L,
+                "batch.TRY.broken.count", 2L, "batch.EUR.broken.count", 2L)));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a bank line with no batch id, or with one that names no batch, is UNEXPECTED_BANK_LINE at "
+            + "once, naming nothing: there is no grace for a bank line")
+    void bankLineNamingNoBatchIsUnexpected() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-KNOWN", 1_000, 0, TRY, TUESDAY)));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
+                new Bank("S-FEE", -25, TRY, FRIDAY, Optional.empty()),
+                bankLine("S-UNKNOWN", 1_000, TRY, FRIDAY, "B-UNKNOWN")));
+
+        ReconciliationRun run = run();
+
+        assertThat(matchesOfTheBank()).isEmpty();
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item, Break::relatedItems, Break::details)
+                .containsExactly(
+                        tuple(BreakType.UNEXPECTED_BANK_LINE, bank(line.get("S-FEE")), List.of(), Optional.empty()),
+                        tuple(BreakType.UNEXPECTED_BANK_LINE, bank(line.get("S-UNKNOWN")), List.of(), Optional.empty()));
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.broken.count", 2L, "bank.TRY.broken.sum", 975L, "bank.TRY.pending.count", 0L,
+                "batch.TRY.pending.count", 1L)));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2, as Stage A: a bank line outside the run's range gets no break, though it conflicts with a "
+            + "batch in the range or names none; a run covering its date opens it")
+    void bankLineOutsideTheRangeGetsNoBreak() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-IN", 1_000, 0, TRY, WEDNESDAY)));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
+                bankLine("S-CONFLICT", 1_100, TRY, MONDAY_AFTER, "B-IN"),
+                new Bank("S-FEE", -25, TRY, MONDAY_AFTER, Optional.empty())));
+
         run();
 
         assertThat(matchesOfTheBank()).isEmpty();
+        assertThat(breaksOfTheBank()).isEmpty();
+
+        matching.run(bankSource.value(), MONDAY_AFTER, MONDAY_AFTER, "operator-001");
+
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item).containsExactly(
+                tuple(BreakType.BATCH_AMOUNT_MISMATCH, bank(line.get("S-CONFLICT"))),
+                tuple(BreakType.UNEXPECTED_BANK_LINE, bank(line.get("S-FEE"))));
     }
 
     @Test
@@ -300,15 +370,18 @@ class StageBMatchingTest {
     }
 
     @Test
-    @DisplayName("TDD 8.1: a batch of a PSP source settling to another bank is no candidate for this bank's lines")
+    @DisplayName("TDD 8.1, 8.2: a batch of a PSP source settling to another bank is no candidate for this bank's lines; "
+            + "a line naming only it names no batch: UNEXPECTED_BANK_LINE")
     void batchOfAPspSourceSettlingElsewhereIsNoCandidate() {
         String batchId = "B-ELSEWHERE-" + bankSource.value();
         fixture.pspFile(ELSEWHERE, List.of(new Psp("E-" + bankSource.value(), batchId, 1_000, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, batchId)));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, batchId)));
 
         run();
 
         assertThat(matchesOfTheBank()).isEmpty();
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item, Break::relatedItems)
+                .containsExactly(tuple(BreakType.UNEXPECTED_BANK_LINE, bank(line.get("S-1")), List.of()));
     }
 
     private ReconciliationRun run() {
@@ -343,6 +416,47 @@ class StageBMatchingTest {
                          ORDER BY line.line_id
                         """)
                 .param("bank", bankSource.value()).query(UUID.class).list();
+    }
+
+    /** The breaks about a bank line of this test's bank source, in line-id order, read back through the break store. */
+    private List<Break> breaksOfTheBank() {
+        return jdbc.sql("""
+                        SELECT found.id
+                          FROM breaks found
+                          JOIN bank_lines line ON found.item_side = 'BANK' AND line.id = found.item_id
+                         WHERE line.source_code = :bank
+                         ORDER BY line.line_id, found.opened_at
+                        """)
+                .param("bank", bankSource.value()).query(UUID.class).list().stream()
+                .map(id -> breaks.findById(id).orElseThrow()).toList();
+    }
+
+    /** The opening events of the breaks about this test's bank lines, as from>to:code:actor. */
+    private List<String> openingEventsOfTheBank() {
+        return jdbc.sql("""
+                        SELECT coalesce(event.from_status, '-') || '>' || event.to_status || ':'
+                               || coalesce(event.resolution_code, '-') || ':' || event.actor
+                          FROM break_events event
+                          JOIN breaks found ON found.id = event.break_id
+                          JOIN bank_lines line ON found.item_side = 'BANK' AND line.id = found.item_id
+                         WHERE line.source_code = :bank
+                         ORDER BY event.id
+                        """)
+                .param("bank", bankSource.value()).query(String.class).list();
+    }
+
+    /** The {@code sums} list of the details of the bank line's break, as PostgreSQL stored it. */
+    private String storedSumsOf(UUID bankLineId) {
+        return jdbc.sql("SELECT details -> 'batch' -> 'sums' FROM breaks WHERE item_side = 'BANK' AND item_id = :id")
+                .param("id", bankLineId).query(String.class).single();
+    }
+
+    private static Money money(long minorUnits, String currency) {
+        return Money.of(minorUnits, CurrencyCode.of(currency));
+    }
+
+    private static BreakDetails conflict(Money bankAmount, int lineCount, Money... sums) {
+        return new BreakDetails.BatchTotalConflict(bankAmount, new BatchFigures(lineCount, List.of(sums)));
     }
 
     /** A match's creation events, as event:actor. */

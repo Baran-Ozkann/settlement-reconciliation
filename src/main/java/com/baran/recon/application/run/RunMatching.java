@@ -23,6 +23,7 @@ import com.baran.recon.application.port.StageAStore;
 import com.baran.recon.application.port.StageAStore.FallbackOutcome;
 import com.baran.recon.application.port.StageAStore.StageAPass;
 import com.baran.recon.application.port.StageBStore;
+import com.baran.recon.application.port.StageBStore.BankLineBreaks;
 import com.baran.recon.application.port.StageBStore.StageBPass;
 import com.baran.recon.application.port.Transactions;
 import com.baran.recon.domain.calendar.BusinessCalendar;
@@ -275,9 +276,11 @@ public final class RunMatching {
         StageBPass pass = new StageBPass(running.id(), running.source(), settling, running.valueDateFrom(),
                 running.valueDateTo(), now());
         int byBatchTotal = stageB.matchBatchTotals(pass);
+        BankLineBreaks opened = stageB.openBankLineBreaks(pass);
         LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage B matched {2} by B1 over {3} settling PSP "
-                        + "sources", running.id(), running.source().value(), Integer.toString(byBatchTotal),
-                Integer.toString(settling.size()));
+                        + "sources, and opened {4} batch amount mismatch and {5} unexpected bank line breaks",
+                running.id(), running.source().value(), Integer.toString(byBatchTotal), Integer.toString(settling.size()),
+                Integer.toString(opened.batchConflicts()), Integer.toString(opened.unexpectedLines()));
     }
 
     /**
