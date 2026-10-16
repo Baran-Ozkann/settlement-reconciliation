@@ -278,9 +278,11 @@ public final class RunMatching {
         int byBatchTotal = stageB.matchBatchTotals(pass);
         BankLineBreaks opened = stageB.openBankLineBreaks(pass);
         LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage B matched {2} by B1 over {3} settling PSP "
-                        + "sources, and opened {4} batch amount mismatch and {5} unexpected bank line breaks",
+                        + "sources, and opened {4} batch amount mismatch, {5} unexpected bank line, {6} ambiguity and "
+                        + "{7} duplicate line breaks",
                 running.id(), running.source().value(), Integer.toString(byBatchTotal), Integer.toString(settling.size()),
-                Integer.toString(opened.batchConflicts()), Integer.toString(opened.unexpectedLines()));
+                Integer.toString(opened.batchConflicts()), Integer.toString(opened.unexpectedLines()),
+                Integer.toString(opened.ambiguousLines()), Integer.toString(opened.duplicateLines()));
     }
 
     /**

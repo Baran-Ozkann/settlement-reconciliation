@@ -47,7 +47,12 @@ public interface StageBStore {
      *       batch with lines in several currencies always does: BATCH_AMOUNT_MISMATCH, related item
      *       the BATCH, with the line's amount and the batch's line count and per-currency sums as
      *       details;</li>
-     *   <li>no batch id, or one naming no batch of the settling PSP sources: UNEXPECTED_BANK_LINE.</li>
+     *   <li>no batch id, or one naming no batch of the settling PSP sources: UNEXPECTED_BANK_LINE;</li>
+     *   <li>an id naming batches of several settling PSP sources, whatever other lines name:
+     *       AMBIGUOUS_MATCH, related items all those batches (FR-MAT-4);</li>
+     *   <li>an id naming one batch that other unmatched bank lines name too, in the range or not, or
+     *       that is already matched: DUPLICATE_LINE, related items those other lines, the bank line
+     *       the batch is matched to, and the BATCH. None of the claimants is matched by a guess.</li>
      * </ul>
      * A line that already has an unresolved break gets no second one (INV-7).
      */
@@ -71,7 +76,7 @@ public interface StageBStore {
                           LocalDate valueDateTo);
 
     /** The breaks {@link #openBankLineBreaks} opened, by type. */
-    record BankLineBreaks(int batchConflicts, int unexpectedLines) {
+    record BankLineBreaks(int batchConflicts, int unexpectedLines, int ambiguousLines, int duplicateLines) {
     }
 
     /**

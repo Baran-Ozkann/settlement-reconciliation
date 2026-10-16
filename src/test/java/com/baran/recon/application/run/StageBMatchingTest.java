@@ -1,12 +1,14 @@
 package com.baran.recon.application.run;
 
 import java.time.LocalDate;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -328,45 +330,136 @@ class StageBMatchingTest {
     }
 
     @Test
-    @DisplayName("FR-MAT-4 (TDD 8.2): a batch id naming batches of two settling PSP sources is matched to neither, "
-            + "though one of them has the line's amount")
-    void batchIdOfTwoSettlingSourcesIsNotMatched() {
-        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-TWICE", 1_000, 0, TRY, TUESDAY)));
-        fixture.pspFile(beta, List.of(new Psp("B-1", "B-TWICE", 900, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-TWICE")));
+    @DisplayName("FR-MAT-4, ambiguity (TDD 8.2): a batch id naming batches of two settling PSP sources is matched to "
+            + "neither, though one has the line's amount: AMBIGUOUS_MATCH on the bank line, naming both batches, "
+            + "whatever other lines name")
+    void batchIdOfTwoSettlingSourcesIsAmbiguous() {
+        fixture.pspFile(alpha, List.of(
+                new Psp("A-1", "B-TWICE", 1_000, 0, TRY, TUESDAY),
+                new Psp("A-2", "B-CLAIMED", 500, 0, TRY, TUESDAY)));
+        fixture.pspFile(beta, List.of(
+                new Psp("B-1", "B-TWICE", 900, 0, TRY, TUESDAY),
+                new Psp("B-2", "B-CLAIMED", 400, 0, TRY, TUESDAY)));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
+                bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-TWICE"),
+                bankLine("S-2", 500, TRY, THURSDAY, "B-CLAIMED"),
+                bankLine("S-3", 400, TRY, THURSDAY, "B-CLAIMED")));
 
-        run();
+        ReconciliationRun run = run();
 
         assertThat(matchesOfTheBank()).isEmpty();
+        List<ItemRef> twice = bySideAndId(batch(alpha, "B-TWICE"), batch(beta, "B-TWICE"));
+        List<ItemRef> claimed = bySideAndId(batch(alpha, "B-CLAIMED"), batch(beta, "B-CLAIMED"));
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item, Break::relatedItems, Break::details)
+                .as("S-2 and S-3 are not DUPLICATE_LINE, though both name B-CLAIMED")
+                .containsExactly(
+                        tuple(BreakType.AMBIGUOUS_MATCH, bank(line.get("S-1")), twice, Optional.empty()),
+                        tuple(BreakType.AMBIGUOUS_MATCH, bank(line.get("S-2")), claimed, Optional.empty()),
+                        tuple(BreakType.AMBIGUOUS_MATCH, bank(line.get("S-3")), claimed, Optional.empty()));
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.broken.count", 3L, "batch.TRY.broken.count", 4L, "batch.TRY.pending.count", 0L)));
     }
 
     @Test
-    @DisplayName("FR-MAT-4 (TDD 8.2): two unmatched bank lines naming one batch are neither matched, though one has the "
-            + "batch's sum and the other lies outside the range")
-    void twoBankLinesNamingOneBatchAreNotMatched() {
+    @DisplayName("FR-MAT-4, duplicates (TDD 8.2): unmatched bank lines naming one batch are none matched, though one has "
+            + "the batch's sum; each in the range gets DUPLICATE_LINE naming the other lines, one outside the range "
+            + "too, and the BATCH, which is then BROKEN")
+    void bankLinesNamingOneBatchAreDuplicates() {
         fixture.pspFile(alpha, List.of(new Psp("A-1", "B-CLAIMED", 1_000, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
                 bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-CLAIMED"),
+                bankLine("S-2", 950, TRY, THURSDAY, "B-CLAIMED"),
                 bankLine("S-LATER", 900, TRY, MONDAY_AFTER, "B-CLAIMED")));
 
-        run();
+        ReconciliationRun run = run();
 
         assertThat(matchesOfTheBank()).isEmpty();
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item, Break::relatedItems)
+                .as("S-LATER is outside the range: named, and given its own break when a run covers it")
+                .containsExactly(
+                        tuple(BreakType.DUPLICATE_LINE, bank(line.get("S-1")), bySideAndId(bank(line.get("S-2")),
+                                bank(line.get("S-LATER")), batch(alpha, "B-CLAIMED"))),
+                        tuple(BreakType.DUPLICATE_LINE, bank(line.get("S-2")), bySideAndId(bank(line.get("S-1")),
+                                bank(line.get("S-LATER")), batch(alpha, "B-CLAIMED"))));
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.broken.count", 2L, "batch.TRY.broken.count", 1L, "batch.TRY.pending.count", 0L)));
     }
 
     @Test
-    @DisplayName("FR-MAT-2 (TDD 8.2): a batch already matched is not matched again, and its match is kept as it was")
-    void matchedBatchIsNotMatchedAgain() {
+    @DisplayName("FR-MAT-2, duplicates (TDD 8.2): a bank line naming a batch already matched is DUPLICATE_LINE naming the "
+            + "matched bank line and the BATCH, a second payout needing attention at once; the match is kept as it was")
+    void bankLineNamingAMatchedBatchIsADuplicate() {
         fixture.pspFile(alpha, List.of(new Psp("A-1", "B-PAID", 1_000, 0, TRY, TUESDAY)));
         Map<String, UUID> first = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-PAID")));
         ReconciliationRun earlier = run();
         List<Match> before = matchesOfTheBank();
-        fixture.bankFile(bankSource, List.of(bankLine("S-2", 1_000, TRY, THURSDAY, "B-PAID")));
+        Map<String, UUID> second = fixture.bankFile(bankSource, List.of(bankLine("S-2", 1_000, TRY, THURSDAY, "B-PAID")));
 
         run();
 
         assertThat(matchesOfTheBank()).isEqualTo(before).extracting(Match::runId, Match::items).containsExactly(
                 tuple(earlier.id(), List.of(item(bank(first.get("S-1"))), item(batch(alpha, "B-PAID")))));
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item, Break::relatedItems).containsExactly(
+                tuple(BreakType.DUPLICATE_LINE, bank(second.get("S-2")),
+                        bySideAndId(bank(first.get("S-1")), batch(alpha, "B-PAID"))));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: two new bank lines naming a batch already matched each name the matched line, the other new "
+            + "line and the BATCH")
+    void newLinesNamingAMatchedBatchNameEveryClaimant() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-PAID", 1_000, 0, TRY, TUESDAY)));
+        Map<String, UUID> first = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-PAID")));
+        run();
+        Map<String, UUID> later = fixture.bankFile(bankSource, List.of(
+                bankLine("S-2", 1_000, TRY, THURSDAY, "B-PAID"),
+                bankLine("S-3", 700, TRY, FRIDAY, "B-PAID")));
+
+        run();
+
+        assertThat(breaksOfTheBank()).extracting(Break::type, Break::item, Break::relatedItems).containsExactly(
+                tuple(BreakType.DUPLICATE_LINE, bank(later.get("S-2")),
+                        bySideAndId(bank(first.get("S-1")), bank(later.get("S-3")), batch(alpha, "B-PAID"))),
+                tuple(BreakType.DUPLICATE_LINE, bank(later.get("S-3")),
+                        bySideAndId(bank(first.get("S-1")), bank(later.get("S-2")), batch(alpha, "B-PAID"))));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2 precedence (v1.15): each bank line gets exactly one outcome - unexpected before ambiguous, "
+            + "ambiguous before duplicate, duplicate before B1, B1 before B2 - and a line with an equal amount is "
+            + "never matched past an earlier outcome")
+    void eachBankLineGetsExactlyOneOutcome() {
+        fixture.pspFile(alpha, List.of(
+                new Psp("A-1", "B-AMBIGUOUS", 100, 0, TRY, TUESDAY),
+                new Psp("A-2", "B-CLAIMED", 200, 0, TRY, TUESDAY),
+                new Psp("A-3", "B-EXACT", 300, 0, TRY, TUESDAY),
+                new Psp("A-4", "B-CONFLICT", 400, 0, TRY, TUESDAY)));
+        fixture.pspFile(beta, List.of(new Psp("B-1", "B-AMBIGUOUS", 100, 0, TRY, TUESDAY)));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
+                new Bank("S-FEE", -5, TRY, WEDNESDAY, Optional.empty()),
+                bankLine("S-UNKNOWN", 100, TRY, WEDNESDAY, "B-UNKNOWN"),
+                bankLine("S-AMBIGUOUS-1", 100, TRY, WEDNESDAY, "B-AMBIGUOUS"),
+                bankLine("S-AMBIGUOUS-2", 100, TRY, WEDNESDAY, "B-AMBIGUOUS"),
+                bankLine("S-CLAIMED-1", 200, TRY, WEDNESDAY, "B-CLAIMED"),
+                bankLine("S-CLAIMED-2", 200, TRY, WEDNESDAY, "B-CLAIMED"),
+                bankLine("S-EXACT", 300, TRY, WEDNESDAY, "B-EXACT"),
+                bankLine("S-CONFLICT", 401, TRY, WEDNESDAY, "B-CONFLICT")));
+
+        ReconciliationRun run = run();
+
+        assertThat(matchesOfTheBank()).extracting(Match::items)
+                .containsExactly(List.of(item(bank(line.get("S-EXACT"))), item(batch(alpha, "B-EXACT"))));
+        assertThat(breaksOfTheBank()).extracting(found -> found.item().id(), Break::type).containsExactly(
+                tuple(line.get("S-AMBIGUOUS-1"), BreakType.AMBIGUOUS_MATCH),
+                tuple(line.get("S-AMBIGUOUS-2"), BreakType.AMBIGUOUS_MATCH),
+                tuple(line.get("S-CLAIMED-1"), BreakType.DUPLICATE_LINE),
+                tuple(line.get("S-CLAIMED-2"), BreakType.DUPLICATE_LINE),
+                tuple(line.get("S-CONFLICT"), BreakType.BATCH_AMOUNT_MISMATCH),
+                tuple(line.get("S-FEE"), BreakType.UNEXPECTED_BANK_LINE),
+                tuple(line.get("S-UNKNOWN"), BreakType.UNEXPECTED_BANK_LINE));
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.matched.count", 1L, "bank.TRY.broken.count", 7L, "bank.TRY.pending.count", 0L,
+                "batch.TRY.matched.count", 1L, "batch.TRY.broken.count", 4L, "batch.TRY.pending.count", 0L)));
     }
 
     @Test
@@ -413,7 +506,7 @@ class StageBMatchingTest {
                           FROM match_items item
                           JOIN bank_lines line ON line.id = item.item_id
                          WHERE item.side = 'BANK' AND line.source_code = :bank
-                         ORDER BY line.line_id
+                         ORDER BY line.line_id COLLATE "C"
                         """)
                 .param("bank", bankSource.value()).query(UUID.class).list();
     }
@@ -425,7 +518,7 @@ class StageBMatchingTest {
                           FROM breaks found
                           JOIN bank_lines line ON found.item_side = 'BANK' AND line.id = found.item_id
                          WHERE line.source_code = :bank
-                         ORDER BY line.line_id, found.opened_at
+                         ORDER BY line.line_id COLLATE "C", found.opened_at
                         """)
                 .param("bank", bankSource.value()).query(UUID.class).list().stream()
                 .map(id -> breaks.findById(id).orElseThrow()).toList();
@@ -449,6 +542,16 @@ class StageBMatchingTest {
     private String storedSumsOf(UUID bankLineId) {
         return jdbc.sql("SELECT details -> 'batch' -> 'sums' FROM breaks WHERE item_side = 'BANK' AND item_id = :id")
                 .param("id", bankLineId).query(String.class).single();
+    }
+
+    /**
+     * Related items as a break lists them: BANK before BATCH, and by id within a side in PostgreSQL's
+     * order, which compares a UUID's bytes as its text does, unlike {@link UUID#compareTo}.
+     */
+    private static List<ItemRef> bySideAndId(ItemRef... items) {
+        return Stream.of(items)
+                .sorted(Comparator.comparing(ItemRef::side).thenComparing(ref -> ref.id().toString()))
+                .toList();
     }
 
     private static Money money(long minorUnits, String currency) {

@@ -191,7 +191,10 @@ class JdbcStageBStore implements StageBStore {
                          ON paid.match_id = matched.match_id AND paid.side = 'BANK' AND paid.active
             ),
             naming AS (
-                SELECT batch_id, count(*) AS batches FROM batch GROUP BY batch_id
+                SELECT batch_id, count(*) AS batches,
+                       jsonb_agg(jsonb_build_object('side', 'BATCH', 'id', id) ORDER BY id) AS batch_items
+                  FROM batch
+                 GROUP BY batch_id
             ),
             claims AS (
                 SELECT batch_id, count(*) AS lines FROM unmatched_bank WHERE batch_id IS NOT NULL GROUP BY batch_id
@@ -199,7 +202,7 @@ class JdbcStageBStore implements StageBStore {
             decided AS MATERIALIZED (
                 SELECT line.id, line.amount, line.currency, line.in_range, line.batch_id,
                        batch.id AS batch_item, batch.in_range AS batch_in_range, batch.lines AS batch_lines,
-                       batch.sums AS batch_sums,
+                       batch.sums AS batch_sums, naming.batch_items AS named_batches,
                        CASE WHEN naming.batches IS NULL THEN 'UNEXPECTED'
                             WHEN naming.batches > 1 THEN 'AMBIGUOUS'
                             WHEN batch.paid_by IS NOT NULL OR claims.lines > 1 THEN 'DUPLICATE'
@@ -258,10 +261,29 @@ class JdbcStageBStore implements StageBStore {
      *   <li>B2: BATCH_AMOUNT_MISMATCH, related item the BATCH, with the bank line's amount and the
      *       batch's line count and sums as BATCH_TOTAL_CONFLICT details (TDD 8.2, v1.15), written
      *       once, here;</li>
-     *   <li>UNEXPECTED_BANK_LINE, naming nothing: there is no grace for a bank line.</li>
+     *   <li>UNEXPECTED_BANK_LINE, naming nothing: there is no grace for a bank line;</li>
+     *   <li>AMBIGUOUS_MATCH, naming every batch the id names (FR-MAT-4);</li>
+     *   <li>DUPLICATE_LINE, naming the other bank lines that claim the batch - the unmatched ones in
+     *       the range or not, as Stage A names a duplicate's other lines, and the line it is already
+     *       matched to - and the BATCH, so the batch is BROKEN while it is claimed twice.</li>
      * </ul>
+     * Related items are in side and id order, so the same data gives the same breaks (INV-5).
      */
     private static final String BANK_LINE_FINDINGS = """
+            duplicate AS (
+                SELECT subject.id AS item_id,
+                       jsonb_agg(jsonb_build_object('side', other.side, 'id', other.id) ORDER BY other.side, other.id)
+                           AS related_items
+                  FROM decided subject
+                  JOIN (SELECT batch_id, 'BANK' AS side, id FROM unmatched_bank
+                        UNION ALL
+                        SELECT batch_id, 'BANK', paid_by FROM batch WHERE paid_by IS NOT NULL
+                        UNION ALL
+                        SELECT batch_id, 'BATCH', id FROM batch) other
+                    ON other.batch_id = subject.batch_id AND other.id <> subject.id
+                 WHERE subject.in_range AND subject.outcome = 'DUPLICATE'
+                 GROUP BY subject.id
+            ),
             found AS (
                 SELECT 'BANK' AS item_side, id AS item_id, 'UNEXPECTED_BANK_LINE' AS break_type,
                        CAST('[]' AS JSONB) AS related_items, CAST(NULL AS JSONB) AS details
@@ -275,6 +297,13 @@ class JdbcStageBStore implements StageBStore {
                                           'batch', jsonb_build_object('lineCount', batch_lines, 'sums', batch_sums))
                   FROM decided
                  WHERE in_range AND outcome = 'B2'
+                UNION ALL
+                SELECT 'BANK', id, 'AMBIGUOUS_MATCH', named_batches, NULL
+                  FROM decided
+                 WHERE in_range AND outcome = 'AMBIGUOUS'
+                UNION ALL
+                SELECT 'BANK', item_id, 'DUPLICATE_LINE', related_items, NULL
+                  FROM duplicate
             )""";
 
     /**
@@ -300,7 +329,9 @@ class JdbcStageBStore implements StageBStore {
                 RETURNING break_id
             )
             SELECT count(*) FILTER (WHERE break_type = 'BATCH_AMOUNT_MISMATCH') AS batch_conflicts,
-                   count(*) FILTER (WHERE break_type = 'UNEXPECTED_BANK_LINE') AS unexpected_lines
+                   count(*) FILTER (WHERE break_type = 'UNEXPECTED_BANK_LINE') AS unexpected_lines,
+                   count(*) FILTER (WHERE break_type = 'AMBIGUOUS_MATCH') AS ambiguous_lines,
+                   count(*) FILTER (WHERE break_type = 'DUPLICATE_LINE') AS duplicate_lines
               FROM opened
             """;
 
@@ -325,7 +356,8 @@ class JdbcStageBStore implements StageBStore {
     public BankLineBreaks openBankLineBreaks(StageBPass pass) {
         return pass(OPEN_BANK_LINE_BREAKS, pass)
                 .query((row, n) -> new BankLineBreaks(Math.toIntExact(row.getLong("batch_conflicts")),
-                        Math.toIntExact(row.getLong("unexpected_lines"))))
+                        Math.toIntExact(row.getLong("unexpected_lines")), Math.toIntExact(row.getLong("ambiguous_lines")),
+                        Math.toIntExact(row.getLong("duplicate_lines"))))
                 .single();
     }
 
