@@ -10,8 +10,11 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import com.baran.recon.domain.calendar.BusinessCalendar;
 import com.baran.recon.domain.item.SourceCode;
@@ -61,6 +64,48 @@ class SourcesConfigurationTest {
                     assertThat(sources.find(SourceCode.of("BANK_MAIN")).map(SourceDefinition::graceDaysBatchUnpaid))
                             .contains(OptionalInt.of(2));
                 });
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("TDD 8.1 (v1.15): a bank source no PSP source settles to starts, and is logged once as a WARN naming it")
+    void bankSourceNothingSettlesToIsWarnedOnce(CapturedOutput output) {
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[0].settles-to=BANK_MAIN",
+                        "recon.sources[1].code=BANK_MAIN",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN,
+                        "recon.sources[2].code=BANK_UNSETTLED",
+                        "recon.sources[2].type=BANK_STATEMENT",
+                        "recon.sources[2].batch-id-pattern=" + PATTERN)
+                .run(started -> {
+                    assertThat(started).hasNotFailed();
+                    assertThat(started.getBean(ConfiguredSources.class).find(SourceCode.of("BANK_UNSETTLED")))
+                            .isPresent();
+                });
+
+        assertThat(output.getAll().lines().filter(line -> line.contains("WARN") && line.contains("BANK_UNSETTLED")))
+                .singleElement().asString()
+                .contains("Bank statement source BANK_UNSETTLED has no PSP source settling to it");
+        assertThat(output.getAll()).doesNotContain("source BANK_MAIN has no PSP source");
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("TDD 8.1 (v1.15): when a PSP source settles to every bank source, no such WARN is logged")
+    void settledBankSourceIsNotWarned(CapturedOutput output) {
+        context.withPropertyValues(
+                        "recon.sources[0].code=PSP_ALPHA",
+                        "recon.sources[0].type=PSP_SETTLEMENT",
+                        "recon.sources[0].settles-to=BANK_MAIN",
+                        "recon.sources[1].code=BANK_MAIN",
+                        "recon.sources[1].type=BANK_STATEMENT",
+                        "recon.sources[1].batch-id-pattern=" + PATTERN)
+                .run(started -> assertThat(started).hasNotFailed());
+
+        assertThat(output.getAll()).doesNotContain("has no PSP source settling to it");
     }
 
     @Test
