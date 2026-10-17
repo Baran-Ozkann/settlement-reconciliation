@@ -1,11 +1,83 @@
 # Progress
 
-**Current milestone:** 6 — Stage B matching. Part C2 wrote Stage B's rules from design doc v1.17:
-B1, B2, `UNEXPECTED_BANK_LINE`, ambiguity and both duplicate cases, in one precedence. Part C3 adds
-what happens over time (`MATCHED_LATE` for Stage B, `MISSING_SETTLEMENT`, the late-line break), part
-D the scheduled run, the Stage B properties, the end-to-end test and the measurement
-**Branch:** `milestone-6/part-c2` (one branch per session from Milestone 5.1 on)
-**Last updated:** 2026-10-16
+**Current milestone:** 6 — Stage B matching. Part C3 added what happens to Stage B over time, from
+design doc v1.18: `MATCHED_LATE` per side, the late-line break and `MISSING_SETTLEMENT` with grace, so
+a bank source's run now does everything §8.2 says. Part D adds the scheduled run, the Stage B
+properties, the end-to-end test and the measurement
+**Branch:** `milestone-6/part-c3` (one branch per session from Milestone 5.1 on)
+**Last updated:** 2026-10-17
+
+## Milestone 6 part C3 — Stage B over time
+
+A bank source's run now does, in Stage A's order: the rules (B1, then the bank-line breaks), the
+late-line check over batches matched earlier, `MATCHED_LATE` for the breaks the run's matches answer,
+`MISSING_SETTLEMENT` on batches unpaid past their grace, then the statistics. A PSP source's run and
+Stage A's statements are unchanged.
+
+### What was built, by commit
+
+- `004e344` snapshots the business calendar on every run, so a bank run records the calendar its
+  batch grace is counted in, under the keys a PSP run uses (FR-MAT-8, v1.17).
+- `9268c7f` resolves, as `MATCHED_LATE` by the system, an unresolved `UNEXPECTED_BANK_LINE`,
+  `BATCH_AMOUNT_MISMATCH` or `AMBIGUOUS_MATCH` about a bank line the run matched, and a
+  `MISSING_SETTLEMENT` about a batch it matched (FR-BRK-5, §8.2, v1.18). The condition is on the side
+  and the type together, so a batch's late-line `BATCH_AMOUNT_MISMATCH` stays open. `DUPLICATE_LINE`
+  stays open, and a break that only names a matched item is left alone. Events as Stage A's.
+- `e14fde4` opens `BATCH_AMOUNT_MISMATCH` on a `BATCH` item in an active B1 match, dated in the range,
+  whose line count or per-currency sums now differ from what its match recorded (`batch_line_count`,
+  the matched bank line's amount), with `BATCH_CHANGED_AFTER_MATCH` details built in SQL with the keys
+  the strict reader checks. The count and the sums are two conditions. The check reads its own set of
+  lines, the matched batches'. The match stays active (FR-MAT-2), and the break names no other item.
+- `a261965` opens `MISSING_SETTLEMENT`, naming nothing, on a batch dated in the range before
+  `firstDayWithinGrace(today, grace-days-batch-unpaid)`, in no active match, the subject of no
+  unresolved break and named by none. The calendar and the grace days are read back from the run's
+  snapshot; today comes from the injected `Clock`.
+- `1756e8e` makes a refused Stage A setting name its source as well as its key, as part B's Stage B
+  keys do: the non-negative checks moved from `StageASettings` to `SourceDefinition` (part B's
+  question 5).
+
+### Decisions
+
+- **The bank run's grace reads the calendar and `grace_days_batch_unpaid` back from its snapshot.**
+  The prompt said Stage A's grace does so; Stage A reads them from configuration. The owner chose
+  the snapshot for the bank run and Stage A unchanged; the review proposes a design doc line.
+- **The late-line break names no other item.** §8.2 gives it no related items; `matchId` in its
+  details identifies the match and its bank line.
+- **Three earlier tests changed so they still test what they were written for.** Two
+  `StageBMatchingTest` cases date their unpaid batch within grace, and `BankRunStatisticsTest`'s dating
+  case gives its bank a 30-day batch grace. `StageBMatchingTest.anUnresolvedBreakIsNeverOpenedTwice`
+  now ends with its break `MATCHED_LATE`, as v1.18 says.
+
+### Break proofs
+
+Recorded in `docs/break-proofs.md`, section "Milestone 6, part C3", all one-offs on
+`JdbcStageBStore.java` against permanent tests in `StageBOverTimeTest`, each restored `cmp`-identical
+and the class passing again:
+
+- `MATCHED_LATE` per side: with a type list alone, a batch's `BATCH_CHANGED_AFTER_MATCH` break was
+  resolved by a new match (the state built through the stores, as after a reversal);
+- the late-line count: without it, a late line of net 0 opened no break;
+- the late-line sums: without them, a match with the batch's count and another amount opened no break
+  (built through the stores: lines are never removed or changed);
+- the grace break's "named by none": without it, the batches a B2, an ambiguity and a duplicate break
+  name all got `MISSING_SETTLEMENT`.
+
+### Verification (part C3)
+
+At `1756e8e`, the last code commit, in the default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 205 s, 1217 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic-link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 % (712/716), overall 96.9 % (2671/2757).
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0.
+- Targeted tests ran before every other commit. No commit added a migration, changed a shared test
+  fixture's data or changed a grant.
+
+### Parts C1 and C2's pull request CI
+
+The owner reports that part C1's pull request (#12, `milestone-6/part-c1`) and part C2's (#14,
+`milestone-6/part-c2`) were all green: every per-commit job and the reverse-order run passed on the
+first attempt.
 
 ## Milestone 6 part C2 — Stage B matching
 

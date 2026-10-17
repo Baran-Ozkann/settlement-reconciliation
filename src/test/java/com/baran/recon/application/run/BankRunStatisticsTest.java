@@ -96,7 +96,10 @@ import static org.assertj.core.api.Assertions.entry;
         "recon.sources[10].settles-to=BANK_STATS_DATED",
         "recon.sources[11].code=BANK_STATS_DATED",
         "recon.sources[11].type=BANK_STATEMENT",
-        "recon.sources[11].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})"})
+        "recon.sources[11].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
+        // A batch grace no batch of the dating test reaches, so its batch stays PENDING: grace is
+        // StageBOverTimeTest's (TDD 8.2), and this test counts where a batch is dated.
+        "recon.sources[11].grace-days-batch-unpaid=30"})
 @ActiveProfiles("test")
 @Import({FixedRunClock.class, MiscountingStageBStore.Injection.class})
 @DisplayName("TDD 8.2, INV-1, INV-4: a bank run's lines and batches, each by status, conserved per currency")

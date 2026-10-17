@@ -35,6 +35,7 @@ import com.baran.recon.domain.breaks.Break;
 import com.baran.recon.domain.breaks.BreakDetails;
 import com.baran.recon.domain.breaks.BreakStatus;
 import com.baran.recon.domain.breaks.BreakType;
+import com.baran.recon.domain.breaks.ResolutionCode;
 import com.baran.recon.domain.item.ItemRef;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.Match;
@@ -293,7 +294,8 @@ class StageBMatchingTest {
     @DisplayName("TDD 8.2: a bank line with no batch id, or with one that names no batch, is UNEXPECTED_BANK_LINE at "
             + "once, naming nothing: there is no grace for a bank line")
     void bankLineNamingNoBatchIsUnexpected() {
-        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-KNOWN", 1_000, 0, TRY, TUESDAY)));
+        // Within the batch grace on the run's day, so the batch is PENDING unless something names it.
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-KNOWN", 1_000, 0, TRY, THURSDAY)));
         Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
                 new Bank("S-FEE", -25, TRY, FRIDAY, Optional.empty()),
                 bankLine("S-UNKNOWN", 1_000, TRY, FRIDAY, "B-UNKNOWN")));
@@ -525,15 +527,16 @@ class StageBMatchingTest {
 
     @Test
     @DisplayName("INV-7 (TDD 8.2): a bank line with an open UNEXPECTED_BANK_LINE whose batch arrives later with another "
-            + "sum keeps that break, gets no BATCH_AMOUNT_MISMATCH and no event; once the sum agrees, B1 matches it and, "
-            + "until part C3, the break stays open on a MATCHED line")
+            + "sum keeps that break, gets no BATCH_AMOUNT_MISMATCH and no event; once the sum agrees, B1 matches it and "
+            + "resolves the break as MATCHED_LATE (FR-BRK-5)")
     void anUnresolvedBreakIsNeverOpenedTwice() {
         Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-LATE")));
         run();
         Break unexpected = breaksOfTheBank().getFirst();
         assertThat(unexpected.type()).isEqualTo(BreakType.UNEXPECTED_BANK_LINE);
 
-        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-LATE", 700, 0, TRY, TUESDAY)));
+        // Within the batch grace on the run's day, so the batch is PENDING, not MISSING_SETTLEMENT.
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-LATE", 700, 0, TRY, THURSDAY)));
         ReconciliationRun conflicting = run();
 
         assertThat(matchesOfTheBank()).isEmpty();
@@ -547,7 +550,8 @@ class StageBMatchingTest {
 
         assertThat(matchesOfTheBank()).extracting(Match::items, Match::batchLineCount).containsExactly(
                 tuple(List.of(item(bank(line.get("S-1"))), item(batch(alpha, "B-LATE"))), OptionalInt.of(2)));
-        assertThat(breaksOfTheBank()).containsExactly(unexpected);
+        assertThat(breaksOfTheBank()).extracting(Break::id, Break::status, Break::resolutionCode)
+                .containsExactly(tuple(unexpected.id(), BreakStatus.RESOLVED, Optional.of(ResolutionCode.MATCHED_LATE)));
         assertThat(agreeing.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
                 "bank.TRY.matched.count", 1L, "bank.TRY.broken.count", 0L, "batch.TRY.matched.count", 1L)));
     }

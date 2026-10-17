@@ -297,15 +297,17 @@ class RunMatchingTest {
     }
 
     @Test
-    @DisplayName("TDD 5.3, FR-MAT-8: a bank source's run completes too, snapshotting its batch-id-pattern, batch grace "
-            + "period, the PSP sources settling to it in configuration order and the Stage B rule versions (v1.17); "
-            + "Stage A's configuration is for a PSP source only")
+    @DisplayName("TDD 5.3, FR-MAT-8: a bank source's run completes too, snapshotting the business calendar as a PSP "
+            + "run does (v1.17), its batch-id-pattern, batch grace period, the PSP sources settling to it in "
+            + "configuration order and the Stage B rule versions; Stage A's configuration is for a PSP source only")
     void bankSourceRunCompletes() {
         ReconciliationRun completed = matching.run("BANK_RUN", FROM, TO, "system");
 
         assertThat(completed.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(completed.configSnapshot()).containsExactlyInAnyOrderEntriesOf(Map.of(
                 RunMatching.VALUE_DATE_ZONE, "Europe/Istanbul",
+                RunMatching.BUSINESS_CALENDAR_WEEKEND, "SATURDAY,SUNDAY",
+                RunMatching.BUSINESS_CALENDAR_HOLIDAYS, "2026-05-19,2026-10-29",
                 RunMatching.BATCH_ID_PATTERN, "BATCH[-_]?([A-Za-z0-9_-]{1,64})",
                 RunMatching.GRACE_DAYS_BATCH_UNPAID, "5",
                 RunMatching.SETTLING_PSP_SOURCES,

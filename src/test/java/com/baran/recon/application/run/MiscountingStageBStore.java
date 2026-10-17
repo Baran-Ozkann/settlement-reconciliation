@@ -1,10 +1,12 @@
 package com.baran.recon.application.run;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.beans.factory.config.BeanPostProcessor;
@@ -52,6 +54,21 @@ public final class MiscountingStageBStore implements StageBStore {
     @Override
     public BankLineBreaks openBankLineBreaks(StageBPass pass) {
         return delegate.openBankLineBreaks(pass);
+    }
+
+    @Override
+    public int openChangedBatchBreaks(StageBPass pass) {
+        return delegate.openChangedBatchBreaks(pass);
+    }
+
+    @Override
+    public int resolveMatchedLate(UUID runId, String reason, Instant at) {
+        return delegate.resolveMatchedLate(runId, reason, at);
+    }
+
+    @Override
+    public int openGraceBreaks(StageBPass pass, LocalDate batchGraceStart) {
+        return delegate.openGraceBreaks(pass, batchGraceStart);
     }
 
     @Override
