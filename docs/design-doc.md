@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.17 — Milestone 6 part C1's questions settled: the bank run's snapshot, `details` keys, `settles-to` changes, Stage B measured in part D
+Version: 1.18 — Milestone 6 part C2's questions settled: a break keeps its type, `details` built in SQL by a set-based rule, duplicate claimants, part C3's scope
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -581,7 +581,10 @@ Stage B details (settled in v1.14, Milestone 6 part A):
   `BROKEN` and gets no grace break while claimed twice). A bank line naming a batch that is already
   matched gets `DUPLICATE_LINE`, related items the matched bank line and the `BATCH`: a second payout
   of a paid batch needs attention at once. `DUPLICATE_LINE` therefore also means "two bank lines
-  claim one batch", as it means "two PSP lines share a reference" in Stage A.
+  claim one batch", as it means "two PSP lines share a reference" in Stage A. When a batch is already
+  matched and several new lines name it, each new line's `DUPLICATE_LINE` names every other claimant:
+  the matched line, the other new lines and the `BATCH` (v1.18). A `DUPLICATE_LINE` keeps the related
+  items it opened with; a later claimant's own break names them all.
 - **Precedence for one bank line (v1.15).** No id, or an id naming no batch: `UNEXPECTED_BANK_LINE`.
   An id naming batches of several sources: `AMBIGUOUS_MATCH`, whatever other lines name. An id naming
   exactly one batch: `DUPLICATE_LINE` if another unmatched bank line names it too or it is already
@@ -595,7 +598,15 @@ Stage B details (settled in v1.14, Milestone 6 part A):
   `BATCH_AMOUNT_MISMATCH` or `AMBIGUOUS_MATCH` on its bank line, and `MISSING_SETTLEMENT` on its batch.
   Unlike Stage A's mismatch breaks, a B2 is answered by a later match, because a batch's sum is taken
   over lines that may still be arriving: a B2 is often "batch incomplete", and the later B1 is its
-  explanation. `DUPLICATE_LINE` stays open. A break that only names an item is left alone.
+  explanation. `DUPLICATE_LINE` stays open. A break that only names an item is left alone. The list
+  is per side (v1.18): on a `BATCH` item a match answers only `MISSING_SETTLEMENT`, never the
+  late-line `BATCH_AMOUNT_MISMATCH` (`BATCH_CHANGED_AFTER_MATCH`), which stays open for an operator.
+- **A break keeps the type it opened with (v1.18).** INV-7 allows one unresolved break per item, so a
+  rule that would now open another type on an item that already has one opens nothing. A bank line
+  opened as `UNEXPECTED_BANK_LINE` before its batch arrived stays so when the batch arrives with
+  another sum, though B2 now applies. A later B1 resolves it with `MATCHED_LATE`; otherwise an
+  operator resolves it. Stage A has the same property (a `MISSING_IN_LEDGER` line whose entry arrives
+  with another amount).
 - **Breaks name only `BATCH` and `BANK` items.** A Stage B break never names a PSP line, so it never
   changes a line's Stage A status; Stage A's "named" check also reads only breaks whose *subject*
   (`item_side`) is a `LEDGER` entry or a `PSP` line (defence in depth, v1.15). Filtering the related
@@ -619,7 +630,9 @@ Stage B details (settled in v1.14, Milestone 6 part A):
   on the `BATCH` item (a line arriving after its batch was matched). `matched` is what the match
   recorded: `batch_line_count`, and the bank line's amount, which B1 made equal to the batch's sum.
   `Break` carries `details` as a typed value in the domain; the persistence adapter alone turns it into
-  JSON, bound as a parameter. A reopened break (FR-BRK-3) keeps the details of the break it reopens;
+  JSON: bound as a parameter for one break, built in the rule's statement (`jsonb_build_object`) for
+  a set-based rule, with the same keys, which the strict reader checks (v1.18). A reopened break
+  (FR-BRK-3) keeps the details of the break it reopens;
   what an operator's reopen records is decided with Milestone 7's endpoint (v1.17).
 - **Item status and statistics.** A batch and a bank line take `MATCHED`, `BROKEN` or `PENDING` in the
   same order as Stage A. A bank run's statistics cover `BANK` (the line's amount) and `BATCH` (the
@@ -1035,12 +1048,13 @@ write technique is settled here first.
 - Part C1 (done), the bank run's ground: its snapshot (pattern, batch grace); `Break` carrying
   `details`; the bank run's scope, statuses and statistics (INV-1/INV-4 per currency); the WARN for a
   bank source nothing settles to. Its open questions are settled in v1.17.
-- Part C2, Stage B matching: rules B1–B2, ambiguity, `UNEXPECTED_BANK_LINE`, both duplicate cases in
-  v1.15's precedence; idempotent re-runs; the bank run's snapshot gains the PSP sources settling to it
-  and the B rule versions.
-- Part C3, Stage B over time: `MATCHED_LATE` for Stage B, `MISSING_SETTLEMENT` with grace, the
-  late-line break (`BATCH_CHANGED_AFTER_MATCH`), the business calendar in the bank run's snapshot,
-  and Stage A's settings messages naming the source.
+- Part C2 (done), Stage B matching: rules B1–B2, ambiguity, `UNEXPECTED_BANK_LINE`, both duplicate
+  cases in v1.15's precedence; idempotent re-runs; the bank run's snapshot gains the PSP sources
+  settling to it and the B rule versions. Its open questions are settled in v1.18.
+- Part C3, Stage B over time: `MATCHED_LATE` for Stage B, per side; `MISSING_SETTLEMENT` with grace,
+  skipping batches a break names; the late-line break (`BATCH_CHANGED_AFTER_MATCH`) over the batches
+  of active B1 matches; the business calendar in the bank run's snapshot; and Stage A's settings
+  messages naming the source.
 - Part D: the daily scheduled run (§5.3); INV-1/INV-4/INV-5 property tests extended to Stage B; the
   end-to-end three-way test; Stage B measured at NFR-PERF-2's scale, recorded, with an index on the
   batch-id columns added only if the measurement shows it is needed (v1.17).
