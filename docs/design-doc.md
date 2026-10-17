@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.18 — Milestone 6 part C2's questions settled: a break keeps its type, `details` built in SQL by a set-based rule, duplicate claimants, part C3's scope
+Version: 1.19 — Milestone 6 part C3's questions settled: a run reads its settings from its snapshot, the late-line break names the matched bank line; part D split into D1, D2 and D3
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -144,7 +144,9 @@ IDs are stable. Tests and commit bodies reference them.
 - **FR-MAT-8** A run's configuration (tolerances, windows, grace periods, rule versions, the value-date
   zone) is snapshotted onto the run record. A bank source's run also snapshots its `batch-id-pattern`
   and the PSP sources whose batches it reads, those settling to it (v1.17), and, like a PSP run, the
-  rule versions and business calendar it applies.
+  rule versions and business calendar it applies. A run of either stage reads every setting it applies
+  (zone, calendar, windows, grace periods, pattern, settling sources) back from its own snapshot, not
+  from configuration a second time, so what a run records and what it did cannot differ (v1.19).
 - **FR-MAT-9** A ledger entry with no `value_date` falls in no date window and is excluded from run
   scope. Missing data is not a reconciliation discrepancy, so it must never produce a break.
 - **FR-MAT-10** Each run's `stats` records `ledger_entries_without_value_date` for its source, counted
@@ -355,7 +357,11 @@ ArchUnit rules (Milestone 1):
   `recon.matching.scheduled-run.*`: `enabled` (true; false in the test profile, as the automatic
   trigger is), the time of day in the value-date zone, and `look-back-days` (default 30, more than
   any grace plus window). It uses the automatic trigger's executor, queue, busy wait and give-up
-  bound, and runs as `system`.
+  bound, and runs as `system`. Details (v1.19): the PSP sources' runs are queued first, then the bank
+  sources', each in configuration order, one queue place per source; a full queue refuses a source
+  with a WARN, as it refuses a file. A day the application was down at the scheduled time is not run
+  later: the next day's look-back covers it. `look-back-days` below 1 or a malformed time stops
+  startup. "Today" comes from the injected `Clock` in the value-date zone.
 
 ---
 
@@ -591,7 +597,10 @@ Stage B details (settled in v1.14, Milestone 6 part A):
   matched; otherwise B1, else B2. Each line gets exactly one outcome.
 - **A line arriving after its batch was matched.** FR-MAT-2 keeps the match. A run that finds a
   matched batch whose line count or sum now differs from the match opens `BATCH_AMOUNT_MISMATCH` on the
-  `BATCH` item, with the old and new figures in `details`; it stays open for an operator.
+  `BATCH` item, with the old and new figures in `details`, related item the matched bank line, as B2
+  names its batch (v1.19); it stays open for an operator. The check may first narrow the matched
+  batches to those with a line dated in the run's range, which keeps its result the same, if part D3's
+  measurement shows the cost of a long match history.
 - **Bank lines with no batch id** (fees, interest, any other movement on the account) are
   `UNEXPECTED_BANK_LINE` at once: there is no grace for a bank line. An operator resolves them.
 - **Auto-resolution.** A B1 match resolves, with `MATCHED_LATE`, an unresolved `UNEXPECTED_BANK_LINE`,
@@ -1051,13 +1060,17 @@ write technique is settled here first.
 - Part C2 (done), Stage B matching: rules B1–B2, ambiguity, `UNEXPECTED_BANK_LINE`, both duplicate
   cases in v1.15's precedence; idempotent re-runs; the bank run's snapshot gains the PSP sources
   settling to it and the B rule versions. Its open questions are settled in v1.18.
-- Part C3, Stage B over time: `MATCHED_LATE` for Stage B, per side; `MISSING_SETTLEMENT` with grace,
-  skipping batches a break names; the late-line break (`BATCH_CHANGED_AFTER_MATCH`) over the batches
-  of active B1 matches; the business calendar in the bank run's snapshot; and Stage A's settings
-  messages naming the source.
-- Part D: the daily scheduled run (§5.3); INV-1/INV-4/INV-5 property tests extended to Stage B; the
-  end-to-end three-way test; Stage B measured at NFR-PERF-2's scale, recorded, with an index on the
-  batch-id columns added only if the measurement shows it is needed (v1.17).
+- Part C3 (done), Stage B over time: `MATCHED_LATE` for Stage B, per side; `MISSING_SETTLEMENT` with
+  grace, skipping batches a break names; the late-line break (`BATCH_CHANGED_AFTER_MATCH`) over the
+  batches of active B1 matches; the business calendar in the bank run's snapshot; and Stage A's
+  settings messages naming the source. Its open questions are settled in v1.19.
+- Part D1: the daily scheduled run (§5.3); Stage A reads its settings back from its snapshot, as the
+  bank run does (FR-MAT-8, v1.19); `StageASettings` validates itself again, with `SourceDefinition`
+  naming the source; the late-line break names the matched bank line.
+- Part D2: INV-1/INV-4/INV-5 property tests extended to Stage B; the end-to-end three-way test.
+- Part D3: Stage B measured at NFR-PERF-2's scale, with a long match history, under the measurement
+  conditions of §4.6, and recorded; the late-line pre-filter or an index on the batch-id columns
+  added only if the measurement shows it is needed (v1.17).
 - Exit: Stage B rules and details of §8.2 covered, each by name; INV-1/INV-4/INV-5 extended to Stage B
   (shuffled inputs, fixed seed); a test pins the SQL batch id equal to `BatchKey.itemId()`; the
   scheduled run opens a grace break no file-triggered run would; break proofs for every new
