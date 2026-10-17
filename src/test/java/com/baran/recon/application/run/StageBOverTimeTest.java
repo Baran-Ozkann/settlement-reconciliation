@@ -283,8 +283,153 @@ class StageBOverTimeTest {
         assertThat(eventsOf(changed)).containsExactly("->OPEN:-:system");
     }
 
+    @Test
+    @DisplayName("TDD 8.2: a line arriving after its batch was matched, changing the batch's sum, opens "
+            + "BATCH_AMOUNT_MISMATCH on the BATCH item with BATCH_CHANGED_AFTER_MATCH details - the match's figures and "
+            + "the batch's now - naming no other item; the match stays active (FR-MAT-2)")
+    void lateLineChangingTheSumOpensABatchMismatch() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-11", 1_000, 0, TRY, TUESDAY)));
+        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-11")));
+        run();
+        UUID matchId = onlyActiveMatchId();
+        fixture.pspFile(alpha, List.of(new Psp("A-2", "B-11", 250, 0, TRY, THURSDAY)));
+
+        ReconciliationRun changed = run();
+
+        assertChangedAfterMatch(batch(alpha, "B-11"), changed, matchId,
+                new BatchFigures(1, List.of(money(1_000))), new BatchFigures(2, List.of(money(1_250))));
+        assertThat(onlyActiveMatchId()).isEqualTo(matchId);
+        assertThat(changed.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "bank.TRY.matched.count", 1L, "batch.TRY.matched.count", 1L, "batch.TRY.matched.sum", 1_250L,
+                "batch.TRY.broken.count", 0L)));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a late line of net 0 changes the batch's line count but not its sum, and opens the same "
+            + "BATCH_AMOUNT_MISMATCH: the count is compared on its own")
+    void lateLineChangingOnlyTheCountOpensABatchMismatch() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-12", 1_000, 0, TRY, TUESDAY)));
+        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-12")));
+        run();
+        UUID matchId = onlyActiveMatchId();
+        fixture.pspFile(alpha, List.of(new Psp("A-2", "B-12", 100, 100, TRY, THURSDAY)));
+
+        ReconciliationRun changed = run();
+
+        assertChangedAfterMatch(batch(alpha, "B-12"), changed, matchId,
+                new BatchFigures(1, List.of(money(1_000))), new BatchFigures(2, List.of(money(1_000))));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a late line in another currency makes the matched batch mixed-currency and opens "
+            + "BATCH_AMOUNT_MISMATCH, its current sums one per currency in currency-code order (INV-5)")
+    void lateLineMakingTheBatchMixedCurrencyOpensABatchMismatch() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-13", 1_000, 0, TRY, TUESDAY)));
+        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-13")));
+        run();
+        UUID matchId = onlyActiveMatchId();
+        fixture.pspFile(alpha, List.of(new Psp("A-2", "B-13", 50, 0, "EUR", THURSDAY)));
+
+        ReconciliationRun changed = run();
+
+        assertChangedAfterMatch(batch(alpha, "B-13"), changed, matchId, new BatchFigures(1, List.of(money(1_000))),
+                new BatchFigures(2, List.of(Money.of(50, CurrencyCode.of("EUR")), money(1_000))));
+        assertThat(storedCurrentSumsOf(batch(alpha, "B-13")))
+                .isEqualTo("[{\"amount\": 50, \"currency\": \"EUR\"}, {\"amount\": 1000, \"currency\": \"TRY\"}]");
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a matched batch whose sum differs from its match's with the same line count opens "
+            + "BATCH_AMOUNT_MISMATCH: the sums are compared on their own (built through the stores: lines are never "
+            + "removed or changed, so no ingestion reaches it)")
+    void sumDifferingWithTheSameCountOpensABatchMismatch() {
+        fixture.pspFile(alpha, List.of(
+                new Psp("A-1", "B-14", 600, 0, TRY, TUESDAY),
+                new Psp("A-2", "B-14", 400, 0, TRY, TUESDAY)));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 900, WEDNESDAY, "B-14")));
+        fixture.matchBatch(fixture.completedRun(bankSource), batch(alpha, "B-14"), bank(line.get("S-1")), TRY, 2);
+
+        ReconciliationRun changed = run();
+
+        assertChangedAfterMatch(batch(alpha, "B-14"), changed, onlyActiveMatchId(),
+                new BatchFigures(2, List.of(money(900))), new BatchFigures(2, List.of(money(1_000))));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: the late-line break stays open for an operator: a later run, even after another late line, "
+            + "opens no second break, leaves its details as they were written and writes no event (INV-7)")
+    void lateLineBreakStaysOpenOnLaterRuns() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-15", 1_000, 0, TRY, TUESDAY)));
+        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-15")));
+        run();
+        UUID matchId = onlyActiveMatchId();
+        fixture.pspFile(alpha, List.of(new Psp("A-2", "B-15", 250, 0, TRY, THURSDAY)));
+        run();
+        Break opened = onlyBreakAbout(batch(alpha, "B-15"));
+        List<String> eventsBefore = breakEventsOfTheBank();
+
+        fixture.pspFile(alpha, List.of(new Psp("A-3", "B-15", 300, 0, TRY, FRIDAY)));
+        run();
+        run();
+
+        assertThat(breaksAbout(batch(alpha, "B-15"))).containsExactly(opened);
+        assertThat(breakEventsOfTheBank()).isEqualTo(eventsBefore);
+        assertThat(onlyActiveMatchId()).isEqualTo(matchId);
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: a matched batch is compared when it is in the run's scope: a late line dated after the range "
+            + "moves the batch out of it, and the run covering that date opens the break")
+    void matchedBatchIsComparedWhenInScope() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-16", 1_000, 0, TRY, TUESDAY)));
+        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-16")));
+        run();
+        UUID matchId = onlyActiveMatchId();
+        fixture.pspFile(alpha, List.of(new Psp("A-2", "B-16", 250, 0, TRY, MONDAY_AFTER)));
+
+        run();
+        assertThat(breaksAbout(batch(alpha, "B-16"))).isEmpty();
+        ReconciliationRun covering = matching.run(bankSource.value(), MONDAY_AFTER, MONDAY_AFTER, "operator-001");
+
+        assertChangedAfterMatch(batch(alpha, "B-16"), covering, matchId,
+                new BatchFigures(1, List.of(money(1_000))), new BatchFigures(2, List.of(money(1_250))));
+    }
+
     private ReconciliationRun run() {
         return matching.run(bankSource.value(), MONDAY, FRIDAY, "operator-001");
+    }
+
+    /**
+     * The batch's one break is an OPEN BATCH_AMOUNT_MISMATCH opened by the run, naming nothing, with
+     * BATCH_CHANGED_AFTER_MATCH details read back through the strict reader, and its opening event.
+     */
+    private void assertChangedAfterMatch(ItemRef batch, ReconciliationRun run, UUID matchId, BatchFigures matched,
+                                         BatchFigures current) {
+        Break changed = onlyBreakAbout(batch);
+        assertThat(changed).extracting(Break::type, Break::relatedItems, Break::status, Break::openedRunId,
+                        Break::details)
+                .containsExactly(BreakType.BATCH_AMOUNT_MISMATCH, List.of(), BreakStatus.OPEN, Optional.of(run.id()),
+                        Optional.of(new BreakDetails.BatchChangedAfterMatch(matchId, matched, current)));
+        assertThat(eventsOf(changed.id())).containsExactly("->OPEN:-:system");
+    }
+
+    /** The one active match holding a bank line of the bank source. */
+    private UUID onlyActiveMatchId() {
+        List<UUID> ids = jdbc.sql("""
+                        SELECT item.match_id
+                          FROM match_items item
+                          JOIN bank_lines line ON item.side = 'BANK' AND line.id = item.item_id
+                         WHERE line.source_code = :bank AND item.active
+                        """)
+                .param("bank", bankSource.value()).query(UUID.class).list();
+        assertThat(ids).hasSize(1);
+        return ids.getFirst();
+    }
+
+    /** The {@code current.sums} list of the batch's break details, as PostgreSQL stored it. */
+    private String storedCurrentSumsOf(ItemRef batch) {
+        return jdbc.sql("SELECT details -> 'current' -> 'sums' FROM breaks WHERE item_side = 'BATCH' AND item_id = :id")
+                .param("id", batch.id()).query(String.class).single();
     }
 
     /** The break is RESOLVED as MATCHED_LATE by the run, with one event from {@code from}, by the system. */

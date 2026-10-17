@@ -59,6 +59,20 @@ public interface StageBStore {
     BankLineBreaks openBankLineBreaks(StageBPass pass);
 
     /**
+     * A line arriving after its batch was matched (TDD 8.2): for each batch dated in the run's range
+     * that is in an active B1 match with a bank line of the source, compares the batch's line count and
+     * per-currency sums now with what the match recorded - its line count, and its bank line's amount
+     * in that line's currency. Where either differs, opens BATCH_AMOUNT_MISMATCH on the BATCH item,
+     * naming no other item, with the old and new figures as BATCH_CHANGED_AFTER_MATCH details. The match
+     * stays active (FR-MAT-2). A batch that already has an unresolved break gets no second one (INV-7),
+     * so the details are written once, when the break opens.
+     *
+     * @return the breaks opened
+     * @throws RuntimeException if a batch's sum does not fit in a BIGINT (INV-8): the run fails
+     */
+    int openChangedBatchBreaks(StageBPass pass);
+
+    /**
      * FR-BRK-5: resolves, as MATCHED_LATE by the system, the unresolved breaks the run's matches answer
      * (TDD 8.2, v1.18). The list is per side: on a matched bank line, UNEXPECTED_BANK_LINE,
      * BATCH_AMOUNT_MISMATCH and AMBIGUOUS_MATCH; on a matched batch, MISSING_SETTLEMENT only, so a batch

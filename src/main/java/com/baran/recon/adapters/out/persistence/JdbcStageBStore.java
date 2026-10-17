@@ -314,8 +314,7 @@ class JdbcStageBStore implements StageBStore {
      * one, whatever type this run would open: the insert names INV-7's partial index as its conflict
      * target, so that rule alone is skipped, and only the breaks actually inserted get an event.
      */
-    private static final String OPEN_BANK_LINE_BREAKS = "WITH " + String.join(",\n", RULES, BANK_LINE_FINDINGS) + """
-            ,
+    private static final String BREAK_WRITES = """
             opened AS (
                 INSERT INTO breaks (id, break_type, item_side, item_id, related_items, status, resolution_code,
                                     opened_run_id, previous_break_id, opened_at, resolved_at, details)
@@ -329,12 +328,82 @@ class JdbcStageBStore implements StageBStore {
                 INSERT INTO break_events (break_id, from_status, to_status, resolution_code, actor, reason, occurred_at)
                 SELECT id, NULL, 'OPEN', NULL, :actor, NULL, :at FROM opened
                 RETURNING break_id
-            )
+            )""";
+
+    private static final String OPEN_BANK_LINE_BREAKS = "WITH " + String.join(",\n", RULES, BANK_LINE_FINDINGS,
+            BREAK_WRITES) + """
+
             SELECT count(*) FILTER (WHERE break_type = 'BATCH_AMOUNT_MISMATCH') AS batch_conflicts,
                    count(*) FILTER (WHERE break_type = 'UNEXPECTED_BANK_LINE') AS unexpected_lines,
                    count(*) FILTER (WHERE break_type = 'AMBIGUOUS_MATCH') AS ambiguous_lines,
                    count(*) FILTER (WHERE break_type = 'DUPLICATE_LINE') AS duplicate_lines
               FROM opened
+            """;
+
+    /**
+     * The batches in an active B1 match whose bank line is the bank source's, with what the match
+     * recorded (TDD 8.2): its line count, and the bank line's amount, which B1 made equal to the
+     * batch's one sum. The bank line's extracted id is the batch id B1 matched it by.
+     */
+    private static final String MATCHED_BATCH = """
+            matched_batch AS MATERIALIZED (
+                SELECT made.id AS match_id, batch_item.item_id AS batch_item, paid.extracted_batch_id AS batch_id,
+                       made.batch_line_count AS lines,
+                       jsonb_build_array(jsonb_build_object('currency', paid.currency, 'amount', paid.amount)) AS sums
+                  FROM matches made
+                  JOIN match_items batch_item
+                    ON batch_item.match_id = made.id AND batch_item.side = 'BATCH' AND batch_item.active
+                  JOIN match_items bank_item
+                    ON bank_item.match_id = made.id AND bank_item.side = 'BANK' AND bank_item.active
+                  JOIN bank_lines paid ON paid.id = bank_item.item_id
+                 WHERE made.rule_id = :ruleId AND paid.source_code = :bank
+            )""";
+
+    /**
+     * The settling lines of the matched batches alone: a batch in no match is never compared with
+     * one, so no other is summed. Not {@link #CLAIMED_LINES}, which no matched batch is in: a matched
+     * batch's bank line is no longer an unmatched claimant.
+     */
+    private static final String MATCHED_LINES = """
+            settling_line AS (
+                SELECT line.source_code, line.batch_id, line.currency, line.net_amount, line.value_date
+                  FROM psp_lines line
+                 WHERE line.source_code = ANY (CAST(:pspSources AS TEXT[]))
+                   AND line.batch_id IN (SELECT matched.batch_id FROM matched_batch matched)
+            )""";
+
+    /**
+     * A line arriving after its batch was matched (TDD 8.2): each matched batch dated in the range
+     * whose line count or per-currency sums now differ from what its match recorded gets a
+     * BATCH_AMOUNT_MISMATCH, with the old and new figures as BATCH_CHANGED_AFTER_MATCH details, built
+     * here with BreakDetailsJson's keys and written once (v1.15, v1.18). The two figures are compared
+     * apart: a line of net 0 changes the count alone, and a line in another currency changes the
+     * list of sums. The match stays active (FR-MAT-2), and the break names no other item.
+     */
+    private static final String CHANGED_BATCH_FINDINGS = """
+            current_figures AS (
+                SELECT id, CAST(sum(lines) AS INTEGER) AS lines,
+                       jsonb_agg(jsonb_build_object('currency', currency, 'amount', amount) ORDER BY currency) AS sums
+                  FROM batch
+                 GROUP BY id
+            ),
+            found AS (
+                SELECT 'BATCH' AS item_side, matched.batch_item AS item_id, 'BATCH_AMOUNT_MISMATCH' AS break_type,
+                       CAST('[]' AS JSONB) AS related_items,
+                       jsonb_build_object('kind', 'BATCH_CHANGED_AFTER_MATCH', 'matchId', matched.match_id,
+                                          'matched', jsonb_build_object('lineCount', matched.lines, 'sums', matched.sums),
+                                          'current', jsonb_build_object('lineCount', latest.lines, 'sums', latest.sums))
+                           AS details
+                  FROM matched_batch matched
+                  JOIN current_figures latest ON latest.id = matched.batch_item
+                 WHERE latest.lines <> matched.lines
+                    OR latest.sums <> matched.sums
+            )""";
+
+    private static final String OPEN_CHANGED_BATCH_BREAKS = "WITH " + String.join(",\n", MATCHED_BATCH, MATCHED_LINES,
+            DATED_BATCHES, CHANGED_BATCH_FINDINGS, BREAK_WRITES) + """
+
+            SELECT count(*) FROM opened
             """;
 
     /**
@@ -403,6 +472,13 @@ class JdbcStageBStore implements StageBStore {
                         Math.toIntExact(row.getLong("unexpected_lines")), Math.toIntExact(row.getLong("ambiguous_lines")),
                         Math.toIntExact(row.getLong("duplicate_lines"))))
                 .single();
+    }
+
+    @Override
+    public int openChangedBatchBreaks(StageBPass pass) {
+        return Math.toIntExact(pass(OPEN_CHANGED_BATCH_BREAKS, pass)
+                .param("ruleId", StageBRule.B1_BATCH_TOTAL.matchRule().orElseThrow().name())
+                .query(Long.class).single());
     }
 
     @Override

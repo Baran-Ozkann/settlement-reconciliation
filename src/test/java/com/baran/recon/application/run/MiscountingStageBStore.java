@@ -57,6 +57,11 @@ public final class MiscountingStageBStore implements StageBStore {
     }
 
     @Override
+    public int openChangedBatchBreaks(StageBPass pass) {
+        return delegate.openChangedBatchBreaks(pass);
+    }
+
+    @Override
     public int resolveMatchedLate(UUID runId, String reason, Instant at) {
         return delegate.resolveMatchedLate(runId, reason, at);
     }
