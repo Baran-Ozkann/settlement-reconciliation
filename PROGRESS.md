@@ -1,11 +1,80 @@
 # Progress
 
-**Current milestone:** 6 — Stage B matching. Part C3 added what happens to Stage B over time, from
-design doc v1.18: `MATCHED_LATE` per side, the late-line break and `MISSING_SETTLEMENT` with grace, so
-a bank source's run now does everything §8.2 says. Part D adds the scheduled run, the Stage B
-properties, the end-to-end test and the measurement
-**Branch:** `milestone-6/part-c3` (one branch per session from Milestone 5.1 on)
+**Current milestone:** 6 — Stage B matching. Part D1 added the daily scheduled run, so a grace break
+opens without waiting for a later file, and closed part C3's questions from design doc v1.19: both
+stages read every setting back from their snapshot, the late-line break names the matched bank line,
+and `StageASettings` validates itself again. Part D2 adds the Stage B properties and the end-to-end
+test, part D3 the measurement
+**Branch:** `milestone-6/part-d1` (one branch per session from Milestone 5.1 on)
 **Last updated:** 2026-10-17
+
+## Milestone 6 part D1 — the daily scheduled run, and settings read from the snapshot
+
+Once a day every configured source is run over a look-back range, so an item left past its grace with
+no later file covering its date now gets its grace break. A run of either stage applies the settings
+its snapshot holds. Stage A's statements and results are unchanged.
+
+### What was built, by commit
+
+- `214e007` makes `StageASettings` refuse a negative window or grace period on its own again, naming
+  the key, as part C3 decision 6 is reversed. Configuration builds it through
+  `SourceDefinition.stageASettings`, which checks first and names the source and the key; on a bank
+  source it refuses the settings as misplaced whatever their values.
+- `006e46e` makes Stage A read its window, both grace periods, the calendar and the value-date zone
+  back from its run's snapshot, and the bank run its zone too (FR-MAT-8, v1.19). Configuration is read
+  once, when the snapshot is written.
+- `da2d7c0` names the matched bank line as the related item of the late-line `BATCH_AMOUNT_MISMATCH`
+  (`BATCH_CHANGED_AFTER_MATCH`), as B2 names its batch (v1.19).
+- `dd935f0` lets the automatic trigger queue a run of one source over a range, taking one queue place,
+  with the same busy wait, give-up bound and full-queue WARN as a file's runs. Log lines name what
+  started a run: a file's id, as before, or the scheduled day.
+- `286c849` adds the daily scheduled run (§5.3, v1.19): `recon.matching.scheduled-run.enabled`,
+  `time-of-day` (`06:00`, `HH:mm` in the value-date zone) and `look-back-days` (30), checked at
+  startup naming the key; off in the test profile. At the time, `ScheduledRuns` queues every PSP
+  source, then every bank source, each in configuration order, over `[today − 30, today]`, as `system`.
+  Spring's scheduler holds the cron trigger, apart from the use case.
+
+### Decisions
+
+- **The scheduled run needs the automatic trigger.** It queues on that trigger's thread (§5.3), which
+  does not exist when `recon.matching.automatic-trigger.enabled` is false, so that combination stops
+  startup naming both keys rather than scheduling nothing.
+- **06:00 in the value-date zone** is the application's time of day; the design doc names none.
+- **The snapshot read-back is proven by a recorded one-off.** Within one application the snapshot and
+  configuration hold the same values, and no seam lets a test write a different snapshot without an
+  edit.
+- **Two breaks built through the stores in the late-line shape now name a bank line** (in
+  `StageBOverTimeTest` and `BankRunStatisticsTest`), as the rule now writes it; neither test's
+  assertions changed.
+
+### Break proofs
+
+Recorded in `docs/break-proofs.md`, section "Milestone 6, part D1":
+
+- `StageASettings`' own check: removed, the record-alone test fails, and startup still names the
+  source and the key;
+- the snapshot read-back: with a snapshot that differs from configuration the outcomes follow the
+  snapshot, and with Stage A and the bank run reading configuration they do not;
+- the late-line break's related item: with the empty list, the five late-line tests fail; part C3's
+  count and sums one-offs were re-run against the updated tests and still fail;
+- the scheduled run's coverage: with the bank sources left out, the exit-criterion test fails on
+  `MISSING_SETTLEMENT`;
+- permanent: the scheduled run's settings checks and its refusal without the automatic trigger.
+
+### Verification (part D1)
+
+At `286c849`, the last code commit, in the default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 208 s, 1243 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic-link cases in `UploadDirectoryTest`, by assumption on Windows). JaCoCo line coverage:
+  domain 99.4 % (721/725), overall 97.0 % (2731/2816).
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0.
+- Targeted tests ran before every other commit. No commit added a migration or changed a grant.
+
+### Part C3's pull request CI
+
+The owner reports that part C3's pull request (#16, `milestone-6/part-c3`) was all green: every
+per-commit job and the reverse-order run passed.
 
 ## Milestone 6 part C3 — Stage B over time
 
