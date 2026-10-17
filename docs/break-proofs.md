@@ -403,3 +403,18 @@ identical); the class then passed again. Nothing was committed broken.
 | TDD 8.2: the late-line break compares a matched batch's line count with the match's `batch_line_count` (`latest.lines <> matched.lines` in `CHANGED_BATCH_FINDINGS`) | the count comparison removed, leaving the sums | `StageBOverTimeTest#lateLineChangingOnlyTheCountOpensABatchMismatch` | 13 tests, 1 failure, that test: `Expected size: 1 but was: 0 in: []`: a late line of net 0 left the batch's sums equal to the match's, and no break opened. Restored: the class passes, 13 tests |
 | TDD 8.2: the late-line break compares a matched batch's per-currency sums with the match's bank line amount (`latest.sums <> matched.sums` in `CHANGED_BATCH_FINDINGS`) | the sums comparison removed, leaving the count | `StageBOverTimeTest#sumDifferingWithTheSameCountOpensABatchMismatch` (the match built through the stores with the batch's line count and another amount, since lines are never removed or changed) | 13 tests, 1 failure, that test: `Expected size: 1 but was: 0 in: []`. The late-line cases that also change the count still opened their breaks. Restored: the class passes, 13 tests |
 | TDD 8.2 Grace: `MISSING_SETTLEMENT` skips a batch named by an unresolved break about a bank line or a batch (`NOT EXISTS (SELECT 1 FROM named …)` in `GRACE_FINDINGS`), as Stage A's grace skips an item an A2 or ambiguity break names | the condition removed | `StageBOverTimeTest#batchNamedByABreakGetsNoGraceBreak` | 18 tests, 1 failure, that test: `Expecting empty but was: [Break[… type=MISSING_SETTLEMENT, item=ItemRef[side=BATCH, …] …]]` for all four named batches: the one a B2 names, the two an ambiguity names and the one two duplicates name. Restored: the class passes, 18 tests |
+
+## Milestone 6, part D1
+
+Part D1 adds the daily scheduled run (design doc v1.19, §5.3), makes Stage A read its settings back
+from its run's snapshot (FR-MAT-8, v1.19), names the matched bank line on the late-line break, and
+has `StageASettings` refuse a negative setting on its own again, with `SourceDefinition` checking
+first to name the source. Every one-off below edited the named file after copying it to the session
+scratchpad, ran the named test classes, and copied the file back; the classes then passed again.
+Nothing was committed broken.
+
+### Recorded one-offs
+
+| Rule | Broken by | Test | What it reported |
+|---|---|---|---|
+| TDD 8.1: a `StageASettings` cannot be negative, whatever builds it (its compact constructor's three `requireNotNegative` checks) | the compact constructor removed from `StageASettings.java` | `StageASettingsTest#settingsAloneRefuseNegativeDays`, with `SourcesConfigurationTest` | 21 tests, 1 failure, that test: `Expecting code to raise a throwable.` at its first negative value. `SourcesConfigurationTest` (17) still passed: `SourceDefinition.stageASettings` refused the negative value at startup, naming the source and the key, so each layer holds on its own. Restored: both classes pass, 21 tests |
