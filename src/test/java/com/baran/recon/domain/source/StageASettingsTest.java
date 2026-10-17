@@ -26,27 +26,39 @@ class StageASettingsTest {
     }
 
     @Test
-    @DisplayName("zero business days is allowed; a negative number is refused, naming its key")
+    @DisplayName("zero business days is allowed; a negative number is refused, naming the source and the key")
     void negativeDaysAreRefused() {
-        assertThat(new StageASettings(0, 0, 0).valueDateWindowDays()).isZero();
-        assertThatThrownBy(() -> new StageASettings(-1, 3, 1))
-                .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("value-date-window-days");
-        assertThatThrownBy(() -> new StageASettings(2, -1, 1))
-                .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("grace-days-ledger-unmatched");
-        assertThatThrownBy(() -> new StageASettings(2, 3, -1))
-                .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("grace-days-psp-unmatched");
+        assertThat(psp(new StageASettings(0, 0, 0)).stageA()).contains(new StageASettings(0, 0, 0));
+        assertThatThrownBy(() -> psp(new StageASettings(-1, 3, 1)))
+                .isInstanceOf(InvalidSourceConfigurationException.class)
+                .hasMessage("value-date-window-days of PSP source PSP_ALPHA is a number of business days, not negative");
+        assertThatThrownBy(() -> psp(new StageASettings(2, -1, 1)))
+                .isInstanceOf(InvalidSourceConfigurationException.class)
+                .hasMessageContaining("PSP_ALPHA").hasMessageContaining("grace-days-ledger-unmatched");
+        assertThatThrownBy(() -> psp(new StageASettings(2, 3, -1)))
+                .isInstanceOf(InvalidSourceConfigurationException.class)
+                .hasMessageContaining("PSP_ALPHA").hasMessageContaining("grace-days-psp-unmatched");
     }
 
     @Test
-    @DisplayName("a PSP source needs its Stage A settings, and a bank source cannot have them")
+    @DisplayName("a PSP source needs its Stage A settings, and a bank source cannot have them; each refusal names the "
+            + "source and the keys")
     void settingsBelongToPspSourcesOnly() {
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("PSP_ALPHA"), SourceType.PSP_SETTLEMENT, Set.of(),
                 Optional.empty(), Optional.empty(), Optional.of(SourceCode.of("BANK_MAIN")),
                 OptionalInt.empty()))
-                .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("Stage A");
+                .isInstanceOf(InvalidSourceConfigurationException.class)
+                .hasMessage("PSP source PSP_ALPHA needs value-date-window-days, grace-days-ledger-unmatched and "
+                        + "grace-days-psp-unmatched");
         assertThatThrownBy(() -> new SourceDefinition(SourceCode.of("BANK_MAIN"), SourceType.BANK_STATEMENT, Set.of(),
                 Optional.of(PATTERN), Optional.of(StageASettings.TDD_DEFAULTS), Optional.empty(),
                 OptionalInt.of(2)))
-                .isInstanceOf(InvalidSourceConfigurationException.class).hasMessageContaining("only a PSP source");
+                .isInstanceOf(InvalidSourceConfigurationException.class)
+                .hasMessage("source BANK_MAIN is a bank statement source; only a PSP source has value-date-window-days, "
+                        + "grace-days-ledger-unmatched and grace-days-psp-unmatched");
+    }
+
+    private static SourceDefinition psp(StageASettings settings) {
+        return SourceDefinition.psp(SourceCode.of("PSP_ALPHA"), Set.of(), settings, SourceCode.of("BANK_MAIN"));
     }
 }

@@ -175,16 +175,15 @@ class SourcesConfigurationTest {
     }
 
     @Test
-    @DisplayName("a bank source with a Stage A window, or a negative window, stops the application at startup")
+    @DisplayName("a bank source with a Stage A window, or a negative window, stops the application at startup naming "
+            + "the source and the key")
     void misplacedOrNegativeWindowFailsStartup() {
         context.withPropertyValues(
                         "recon.sources[0].code=BANK_MAIN",
                         "recon.sources[0].type=BANK_STATEMENT",
                         "recon.sources[0].batch-id-pattern=BATCH[-_]?([A-Za-z0-9_-]{1,64})",
                         "recon.sources[0].value-date-window-days=2")
-                .run(started -> assertThat(started).hasFailed()
-                        .getFailure().rootCause().isInstanceOf(InvalidSourceConfigurationException.class)
-                        .hasMessageContaining("only a PSP source"));
+                .run(started -> assertFailsNaming(started, "BANK_MAIN", "only a PSP source has value-date-window-days"));
         context.withPropertyValues(
                         "recon.sources[0].code=PSP_ALPHA",
                         "recon.sources[0].type=PSP_SETTLEMENT",
@@ -193,9 +192,7 @@ class SourcesConfigurationTest {
                         "recon.sources[1].code=BANK_MAIN",
                         "recon.sources[1].type=BANK_STATEMENT",
                         "recon.sources[1].batch-id-pattern=" + PATTERN)
-                .run(started -> assertThat(started).hasFailed()
-                        .getFailure().rootCause().isInstanceOf(InvalidSourceConfigurationException.class)
-                        .hasMessageContaining("grace-days-ledger-unmatched"));
+                .run(started -> assertFailsNaming(started, "PSP_ALPHA", "grace-days-ledger-unmatched"));
     }
 
     @Test
