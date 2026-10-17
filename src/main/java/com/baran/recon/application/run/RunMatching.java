@@ -177,19 +177,20 @@ public final class RunMatching {
     }
 
     /**
-     * FR-MAT-8: everything the run reads from configuration. A PSP source's run adds what Stage A
-     * reads: the business calendar, the source's window and grace periods, and the rule versions. A
-     * bank source's run adds its batch-id-pattern, its batch grace period, the PSP sources settling to
-     * it and the Stage B rule versions (TDD 8.2, v1.17).
+     * FR-MAT-8: everything the run reads from configuration. Every run records the value-date zone and
+     * the business calendar, which both stages count grace periods in. A PSP source's run adds what
+     * Stage A reads besides: the source's window and grace periods, and the rule versions. A bank
+     * source's run adds its batch-id-pattern, its batch grace period, the PSP sources settling to it
+     * and the Stage B rule versions (TDD 8.2, v1.17).
      */
     private Map<String, String> configSnapshot(SourceDefinition source) {
         Map<String, String> snapshot = new TreeMap<>();
         snapshot.put(VALUE_DATE_ZONE, valueDateZone.getId());
+        snapshot.put(BUSINESS_CALENDAR_WEEKEND, calendar.weekend().stream().sorted()
+                .map(DayOfWeek::name).collect(Collectors.joining(",")));
+        snapshot.put(BUSINESS_CALENDAR_HOLIDAYS, calendar.holidays().stream().sorted()
+                .map(LocalDate::toString).collect(Collectors.joining(",")));
         source.stageA().ifPresent(stageA -> {
-            snapshot.put(BUSINESS_CALENDAR_WEEKEND, calendar.weekend().stream().sorted()
-                    .map(DayOfWeek::name).collect(Collectors.joining(",")));
-            snapshot.put(BUSINESS_CALENDAR_HOLIDAYS, calendar.holidays().stream().sorted()
-                    .map(LocalDate::toString).collect(Collectors.joining(",")));
             snapshot.put(VALUE_DATE_WINDOW_DAYS, Integer.toString(stageA.valueDateWindowDays()));
             snapshot.put(GRACE_DAYS_LEDGER_UNMATCHED, Integer.toString(stageA.graceDaysLedgerUnmatched()));
             snapshot.put(GRACE_DAYS_PSP_UNMATCHED, Integer.toString(stageA.graceDaysPspUnmatched()));
