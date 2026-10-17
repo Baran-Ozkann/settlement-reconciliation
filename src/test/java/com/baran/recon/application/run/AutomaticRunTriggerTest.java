@@ -33,10 +33,11 @@ import static org.awaitility.Awaitility.await;
 /**
  * The trigger alone (FR-MAT-1), with a stand-in for the run use case: what it starts, on which
  * thread, how it treats a busy source and one that stays busy, a refusal and a failure, and what a
- * full queue does. The database's part, refusing a second RUNNING run, is tested with the
- * application in RunAfterUploadTest.
+ * full queue does, for a file's runs and for the daily schedule's (TDD 5.3, v1.19). The database's
+ * part, refusing a second RUNNING run, is tested with the application in RunAfterUploadTest.
  */
-@DisplayName("FR-MAT-1: the automatic trigger runs each ingested file's run in the background, one at a time")
+@DisplayName("FR-MAT-1: the automatic trigger runs each ingested file's run, and each scheduled source's run, in the "
+        + "background, one at a time")
 class AutomaticRunTriggerTest {
 
     private static final Duration WAIT = Duration.ofSeconds(10);
@@ -44,6 +45,8 @@ class AutomaticRunTriggerTest {
     private static final SourceCode BANK = SourceCode.of("BANK_TRIGGER_UNIT");
     private static final LocalDate FROM = LocalDate.of(2026, 9, 22);
     private static final LocalDate TO = LocalDate.of(2026, 9, 24);
+    /** The day a scheduled run is for; the range it covers is given apart. */
+    private static final LocalDate SCHEDULED_DAY = LocalDate.of(2026, 10, 12);
     /** The application's bound; a test that does not reach it runs on the system clock. */
     private static final Duration GIVE_UP = Duration.ofMinutes(30);
     private static final Duration RETRY = Duration.ofSeconds(5);
@@ -378,6 +381,66 @@ class AutomaticRunTriggerTest {
         trigger.close();
 
         assertThat(started).containsExactly("PSP_TRIGGER_UNIT");
+    }
+
+    @Test
+    @DisplayName("TDD 5.3 (v1.19): a scheduled source's run gets its source and range and is triggered by the system")
+    void scheduledRunRunsItsSourceOverItsRange() {
+        trigger = AutomaticRunTrigger.onOneThread((source, from, to, by) -> {
+            started.add(source + " " + from + " " + to + " " + by);
+            return completed(source, from, to);
+        }, 10, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
+
+        trigger.scheduledRun(SCHEDULED_DAY, BANK, FROM, TO);
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started)
+                .containsExactly("BANK_TRIGGER_UNIT 2026-09-22 2026-09-24 system"));
+    }
+
+    @Test
+    @DisplayName("TDD 5.3 (v1.19): each scheduled source's run takes one place in the queue, behind the files already "
+            + "in it, and a full queue refuses the next at once")
+    void eachScheduledRunTakesOnePlaceInTheQueue() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        trigger = AutomaticRunTrigger.onOneThread((source, from, to, by) -> {
+            started.add(source + " " + from);
+            running.countDown();
+            hold(finish);
+            return completed(source, from, to);
+        }, 2, Duration.ofMillis(1), GIVE_UP, Clock.systemUTC());
+        trigger.fileIngested(file(FROM, FROM));
+        assertThat(running.await(WAIT.toSeconds(), TimeUnit.SECONDS)).as("the file's run holds the thread").isTrue();
+        trigger.scheduledRun(SCHEDULED_DAY, SOURCE, FROM.plusDays(1), TO);
+        trigger.scheduledRun(SCHEDULED_DAY, BANK, FROM.plusDays(1), TO);
+
+        trigger.scheduledRun(SCHEDULED_DAY, BANK, TO, TO);
+
+        assertThat(finish.getCount()).as("refused while the thread was still held").isOne();
+        finish.countDown();
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started).containsExactly(
+                "PSP_TRIGGER_UNIT 2026-09-22", "PSP_TRIGGER_UNIT 2026-09-23", "BANK_TRIGGER_UNIT 2026-09-23"));
+        trigger.close();
+        assertThat(started).doesNotContain("BANK_TRIGGER_UNIT 2026-09-24");
+    }
+
+    @Test
+    @DisplayName("TDD 5.3 (v1.19): a scheduled run waits for its busy source and tries again, as a file's run does")
+    void scheduledRunWaitsForABusySource() {
+        AtomicInteger refusals = new AtomicInteger(2);
+        AtomicInteger waits = new AtomicInteger();
+        trigger = new AutomaticRunTrigger((source, from, to, by) -> {
+            started.add(source);
+            if (refusals.getAndDecrement() > 0) {
+                throw RunRefusedException.sourceBusy(Optional.of(UUID.randomUUID()), null);
+            }
+            return completed(source, from, to);
+        }, oneThread(), () -> waits.incrementAndGet() > 0, Clock.systemUTC(), GIVE_UP);
+
+        trigger.scheduledRun(SCHEDULED_DAY, BANK, FROM, TO);
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(started).hasSize(3));
+        assertThat(waits).hasValue(2);
     }
 
     /** A clock the test moves on, here from the busy wait, so a bound of minutes takes no time. */
