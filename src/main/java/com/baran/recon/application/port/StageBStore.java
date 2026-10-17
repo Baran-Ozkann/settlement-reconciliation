@@ -84,6 +84,17 @@ public interface StageBStore {
     int resolveMatchedLate(UUID runId, String reason, Instant at);
 
     /**
+     * Opens MISSING_SETTLEMENT, naming no other item, on each pending batch dated in the run's range
+     * before {@code batchGraceStart}, the first value date still within the bank source's batch grace
+     * period (TDD 8.2 "Grace"). Pending means in no active match, the subject of no unresolved break,
+     * and named by none: a batch a B2, ambiguity or duplicate break names is BROKEN and gets none.
+     *
+     * @return the breaks opened
+     * @throws RuntimeException if a batch's sum does not fit in a BIGINT (INV-8): the run fails
+     */
+    int openGraceBreaks(StageBPass pass, LocalDate batchGraceStart);
+
+    /**
      * The run's items, totalled per side and currency twice over, in one statement and so on one
      * snapshot: by status (INV-1, in the order of {@link com.baran.recon.domain.run.ItemStatus}) and
      * of every status.

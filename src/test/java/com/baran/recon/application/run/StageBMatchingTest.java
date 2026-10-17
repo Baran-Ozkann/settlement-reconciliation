@@ -294,7 +294,8 @@ class StageBMatchingTest {
     @DisplayName("TDD 8.2: a bank line with no batch id, or with one that names no batch, is UNEXPECTED_BANK_LINE at "
             + "once, naming nothing: there is no grace for a bank line")
     void bankLineNamingNoBatchIsUnexpected() {
-        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-KNOWN", 1_000, 0, TRY, TUESDAY)));
+        // Within the batch grace on the run's day, so the batch is PENDING unless something names it.
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-KNOWN", 1_000, 0, TRY, THURSDAY)));
         Map<String, UUID> line = fixture.bankFile(bankSource, List.of(
                 new Bank("S-FEE", -25, TRY, FRIDAY, Optional.empty()),
                 bankLine("S-UNKNOWN", 1_000, TRY, FRIDAY, "B-UNKNOWN")));
@@ -534,7 +535,8 @@ class StageBMatchingTest {
         Break unexpected = breaksOfTheBank().getFirst();
         assertThat(unexpected.type()).isEqualTo(BreakType.UNEXPECTED_BANK_LINE);
 
-        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-LATE", 700, 0, TRY, TUESDAY)));
+        // Within the batch grace on the run's day, so the batch is PENDING, not MISSING_SETTLEMENT.
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-LATE", 700, 0, TRY, THURSDAY)));
         ReconciliationRun conflicting = run();
 
         assertThat(matchesOfTheBank()).isEmpty();

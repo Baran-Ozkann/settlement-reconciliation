@@ -49,7 +49,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * after it was matched, and a batch left unpaid past its grace period. Through the run use case,
  * against the application's own database as recon_app. Every test takes a bank source of its own,
  * with two PSP sources settling to it, so tests never see each other's items in the shared database.
- * Runs are at {@link FixedRunClock#NOW}, Monday 2026-10-12, over the working week before it.
+ * Runs are at {@link FixedRunClock#NOW}, Monday 2026-10-12, over the working week before it. The
+ * business calendar has a holiday on that week's Friday, so with TDD 8.1's batch grace of 2 business
+ * days the first day still within grace is the Wednesday, counted back across the weekend and the
+ * holiday.
  *
  * <p>Where no rule can reach a state before Milestone 7's reversal or a change of a PSP source's
  * settles-to, the test builds it through the application's own stores, as the rules would write it,
@@ -67,6 +70,7 @@ class StageBOverTimeTest {
     private static final AtomicInteger NEXT_BANK = new AtomicInteger();
 
     // The working week before the run: 2026-10-05 is a Monday.
+    private static final LocalDate FRIDAY_BEFORE = LocalDate.of(2026, 10, 2);
     private static final LocalDate MONDAY = LocalDate.of(2026, 10, 5);
     private static final LocalDate TUESDAY = LocalDate.of(2026, 10, 6);
     private static final LocalDate WEDNESDAY = LocalDate.of(2026, 10, 7);
@@ -79,6 +83,7 @@ class StageBOverTimeTest {
     @DynamicPropertySource
     static void configure(DynamicPropertyRegistry registry) {
         ReconPostgres.register(registry);
+        registry.add("recon.business-calendar.holidays[0]", FRIDAY::toString);
         int index = 0;
         for (int i = 0; i < BANKS; i++) {
             String bank = bankCode(i);
@@ -395,8 +400,162 @@ class StageBOverTimeTest {
                 new BatchFigures(1, List.of(money(1_000))), new BatchFigures(2, List.of(money(1_250))));
     }
 
+    @Test
+    @DisplayName("TDD 8.2 Grace: an unpaid batch dated one business day before the first day within its grace gets "
+            + "MISSING_SETTLEMENT, naming nothing; one dated on that day gets none, counted in business days across the "
+            + "weekend and the holiday the run's snapshot holds (FR-MAT-8); a paid batch gets none")
+    void batchUnpaidPastItsGraceIsMissingSettlement() {
+        fixture.pspFile(alpha, List.of(
+                new Psp("A-1", "B-AT", 400, 0, TRY, WEDNESDAY),
+                new Psp("A-2", "B-PAST", 300, 0, TRY, TUESDAY),
+                new Psp("A-3", "B-PAID", 200, 0, TRY, MONDAY)));
+        fixture.bankFile(bankSource, List.of(bankLine("S-1", 200, TUESDAY, "B-PAID")));
+
+        ReconciliationRun run = run();
+
+        assertThat(run.configSnapshot()).containsEntry(RunMatching.BUSINESS_CALENDAR_HOLIDAYS, "2026-10-09")
+                .containsEntry(RunMatching.GRACE_DAYS_BATCH_UNPAID, "2");
+        assertThat(breaksAbout(batch(alpha, "B-AT"))).as("on the first day within grace").isEmpty();
+        assertThat(breaksAbout(batch(alpha, "B-PAID"))).as("paid").isEmpty();
+        Break missing = onlyBreakAbout(batch(alpha, "B-PAST"));
+        assertThat(missing).extracting(Break::type, Break::relatedItems, Break::status, Break::openedRunId,
+                        Break::details)
+                .containsExactly(BreakType.MISSING_SETTLEMENT, List.of(), BreakStatus.OPEN, Optional.of(run.id()),
+                        Optional.empty());
+        assertThat(eventsOf(missing.id())).containsExactly("->OPEN:-:system");
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "batch.TRY.matched.count", 1L, "batch.TRY.broken.count", 1L, "batch.TRY.broken.sum", 300L,
+                "batch.TRY.pending.count", 1L, "batch.TRY.pending.sum", 400L)));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2 Grace, as Stage A: a batch a B2, ambiguity or duplicate break names is BROKEN and gets no "
+            + "MISSING_SETTLEMENT, however long it has waited")
+    void batchNamedByABreakGetsNoGraceBreak() {
+        fixture.pspFile(alpha, List.of(
+                new Psp("A-1", "B-CONFLICT", 500, 0, TRY, MONDAY),
+                new Psp("A-2", "B-TWICE", 600, 0, TRY, MONDAY),
+                new Psp("A-3", "B-CLAIMED", 700, 0, TRY, MONDAY)));
+        fixture.pspFile(beta, List.of(new Psp("B-1", "B-TWICE", 600, 0, TRY, MONDAY)));
+        fixture.bankFile(bankSource, List.of(
+                bankLine("S-CONFLICT", 501, TUESDAY, "B-CONFLICT"),
+                bankLine("S-TWICE", 600, TUESDAY, "B-TWICE"),
+                bankLine("S-CLAIMED-1", 700, TUESDAY, "B-CLAIMED"),
+                bankLine("S-CLAIMED-2", 700, WEDNESDAY, "B-CLAIMED")));
+
+        ReconciliationRun run = run();
+
+        assertThat(List.of(batch(alpha, "B-CONFLICT"), batch(alpha, "B-TWICE"), batch(beta, "B-TWICE"),
+                batch(alpha, "B-CLAIMED"))).allSatisfy(named -> assertThat(breaksAbout(named)).isEmpty());
+        assertThat(run.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
+                "batch.TRY.broken.count", 4L, "batch.TRY.pending.count", 0L)));
+    }
+
+    @Test
+    @DisplayName("TDD 8.2 Grace, FR-BRK-5: a MISSING_SETTLEMENT opened by one run is resolved as MATCHED_LATE by the "
+            + "run that matches the batch's bank line when it arrives")
+    void missingSettlementIsResolvedWhenTheBatchIsPaid() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-SLOW", 900, 0, TRY, TUESDAY)));
+        run();
+        Break missing = onlyBreakAbout(batch(alpha, "B-SLOW"));
+        assertThat(missing.type()).isEqualTo(BreakType.MISSING_SETTLEMENT);
+
+        fixture.bankFile(bankSource, List.of(bankLine("S-1", 900, THURSDAY, "B-SLOW")));
+        ReconciliationRun paid = run();
+
+        assertThat(matchedPairs()).containsExactly("S-1");
+        assertResolvedMatchedLate(missing.id(), paid, "OPEN");
+        assertThat(eventsOf(missing.id())).containsExactly("->OPEN:-:system", "OPEN>RESOLVED:MATCHED_LATE:system");
+    }
+
+    @Test
+    @DisplayName("TDD 8.2 Grace, as Stage A: only a batch in the run's scope gets MISSING_SETTLEMENT; a batch dated "
+            + "before the range gets it from the run that covers its date")
+    void batchOutsideTheRangeGetsNoGraceBreak() {
+        fixture.pspFile(alpha, List.of(new Psp("A-1", "B-EARLY", 800, 0, TRY, FRIDAY_BEFORE)));
+
+        run();
+        assertThat(breaksAbout(batch(alpha, "B-EARLY"))).isEmpty();
+        matching.run(bankSource.value(), FRIDAY_BEFORE, FRIDAY_BEFORE, "operator-001");
+
+        assertThat(breaksAbout(batch(alpha, "B-EARLY"))).extracting(Break::type)
+                .containsExactly(BreakType.MISSING_SETTLEMENT);
+    }
+
+    @Test
+    @DisplayName("TDD 8.2: re-running with no new data after every over-time outcome - a MATCHED_LATE, a late-line "
+            + "break, a MISSING_SETTLEMENT - writes its run row and nothing else: no match, no break, no event")
+    void reRunsAfterEveryOverTimeOutcomeWriteNothingNew() {
+        fixture.bankFile(bankSource, List.of(bankLine("S-LATE-BATCH", 1_000, WEDNESDAY, "B-LATE-BATCH")));
+        fixture.pspFile(alpha, List.of(
+                new Psp("A-1", "B-CHANGED", 500, 0, TRY, TUESDAY),
+                new Psp("A-2", "B-UNPAID", 300, 0, TRY, MONDAY)));
+        fixture.bankFile(bankSource, List.of(bankLine("S-CHANGED", 500, WEDNESDAY, "B-CHANGED")));
+        run();
+        fixture.pspFile(alpha, List.of(
+                new Psp("A-3", "B-LATE-BATCH", 1_000, 0, TRY, THURSDAY),
+                new Psp("A-4", "B-CHANGED", 50, 0, TRY, THURSDAY)));
+        ReconciliationRun first = run();
+        assertThat(breakRowsOfTheBank()).as("one resolved, two open").hasSize(3)
+                .anySatisfy(row -> assertThat(row).contains("UNEXPECTED_BANK_LINE|BANK").contains("RESOLVED|MATCHED_LATE"))
+                .anySatisfy(row -> assertThat(row).contains("BATCH_AMOUNT_MISMATCH|BATCH").contains("|OPEN|"))
+                .anySatisfy(row -> assertThat(row).contains("MISSING_SETTLEMENT|BATCH").contains("|OPEN|"));
+        List<String> breaksBefore = breakRowsOfTheBank();
+        List<String> matchesBefore = matchRowsOfTheBank();
+
+        ReconciliationRun second = run();
+        ReconciliationRun third = run();
+
+        assertThat(breakRowsOfTheBank()).isEqualTo(breaksBefore);
+        assertThat(matchRowsOfTheBank()).isEqualTo(matchesBefore);
+        assertThat(third.stats()).isEqualTo(second.stats()).isEqualTo(first.stats());
+    }
+
     private ReconciliationRun run() {
         return matching.run(bankSource.value(), MONDAY, FRIDAY, "operator-001");
+    }
+
+    /**
+     * Every stored column of the breaks about the bank source's lines and its PSP sources' batches, with
+     * their events, in break id order.
+     */
+    private List<String> breakRowsOfTheBank() {
+        return jdbc.sql("""
+                        SELECT concat_ws('|', b.id, b.break_type, b.item_side, b.item_id, b.related_items, b.status,
+                                         b.resolution_code, b.opened_run_id, b.previous_break_id, b.opened_at,
+                                         b.resolved_at, b.details,
+                                         (SELECT string_agg(coalesce(e.from_status, '-') || '>' || e.to_status || ':'
+                                                            || e.actor || ':' || e.occurred_at, ',' ORDER BY e.id)
+                                            FROM break_events e WHERE e.break_id = b.id))
+                          FROM breaks b
+                         WHERE (b.item_side = 'BANK' AND b.item_id IN (SELECT id FROM bank_lines WHERE source_code = :bank))
+                            OR (b.item_side = 'BATCH' AND b.item_id IN (:batches))
+                         ORDER BY b.id
+                        """)
+                .param("bank", bankSource.value())
+                .param("batches", batchItemsOfTheBank())
+                .query(String.class).list();
+    }
+
+    /** Every stored column of the matches holding a bank line of the bank source, with items and events. */
+    private List<String> matchRowsOfTheBank() {
+        return jdbc.sql("""
+                        SELECT concat_ws('|', m.id, m.run_id, m.rule_id, m.rule_version, m.cardinality, m.status,
+                                         m.amount_difference, m.currency, m.low_confidence, m.created_at,
+                                         m.batch_line_count,
+                                         (SELECT string_agg(i.side || ':' || i.item_id || ':' || i.active, ','
+                                                            ORDER BY i.side, i.item_id)
+                                            FROM match_items i WHERE i.match_id = m.id),
+                                         (SELECT string_agg(e.event_type || ':' || e.actor || ':' || e.occurred_at, ','
+                                                            ORDER BY e.id)
+                                            FROM match_events e WHERE e.match_id = m.id))
+                          FROM matches m
+                         WHERE m.id IN (SELECT item.match_id FROM match_items item
+                                          JOIN bank_lines line ON item.side = 'BANK' AND line.id = item.item_id
+                                         WHERE line.source_code = :bank)
+                         ORDER BY m.id
+                        """)
+                .param("bank", bankSource.value()).query(String.class).list();
     }
 
     /**

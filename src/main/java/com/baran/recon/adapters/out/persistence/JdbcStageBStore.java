@@ -64,11 +64,12 @@ class JdbcStageBStore implements StageBStore {
                  GROUP BY line.source_code, line.batch_id, line.currency
             )""";
 
-    /** The batches dated in the range, one row per batch and currency, with their item ids. */
+    /** The batches dated in the range, one row per batch and currency, with their item ids and dates. */
     private static final String DATED_BATCHES = BATCH_CURRENCY + """
             ,
             batch AS MATERIALIZED (
-                SELECT %s AS id, dated.source_code, dated.batch_id, dated.currency, dated.lines, dated.amount
+                SELECT %s AS id, dated.source_code, dated.batch_id, dated.currency, dated.lines, dated.amount,
+                       dated.batch_date
                   FROM batch_currency dated
                  WHERE dated.batch_date BETWEEN :from AND :to
             )""".formatted(BatchItemIdSql.of("dated.source_code", "dated.batch_id"));
@@ -407,6 +408,32 @@ class JdbcStageBStore implements StageBStore {
             """;
 
     /**
+     * A pending batch of the range past its grace period (TDD 8.2 "Grace"): dated before the first
+     * day still within it, in no active match, the subject of no unresolved break and named by none,
+     * as Stage A's grace breaks skip the items an A2 or ambiguity break names. A batch a B2, ambiguity
+     * or duplicate break names is BROKEN, not unpaid. A batch in several currencies gets one break.
+     */
+    private static final String GRACE_FINDINGS = """
+            found AS (
+                SELECT 'BATCH' AS item_side, pending.id AS item_id, 'MISSING_SETTLEMENT' AS break_type,
+                       CAST('[]' AS JSONB) AS related_items, CAST(NULL AS JSONB) AS details
+                  FROM (SELECT DISTINCT id, batch_date FROM batch) pending
+                 WHERE pending.batch_date < :batchGraceStart
+                   AND NOT EXISTS (SELECT 1 FROM match_items item
+                                    WHERE item.side = 'BATCH' AND item.item_id = pending.id AND item.active)
+                   AND NOT EXISTS (SELECT 1 FROM breaks subject
+                                    WHERE subject.item_side = 'BATCH' AND subject.item_id = pending.id
+                                      AND subject.status <> 'RESOLVED')
+                   AND NOT EXISTS (SELECT 1 FROM named WHERE named.side = 'BATCH' AND named.id = pending.id)
+            )""";
+
+    private static final String OPEN_GRACE_BREAKS = "WITH " + String.join(",\n", NAMED, SETTLING_LINES, DATED_BATCHES,
+            GRACE_FINDINGS, BREAK_WRITES) + """
+
+            SELECT count(*) FROM opened
+            """;
+
+    /**
      * FR-BRK-5, as Stage A resolves its breaks, but with the list per side (TDD 8.2, v1.18): a match
      * explains a bank line that named no batch, a batch that disagreed or a choice among batches, and a
      * batch that waited for its bank line. A BATCH_AMOUNT_MISMATCH on a batch is a batch that changed
@@ -488,6 +515,13 @@ class JdbcStageBStore implements StageBStore {
                 .param("reason", reason)
                 .param("actor", Actor.SYSTEM.name())
                 .param("at", timestamp(at))
+                .query(Long.class).single());
+    }
+
+    @Override
+    public int openGraceBreaks(StageBPass pass, LocalDate batchGraceStart) {
+        return Math.toIntExact(pass(OPEN_GRACE_BREAKS, pass)
+                .param("batchGraceStart", batchGraceStart)
                 .query(Long.class).single());
     }
 

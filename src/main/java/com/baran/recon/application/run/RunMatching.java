@@ -271,8 +271,9 @@ public final class RunMatching {
      * Stage B (TDD 8.2) for a bank source, inside the work transaction, over its bank lines and the
      * batches of the PSP sources settling to it, as the run snapshotted them. As in Stage A, each
      * rule is a statement over the unmatched items, and each sees what the ones before it wrote. Then
-     * the batches matched earlier are compared with their matches, and the breaks the run's matches
-     * answer are resolved. Only ids and counts are logged.
+     * the batches matched earlier are compared with their matches, the breaks the run's matches answer
+     * are resolved, and the batches left unpaid past their grace period get MISSING_SETTLEMENT, in
+     * Stage A's order. Only ids and counts are logged.
      */
     private void matchStageB(ReconciliationRun running, List<SourceCode> settling) {
         StageBPass pass = new StageBPass(running.id(), running.source(), settling, running.valueDateFrom(),
@@ -281,13 +282,37 @@ public final class RunMatching {
         BankLineBreaks opened = stageB.openBankLineBreaks(pass);
         int changedBatches = stageB.openChangedBatchBreaks(pass);
         int matchedLate = stageB.resolveMatchedLate(running.id(), "Matched by run " + running.id(), pass.at());
+        LocalDate today = LocalDate.ofInstant(pass.at(), valueDateZone);
+        int graceBreaks = stageB.openGraceBreaks(pass,
+                snapshotCalendar(running).firstDayWithinGrace(today, snapshotBatchGrace(running)));
         LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage B matched {2} by B1 over {3} settling PSP "
                         + "sources, opened {4} batch amount mismatch, {5} unexpected bank line, {6} ambiguity, "
-                        + "{7} duplicate line and {8} changed batch breaks, and resolved {9} as MATCHED_LATE",
+                        + "{7} duplicate line, {8} changed batch and {9} grace breaks, and resolved {10} as MATCHED_LATE",
                 running.id(), running.source().value(), Integer.toString(byBatchTotal), Integer.toString(settling.size()),
                 Integer.toString(opened.batchConflicts()), Integer.toString(opened.unexpectedLines()),
                 Integer.toString(opened.ambiguousLines()), Integer.toString(opened.duplicateLines()),
-                Integer.toString(changedBatches), Integer.toString(matchedLate));
+                Integer.toString(changedBatches), Integer.toString(graceBreaks), Integer.toString(matchedLate));
+    }
+
+    /**
+     * The business calendar a bank source's run counts its batch grace in, as its snapshot recorded it
+     * when the run started (FR-MAT-8, v1.17), so the grace the run applied is the one its record shows.
+     */
+    private static BusinessCalendar snapshotCalendar(ReconciliationRun running) {
+        Map<String, String> snapshot = running.configSnapshot();
+        return new BusinessCalendar(
+                listed(snapshot.get(BUSINESS_CALENDAR_WEEKEND)).stream().map(DayOfWeek::valueOf).collect(Collectors.toSet()),
+                listed(snapshot.get(BUSINESS_CALENDAR_HOLIDAYS)).stream().map(LocalDate::parse).collect(Collectors.toSet()));
+    }
+
+    /** The bank source's grace-days-batch-unpaid, as the run's snapshot recorded it. */
+    private static int snapshotBatchGrace(ReconciliationRun running) {
+        return Integer.parseInt(running.configSnapshot().get(GRACE_DAYS_BATCH_UNPAID));
+    }
+
+    /** A snapshot's comma-separated list; an empty value is an empty list. */
+    private static List<String> listed(String value) {
+        return value.isEmpty() ? List.of() : Arrays.asList(value.split(","));
     }
 
     /**
@@ -296,8 +321,7 @@ public final class RunMatching {
      * records it read are one list.
      */
     private static List<SourceCode> settlingSources(ReconciliationRun running) {
-        String listed = running.configSnapshot().get(SETTLING_PSP_SOURCES);
-        return listed.isEmpty() ? List.of() : Arrays.stream(listed.split(",")).map(SourceCode::of).toList();
+        return listed(running.configSnapshot().get(SETTLING_PSP_SOURCES)).stream().map(SourceCode::of).toList();
     }
 
     /**

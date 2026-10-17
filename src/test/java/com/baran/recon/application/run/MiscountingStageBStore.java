@@ -67,6 +67,11 @@ public final class MiscountingStageBStore implements StageBStore {
     }
 
     @Override
+    public int openGraceBreaks(StageBPass pass, LocalDate batchGraceStart) {
+        return delegate.openGraceBreaks(pass, batchGraceStart);
+    }
+
+    @Override
     public ItemTotals itemTotals(SourceCode bank, List<SourceCode> pspSources, LocalDate valueDateFrom,
                                  LocalDate valueDateTo) {
         ItemTotals counted = delegate.itemTotals(bank, pspSources, valueDateFrom, valueDateTo);
