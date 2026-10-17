@@ -1,7 +1,9 @@
 package com.baran.recon.adapters.out.persistence;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.SqlArrayValue;
@@ -335,6 +337,48 @@ class JdbcStageBStore implements StageBStore {
               FROM opened
             """;
 
+    /**
+     * FR-BRK-5, as Stage A resolves its breaks, but with the list per side (TDD 8.2, v1.18): a match
+     * explains a bank line that named no batch, a batch that disagreed or a choice among batches, and a
+     * batch that waited for its bank line. A BATCH_AMOUNT_MISMATCH on a batch is a batch that changed
+     * after an earlier match, which a new match does not explain, so the condition is on the side and
+     * the type together. The breaks are locked before they are read, so their status is the latest
+     * committed one, and the update still requires it. Only the three columns recon_app may update
+     * change.
+     */
+    private static final String RESOLVE_MATCHED_LATE = """
+            WITH matched_item AS (
+                SELECT item.side, item.item_id
+                  FROM match_items item
+                  JOIN matches made ON made.id = item.match_id
+                 WHERE made.run_id = :runId AND item.active
+            ),
+            target AS (
+                SELECT open_break.id, open_break.status
+                  FROM breaks open_break
+                  JOIN matched_item matched
+                    ON matched.side = open_break.item_side AND matched.item_id = open_break.item_id
+                 WHERE open_break.status <> 'RESOLVED'
+                   AND ((open_break.item_side = 'BANK'
+                         AND open_break.break_type IN ('UNEXPECTED_BANK_LINE', 'BATCH_AMOUNT_MISMATCH', 'AMBIGUOUS_MATCH'))
+                        OR (open_break.item_side = 'BATCH' AND open_break.break_type = 'MISSING_SETTLEMENT'))
+                   FOR UPDATE OF open_break
+            ),
+            resolved AS (
+                UPDATE breaks
+                   SET status = 'RESOLVED', resolution_code = 'MATCHED_LATE', resolved_at = :at
+                  FROM target
+                 WHERE breaks.id = target.id AND breaks.status = target.status
+                RETURNING breaks.id, target.status AS from_status
+            ),
+            resolved_event AS (
+                INSERT INTO break_events (break_id, from_status, to_status, resolution_code, actor, reason, occurred_at)
+                SELECT id, from_status, 'RESOLVED', 'MATCHED_LATE', :actor, :reason, :at FROM resolved
+                RETURNING break_id
+            )
+            SELECT count(*) FROM resolved_event
+            """;
+
     private final JdbcClient jdbc;
 
     JdbcStageBStore(JdbcClient jdbc) {
@@ -359,6 +403,16 @@ class JdbcStageBStore implements StageBStore {
                         Math.toIntExact(row.getLong("unexpected_lines")), Math.toIntExact(row.getLong("ambiguous_lines")),
                         Math.toIntExact(row.getLong("duplicate_lines"))))
                 .single();
+    }
+
+    @Override
+    public int resolveMatchedLate(UUID runId, String reason, Instant at) {
+        return Math.toIntExact(jdbc.sql(RESOLVE_MATCHED_LATE)
+                .param("runId", runId)
+                .param("reason", reason)
+                .param("actor", Actor.SYSTEM.name())
+                .param("at", timestamp(at))
+                .query(Long.class).single());
     }
 
     @Override

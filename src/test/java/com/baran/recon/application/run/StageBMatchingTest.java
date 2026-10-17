@@ -35,6 +35,7 @@ import com.baran.recon.domain.breaks.Break;
 import com.baran.recon.domain.breaks.BreakDetails;
 import com.baran.recon.domain.breaks.BreakStatus;
 import com.baran.recon.domain.breaks.BreakType;
+import com.baran.recon.domain.breaks.ResolutionCode;
 import com.baran.recon.domain.item.ItemRef;
 import com.baran.recon.domain.item.SourceCode;
 import com.baran.recon.domain.match.Match;
@@ -525,8 +526,8 @@ class StageBMatchingTest {
 
     @Test
     @DisplayName("INV-7 (TDD 8.2): a bank line with an open UNEXPECTED_BANK_LINE whose batch arrives later with another "
-            + "sum keeps that break, gets no BATCH_AMOUNT_MISMATCH and no event; once the sum agrees, B1 matches it and, "
-            + "until part C3, the break stays open on a MATCHED line")
+            + "sum keeps that break, gets no BATCH_AMOUNT_MISMATCH and no event; once the sum agrees, B1 matches it and "
+            + "resolves the break as MATCHED_LATE (FR-BRK-5)")
     void anUnresolvedBreakIsNeverOpenedTwice() {
         Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, TRY, WEDNESDAY, "B-LATE")));
         run();
@@ -547,7 +548,8 @@ class StageBMatchingTest {
 
         assertThat(matchesOfTheBank()).extracting(Match::items, Match::batchLineCount).containsExactly(
                 tuple(List.of(item(bank(line.get("S-1"))), item(batch(alpha, "B-LATE"))), OptionalInt.of(2)));
-        assertThat(breaksOfTheBank()).containsExactly(unexpected);
+        assertThat(breaksOfTheBank()).extracting(Break::id, Break::status, Break::resolutionCode)
+                .containsExactly(tuple(unexpected.id(), BreakStatus.RESOLVED, Optional.of(ResolutionCode.MATCHED_LATE)));
         assertThat(agreeing.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
                 "bank.TRY.matched.count", 1L, "bank.TRY.broken.count", 0L, "batch.TRY.matched.count", 1L)));
     }

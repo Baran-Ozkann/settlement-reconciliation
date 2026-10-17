@@ -270,20 +270,22 @@ public final class RunMatching {
     /**
      * Stage B (TDD 8.2) for a bank source, inside the work transaction, over its bank lines and the
      * batches of the PSP sources settling to it, as the run snapshotted them. As in Stage A, each
-     * rule is a statement over the unmatched items, and each sees what the ones before it wrote.
-     * Only ids and counts are logged.
+     * rule is a statement over the unmatched items, and each sees what the ones before it wrote; then
+     * the breaks the run's matches answer are resolved. Only ids and counts are logged.
      */
     private void matchStageB(ReconciliationRun running, List<SourceCode> settling) {
         StageBPass pass = new StageBPass(running.id(), running.source(), settling, running.valueDateFrom(),
                 running.valueDateTo(), now());
         int byBatchTotal = stageB.matchBatchTotals(pass);
         BankLineBreaks opened = stageB.openBankLineBreaks(pass);
+        int matchedLate = stageB.resolveMatchedLate(running.id(), "Matched by run " + running.id(), pass.at());
         LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage B matched {2} by B1 over {3} settling PSP "
-                        + "sources, and opened {4} batch amount mismatch, {5} unexpected bank line, {6} ambiguity and "
-                        + "{7} duplicate line breaks",
+                        + "sources, opened {4} batch amount mismatch, {5} unexpected bank line, {6} ambiguity and "
+                        + "{7} duplicate line breaks, and resolved {8} as MATCHED_LATE",
                 running.id(), running.source().value(), Integer.toString(byBatchTotal), Integer.toString(settling.size()),
                 Integer.toString(opened.batchConflicts()), Integer.toString(opened.unexpectedLines()),
-                Integer.toString(opened.ambiguousLines()), Integer.toString(opened.duplicateLines()));
+                Integer.toString(opened.ambiguousLines()), Integer.toString(opened.duplicateLines()),
+                Integer.toString(matchedLate));
     }
 
     /**

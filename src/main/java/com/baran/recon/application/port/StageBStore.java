@@ -59,6 +59,17 @@ public interface StageBStore {
     BankLineBreaks openBankLineBreaks(StageBPass pass);
 
     /**
+     * FR-BRK-5: resolves, as MATCHED_LATE by the system, the unresolved breaks the run's matches answer
+     * (TDD 8.2, v1.18). The list is per side: on a matched bank line, UNEXPECTED_BANK_LINE,
+     * BATCH_AMOUNT_MISMATCH and AMBIGUOUS_MATCH; on a matched batch, MISSING_SETTLEMENT only, so a batch
+     * changed after an earlier match keeps its BATCH_AMOUNT_MISMATCH for an operator. DUPLICATE_LINE
+     * stays open, and so does a break that only names a matched item.
+     *
+     * @return the breaks resolved
+     */
+    int resolveMatchedLate(UUID runId, String reason, Instant at);
+
+    /**
      * The run's items, totalled per side and currency twice over, in one statement and so on one
      * snapshot: by status (INV-1, in the order of {@link com.baran.recon.domain.run.ItemStatus}) and
      * of every status.

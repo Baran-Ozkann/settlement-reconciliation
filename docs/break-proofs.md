@@ -385,3 +385,18 @@ file back (`cmp` identical); the test then passed again. Nothing was committed b
 | FR-MAT-4 (TDD 8.2): a batch named by several unmatched bank lines is matched to none (`OR claims.lines > 1` in `DECIDED`) | the condition removed | `StageBMatchingTest#bankLinesNamingOneBatchAreDuplicates` | 1 test, 1 failure: `Expecting empty but was: [Match[… rule=B1_BATCH_TOTAL … batchLineCount=OptionalInt[1]]]`: S-1, the claimant with the batch's sum, matched while S-2 and S-LATER claim the same batch. Restored: the test passes |
 | TDD 8.2: a bank line naming an already matched batch is `DUPLICATE_LINE`, not matched (`batch.paid_by IS NOT NULL OR` in `DECIDED`) | the condition removed | `StageBMatchingTest#bankLineNamingAMatchedBatchIsADuplicate` | 1 test, 1 error: the run failed (`RunFailedException`), caused by `duplicate key value violates unique constraint "match_items_active_item_unique"`, `Key (side, item_id)=(BATCH, …) already exists`. INV-2's index is the backstop, but the run, and every other line's outcome with it, is lost; the guard makes the line a `DUPLICATE_LINE` instead. Restored: the test passes |
 | INV-7 (TDD 8.2): a bank line that already has an unresolved break gets no second one, whatever type a rule would open now. Enforced by INV-7's partial unique index `breaks_one_unresolved_per_item` (V3, proven in Milestone 2); Stage B's insert names it as its conflict target (`ON CONFLICT (item_side, item_id) WHERE status <> 'RESOLVED' DO NOTHING` in `OPEN_BANK_LINE_BREAKS`), as Stage A's does | the `ON CONFLICT` clause removed | `StageBMatchingTest#anUnresolvedBreakIsNeverOpenedTwice` | 1 test, 1 error: the second run failed (`RunFailedException`), caused by `duplicate key value violates unique constraint "breaks_one_unresolved_per_item"`, `Key (item_side, item_id)=(BANK, …) already exists`: the index refused the `BATCH_AMOUNT_MISMATCH` on the line that has an open `UNEXPECTED_BANK_LINE`. The clause turns that refusal into a skip, so the run completes. Restored: the test passes |
+
+## Milestone 6, part C3
+
+Part C3 adds what happens to Stage B over time (design doc v1.18, §8.2): `MATCHED_LATE` per side, the
+late-line break (`BATCH_CHANGED_AFTER_MATCH`) and `MISSING_SETTLEMENT` with grace. Each test named
+below is permanent; where no rule can reach its state before Milestone 7's reversal, the test builds
+it through the application's own stores. Every one-off below edited `JdbcStageBStore.java` after
+copying it to the session scratchpad, ran the named test class, and copied the file back (`cmp`
+identical); the class then passed again. Nothing was committed broken.
+
+### Recorded one-offs
+
+| Rule | Broken by | Test | What it reported |
+|---|---|---|---|
+| TDD 8.2 (v1.18): `MATCHED_LATE` is per side, so a match never resolves a batch's late-line `BATCH_AMOUNT_MISMATCH` (`BATCH_CHANGED_AFTER_MATCH`): the condition on `item_side` and `break_type` together in `RESOLVE_MATCHED_LATE` | the condition replaced by a type list alone, `break_type IN ('UNEXPECTED_BANK_LINE', 'BATCH_AMOUNT_MISMATCH', 'AMBIGUOUS_MATCH', 'MISSING_SETTLEMENT')` | `StageBOverTimeTest#batchChangedAfterMatchStaysOpenWhenTheBatchIsMatchedAgain` (the batch's break and the missing active match built through the stores, as after a reversal) | 7 tests, 1 failure, that test: `expected: OPEN but was: RESOLVED`: B1 matched the batch again and resolved its late-line break. The other six, which resolve the four answered types, passed. Restored: the class passes, 7 tests |
