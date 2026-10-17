@@ -63,9 +63,9 @@ public interface StageBStore {
      * that is in an active B1 match with a bank line of the source, compares the batch's line count and
      * per-currency sums now with what the match recorded - its line count, and its bank line's amount
      * in that line's currency. Where either differs, opens BATCH_AMOUNT_MISMATCH on the BATCH item,
-     * naming no other item, with the old and new figures as BATCH_CHANGED_AFTER_MATCH details. The match
-     * stays active (FR-MAT-2). A batch that already has an unresolved break gets no second one (INV-7),
-     * so the details are written once, when the break opens.
+     * naming the matched bank line (v1.19), with the old and new figures as BATCH_CHANGED_AFTER_MATCH
+     * details. The match stays active (FR-MAT-2). A batch that already has an unresolved break gets no
+     * second one (INV-7), so the details are written once, when the break opens.
      *
      * @return the breaks opened
      * @throws RuntimeException if a batch's sum does not fit in a BIGINT (INV-8): the run fails

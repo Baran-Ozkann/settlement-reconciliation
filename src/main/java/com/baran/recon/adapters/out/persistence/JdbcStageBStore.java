@@ -342,14 +342,14 @@ class JdbcStageBStore implements StageBStore {
             """;
 
     /**
-     * The batches in an active B1 match whose bank line is the bank source's, with what the match
-     * recorded (TDD 8.2): its line count, and the bank line's amount, which B1 made equal to the
-     * batch's one sum. The bank line's extracted id is the batch id B1 matched it by.
+     * The batches in an active B1 match whose bank line is the bank source's, with the matched bank
+     * line and what the match recorded (TDD 8.2): its line count, and the bank line's amount, which B1
+     * made equal to the batch's one sum. The bank line's extracted id is the batch id B1 matched it by.
      */
     private static final String MATCHED_BATCH = """
             matched_batch AS MATERIALIZED (
-                SELECT made.id AS match_id, batch_item.item_id AS batch_item, paid.extracted_batch_id AS batch_id,
-                       made.batch_line_count AS lines,
+                SELECT made.id AS match_id, batch_item.item_id AS batch_item, paid.id AS bank_line,
+                       paid.extracted_batch_id AS batch_id, made.batch_line_count AS lines,
                        jsonb_build_array(jsonb_build_object('currency', paid.currency, 'amount', paid.amount)) AS sums
                   FROM matches made
                   JOIN match_items batch_item
@@ -379,7 +379,8 @@ class JdbcStageBStore implements StageBStore {
      * BATCH_AMOUNT_MISMATCH, with the old and new figures as BATCH_CHANGED_AFTER_MATCH details, built
      * here with BreakDetailsJson's keys and written once (v1.15, v1.18). The two figures are compared
      * apart: a line of net 0 changes the count alone, and a line in another currency changes the
-     * list of sums. The match stays active (FR-MAT-2), and the break names no other item.
+     * list of sums. The match stays active (FR-MAT-2), and the break names the matched bank line as
+     * its related item, as B2 names its batch (v1.19).
      */
     private static final String CHANGED_BATCH_FINDINGS = """
             current_figures AS (
@@ -390,7 +391,7 @@ class JdbcStageBStore implements StageBStore {
             ),
             found AS (
                 SELECT 'BATCH' AS item_side, matched.batch_item AS item_id, 'BATCH_AMOUNT_MISMATCH' AS break_type,
-                       CAST('[]' AS JSONB) AS related_items,
+                       jsonb_build_array(jsonb_build_object('side', 'BANK', 'id', matched.bank_line)) AS related_items,
                        jsonb_build_object('kind', 'BATCH_CHANGED_AFTER_MATCH', 'matchId', matched.match_id,
                                           'matched', jsonb_build_object('lineCount', matched.lines, 'sums', matched.sums),
                                           'current', jsonb_build_object('lineCount', latest.lines, 'sums', latest.sums))
