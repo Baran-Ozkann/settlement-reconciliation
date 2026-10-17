@@ -108,6 +108,18 @@ recon:
       # A source still busy after this is given up on: the run is logged at WARN with the file's id
       # and can be started with POST /api/v1/runs, so one stuck run cannot hold every later one.
       busy-give-up-after: 30m
+    # TDD 5.3 (v1.19): once a day, a run of every source over [today - look-back-days, today], PSP
+    # sources first, then bank sources, each in the order configured. A file's runs cover only its own
+    # dates, so without this a grace break opens only when a later file happens to cover the item's
+    # date. The runs go through the automatic trigger's queue and thread, so it needs the automatic
+    # trigger switched on. A day the application was down at this time is not run later: the next
+    # day's look-back covers it.
+    scheduled-run:
+      enabled: true
+      # HH:mm in recon.value-date-zone, quoted so YAML reads it as text.
+      time-of-day: "06:00"
+      # More than any grace period plus window, in calendar days; at least 1.
+      look-back-days: 30
   # TDD 8.1: value-date windows and grace periods count every day except these. Holidays are ISO
   # dates. Both are snapshotted onto each run (FR-MAT-8).
   business-calendar:

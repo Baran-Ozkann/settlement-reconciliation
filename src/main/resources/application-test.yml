@@ -40,3 +40,7 @@ recon:
       # the runs it starts itself and open breaks it does not expect. The classes that test the
       # trigger switch it on in their own contexts.
       enabled: false
+    scheduled-run:
+      # Off for the same reason: a daily run of every source would race the tests' own runs. Its tests
+      # call the use case with a fixed clock instead.
+      enabled: false
