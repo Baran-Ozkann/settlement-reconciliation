@@ -196,7 +196,8 @@ class BankRunStatisticsTest {
         fixture.openBreak(BreakType.UNEXPECTED_BANK_LINE, bank(line.get("S-2")), List.of());
         fixture.openBreak(BreakType.DUPLICATE_LINE, bank(line.get("S-4")),
                 List.of(bank(line.get("S-3")), batch(ALPHA, "B-N")));
-        fixture.openBreak(BreakType.BATCH_AMOUNT_MISMATCH, batch(ALPHA, "B-X"), List.of(),
+        // A late-line break names its match's bank line (v1.19); that match is not in this data.
+        fixture.openBreak(BreakType.BATCH_AMOUNT_MISMATCH, batch(ALPHA, "B-X"), List.of(bank(UUID.randomUUID())),
                 Optional.of(new BreakDetails.BatchChangedAfterMatch(UUID.randomUUID(),
                         new BatchFigures(1, List.of(Money.of(2_500, CurrencyCode.of("TRY")))),
                         new BatchFigures(1, List.of(Money.of(3_000, CurrencyCode.of("TRY")))))));

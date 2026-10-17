@@ -50,7 +50,7 @@ public record SourcesProperties(List<Source> sources) {
                 return Optional.empty();
             }
             StageASettings defaults = StageASettings.TDD_DEFAULTS;
-            return Optional.of(new StageASettings(
+            return Optional.of(SourceDefinition.stageASettings(SourceCode.of(code), type,
                     valueDateWindowDays == null ? defaults.valueDateWindowDays() : valueDateWindowDays,
                     graceDaysLedgerUnmatched == null ? defaults.graceDaysLedgerUnmatched() : graceDaysLedgerUnmatched,
                     graceDaysPspUnmatched == null ? defaults.graceDaysPspUnmatched() : graceDaysPspUnmatched));

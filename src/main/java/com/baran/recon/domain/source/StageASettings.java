@@ -11,11 +11,24 @@ package com.baran.recon.domain.source;
  *   <li>{@code graceDaysPspUnmatched}: how long a PSP line may stay unmatched before it is
  *       MISSING_IN_LEDGER.</li>
  * </ul>
- * None may be negative. {@link SourceDefinition} refuses a negative one, naming the source and the
- * key, as it refuses a negative grace-days-batch-unpaid: only the source knows its own code.
+ * None may be negative, so no code path can hold settings that count days backwards. The record
+ * does not know its source, so its refusal names only the key; configuration is built through
+ * {@link SourceDefinition#stageASettings}, which checks first and names the source as well.
  */
 public record StageASettings(int valueDateWindowDays, int graceDaysLedgerUnmatched, int graceDaysPspUnmatched) {
 
     /** The values TDD 8.1 configures, for a PSP source that sets none of its own. */
     public static final StageASettings TDD_DEFAULTS = new StageASettings(2, 3, 1);
+
+    public StageASettings {
+        requireNotNegative("value-date-window-days", valueDateWindowDays);
+        requireNotNegative("grace-days-ledger-unmatched", graceDaysLedgerUnmatched);
+        requireNotNegative("grace-days-psp-unmatched", graceDaysPspUnmatched);
+    }
+
+    private static void requireNotNegative(String key, int days) {
+        if (days < 0) {
+            throw new InvalidSourceConfigurationException(key + " is a number of business days, not negative");
+        }
+    }
 }

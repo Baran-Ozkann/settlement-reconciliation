@@ -276,7 +276,7 @@ class StageBOverTimeTest {
         fixture.pspFile(alpha, List.of(
                 new Psp("A-1", "B-7", 500, 0, TRY, WEDNESDAY),
                 new Psp("A-2", "B-7", 300, 0, TRY, THURSDAY)));
-        UUID changed = openBreak(BreakType.BATCH_AMOUNT_MISMATCH, batch(alpha, "B-7"), List.of(),
+        UUID changed = openBreak(BreakType.BATCH_AMOUNT_MISMATCH, batch(alpha, "B-7"), List.of(bank(UUID.randomUUID())),
                 Optional.of(new BreakDetails.BatchChangedAfterMatch(UUID.randomUUID(),
                         new BatchFigures(1, List.of(money(500))), new BatchFigures(2, List.of(money(800))))));
         fixture.bankFile(bankSource, List.of(bankLine("S-1", 800, THURSDAY, "B-7")));
@@ -291,17 +291,17 @@ class StageBOverTimeTest {
     @Test
     @DisplayName("TDD 8.2: a line arriving after its batch was matched, changing the batch's sum, opens "
             + "BATCH_AMOUNT_MISMATCH on the BATCH item with BATCH_CHANGED_AFTER_MATCH details - the match's figures and "
-            + "the batch's now - naming no other item; the match stays active (FR-MAT-2)")
+            + "the batch's now - naming the matched bank line (v1.19); the match stays active (FR-MAT-2)")
     void lateLineChangingTheSumOpensABatchMismatch() {
         fixture.pspFile(alpha, List.of(new Psp("A-1", "B-11", 1_000, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-11")));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-11")));
         run();
         UUID matchId = onlyActiveMatchId();
         fixture.pspFile(alpha, List.of(new Psp("A-2", "B-11", 250, 0, TRY, THURSDAY)));
 
         ReconciliationRun changed = run();
 
-        assertChangedAfterMatch(batch(alpha, "B-11"), changed, matchId,
+        assertChangedAfterMatch(batch(alpha, "B-11"), changed, matchId, bank(line.get("S-1")),
                 new BatchFigures(1, List.of(money(1_000))), new BatchFigures(2, List.of(money(1_250))));
         assertThat(onlyActiveMatchId()).isEqualTo(matchId);
         assertThat(changed.stats()).hasValueSatisfying(stats -> assertThat(stats).containsAllEntriesOf(Map.of(
@@ -314,14 +314,14 @@ class StageBOverTimeTest {
             + "BATCH_AMOUNT_MISMATCH: the count is compared on its own")
     void lateLineChangingOnlyTheCountOpensABatchMismatch() {
         fixture.pspFile(alpha, List.of(new Psp("A-1", "B-12", 1_000, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-12")));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-12")));
         run();
         UUID matchId = onlyActiveMatchId();
         fixture.pspFile(alpha, List.of(new Psp("A-2", "B-12", 100, 100, TRY, THURSDAY)));
 
         ReconciliationRun changed = run();
 
-        assertChangedAfterMatch(batch(alpha, "B-12"), changed, matchId,
+        assertChangedAfterMatch(batch(alpha, "B-12"), changed, matchId, bank(line.get("S-1")),
                 new BatchFigures(1, List.of(money(1_000))), new BatchFigures(2, List.of(money(1_000))));
     }
 
@@ -330,14 +330,15 @@ class StageBOverTimeTest {
             + "BATCH_AMOUNT_MISMATCH, its current sums one per currency in currency-code order (INV-5)")
     void lateLineMakingTheBatchMixedCurrencyOpensABatchMismatch() {
         fixture.pspFile(alpha, List.of(new Psp("A-1", "B-13", 1_000, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-13")));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-13")));
         run();
         UUID matchId = onlyActiveMatchId();
         fixture.pspFile(alpha, List.of(new Psp("A-2", "B-13", 50, 0, "EUR", THURSDAY)));
 
         ReconciliationRun changed = run();
 
-        assertChangedAfterMatch(batch(alpha, "B-13"), changed, matchId, new BatchFigures(1, List.of(money(1_000))),
+        assertChangedAfterMatch(batch(alpha, "B-13"), changed, matchId, bank(line.get("S-1")),
+                new BatchFigures(1, List.of(money(1_000))),
                 new BatchFigures(2, List.of(Money.of(50, CurrencyCode.of("EUR")), money(1_000))));
         assertThat(storedCurrentSumsOf(batch(alpha, "B-13")))
                 .isEqualTo("[{\"amount\": 50, \"currency\": \"EUR\"}, {\"amount\": 1000, \"currency\": \"TRY\"}]");
@@ -356,7 +357,7 @@ class StageBOverTimeTest {
 
         ReconciliationRun changed = run();
 
-        assertChangedAfterMatch(batch(alpha, "B-14"), changed, onlyActiveMatchId(),
+        assertChangedAfterMatch(batch(alpha, "B-14"), changed, onlyActiveMatchId(), bank(line.get("S-1")),
                 new BatchFigures(2, List.of(money(900))), new BatchFigures(2, List.of(money(1_000))));
     }
 
@@ -387,7 +388,7 @@ class StageBOverTimeTest {
             + "moves the batch out of it, and the run covering that date opens the break")
     void matchedBatchIsComparedWhenInScope() {
         fixture.pspFile(alpha, List.of(new Psp("A-1", "B-16", 1_000, 0, TRY, TUESDAY)));
-        fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-16")));
+        Map<String, UUID> line = fixture.bankFile(bankSource, List.of(bankLine("S-1", 1_000, WEDNESDAY, "B-16")));
         run();
         UUID matchId = onlyActiveMatchId();
         fixture.pspFile(alpha, List.of(new Psp("A-2", "B-16", 250, 0, TRY, MONDAY_AFTER)));
@@ -396,7 +397,7 @@ class StageBOverTimeTest {
         assertThat(breaksAbout(batch(alpha, "B-16"))).isEmpty();
         ReconciliationRun covering = matching.run(bankSource.value(), MONDAY_AFTER, MONDAY_AFTER, "operator-001");
 
-        assertChangedAfterMatch(batch(alpha, "B-16"), covering, matchId,
+        assertChangedAfterMatch(batch(alpha, "B-16"), covering, matchId, bank(line.get("S-1")),
                 new BatchFigures(1, List.of(money(1_000))), new BatchFigures(2, List.of(money(1_250))));
     }
 
@@ -559,15 +560,17 @@ class StageBOverTimeTest {
     }
 
     /**
-     * The batch's one break is an OPEN BATCH_AMOUNT_MISMATCH opened by the run, naming nothing, with
-     * BATCH_CHANGED_AFTER_MATCH details read back through the strict reader, and its opening event.
+     * The batch's one break is an OPEN BATCH_AMOUNT_MISMATCH opened by the run, naming the matched bank
+     * line (v1.19), with BATCH_CHANGED_AFTER_MATCH details read back through the strict reader, and its
+     * opening event.
      */
-    private void assertChangedAfterMatch(ItemRef batch, ReconciliationRun run, UUID matchId, BatchFigures matched,
-                                         BatchFigures current) {
+    private void assertChangedAfterMatch(ItemRef batch, ReconciliationRun run, UUID matchId, ItemRef matchedLine,
+                                         BatchFigures matched, BatchFigures current) {
         Break changed = onlyBreakAbout(batch);
         assertThat(changed).extracting(Break::type, Break::relatedItems, Break::status, Break::openedRunId,
                         Break::details)
-                .containsExactly(BreakType.BATCH_AMOUNT_MISMATCH, List.of(), BreakStatus.OPEN, Optional.of(run.id()),
+                .containsExactly(BreakType.BATCH_AMOUNT_MISMATCH, List.of(matchedLine), BreakStatus.OPEN,
+                        Optional.of(run.id()),
                         Optional.of(new BreakDetails.BatchChangedAfterMatch(matchId, matched, current)));
         assertThat(eventsOf(changed.id())).containsExactly("->OPEN:-:system");
     }

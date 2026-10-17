@@ -27,7 +27,8 @@ import com.baran.recon.domain.source.ConfiguredSources;
 
 /** The matching run use cases, built from the ports they need (TDD 5.3). */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(MatchingConfiguration.AutomaticTriggerProperties.class)
+@EnableConfigurationProperties({MatchingConfiguration.AutomaticTriggerProperties.class,
+        ScheduledRunConfiguration.ScheduledRunProperties.class})
 class MatchingConfiguration {
 
     private static final Logger LOG = LoggerFactory.getLogger(MatchingConfiguration.class);

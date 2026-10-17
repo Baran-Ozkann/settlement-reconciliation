@@ -36,7 +36,6 @@ import com.baran.recon.domain.run.ReconciliationRun;
 import com.baran.recon.domain.source.ConfiguredSources;
 import com.baran.recon.domain.source.SourceDefinition;
 import com.baran.recon.domain.source.SourceType;
-import com.baran.recon.domain.source.StageASettings;
 
 /**
  * Runs matching for one source and value-date range (TDD 5.3). In order:
@@ -181,7 +180,8 @@ public final class RunMatching {
      * the business calendar, which both stages count grace periods in. A PSP source's run adds what
      * Stage A reads besides: the source's window and grace periods, and the rule versions. A bank
      * source's run adds its batch-id-pattern, its batch grace period, the PSP sources settling to it
-     * and the Stage B rule versions (TDD 8.2, v1.17).
+     * and the Stage B rule versions (TDD 8.2, v1.17). This is the only place a run reads them from
+     * configuration: its work reads every setting it applies back from the snapshot (v1.19).
      */
     private Map<String, String> configSnapshot(SourceDefinition source) {
         Map<String, String> snapshot = new TreeMap<>();
@@ -219,11 +219,11 @@ public final class RunMatching {
      */
     private ReconciliationRun work(SourceDefinition source, ReconciliationRun running) {
         Map<String, Long> stats = new TreeMap<>();
-        source.stageA().ifPresent(settings -> {
-            matchStageA(running, settings);
+        if (source.type() == SourceType.PSP_SETTLEMENT) {
+            matchStageA(running);
             ItemTotals totals = stageA.itemTotals(running.source(), running.valueDateFrom(), running.valueDateTo());
             stats.putAll(ItemStatistics.conserved(totals.byStatus(), totals.inScope()));
-        });
+        }
         if (source.type() == SourceType.BANK_STATEMENT) {
             List<SourceCode> settling = settlingSources(running);
             matchStageB(running, settling);
@@ -244,22 +244,24 @@ public final class RunMatching {
      * Stage A (TDD 8.2) for a PSP source, inside the work transaction, so whatever it matches and
      * opens commits with the run's COMPLETED or not at all. Its rules run in their fixed order
      * (FR-MAT-3), each a statement over the source's unmatched items, and each sees what the ones
-     * before it wrote. Only ids and counts are logged.
+     * before it wrote. The window, the grace periods, the calendar they are counted in and the zone
+     * that gives today are read back from the run's snapshot (FR-MAT-8, v1.19), so what the run
+     * records and what it applied are one set of values. Only ids and counts are logged.
      */
-    private void matchStageA(ReconciliationRun running, StageASettings settings) {
+    private void matchStageA(ReconciliationRun running) {
+        BusinessCalendar snapshotCalendar = snapshotCalendar(running);
+        int window = snapshotDays(running, VALUE_DATE_WINDOW_DAYS);
         StageAPass pass = new StageAPass(running.id(), running.source(), running.valueDateFrom(), running.valueDateTo(),
-                settings.valueDateWindowDays(),
-                BusinessDayIndex.forRange(calendar, running.valueDateFrom(), running.valueDateTo(),
-                        settings.valueDateWindowDays()),
+                window, BusinessDayIndex.forRange(snapshotCalendar, running.valueDateFrom(), running.valueDateTo(), window),
                 now());
         int byReference = stageA.matchByReference(pass);
         int referenceBreaks = stageA.openReferenceBreaks(pass);
         FallbackOutcome byAmount = stageA.matchByAmount(pass);
         int matchedLate = stageA.resolveMatchedLate(running.id(), "Matched by run " + running.id(), pass.at());
-        LocalDate today = LocalDate.ofInstant(pass.at(), valueDateZone);
+        LocalDate today = snapshotToday(running, pass.at());
         int graceBreaks = stageA.openGraceBreaks(pass,
-                calendar.firstDayWithinGrace(today, settings.graceDaysLedgerUnmatched()),
-                calendar.firstDayWithinGrace(today, settings.graceDaysPspUnmatched()));
+                snapshotCalendar.firstDayWithinGrace(today, snapshotDays(running, GRACE_DAYS_LEDGER_UNMATCHED)),
+                snapshotCalendar.firstDayWithinGrace(today, snapshotDays(running, GRACE_DAYS_PSP_UNMATCHED)));
         LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage A matched {2} by A1 and {3} by A3, opened "
                         + "{4} reference, {5} ambiguity and {6} grace breaks, and resolved {7} as MATCHED_LATE",
                 running.id(), running.source().value(), Integer.toString(byReference),
@@ -282,9 +284,9 @@ public final class RunMatching {
         BankLineBreaks opened = stageB.openBankLineBreaks(pass);
         int changedBatches = stageB.openChangedBatchBreaks(pass);
         int matchedLate = stageB.resolveMatchedLate(running.id(), "Matched by run " + running.id(), pass.at());
-        LocalDate today = LocalDate.ofInstant(pass.at(), valueDateZone);
+        LocalDate today = snapshotToday(running, pass.at());
         int graceBreaks = stageB.openGraceBreaks(pass,
-                snapshotCalendar(running).firstDayWithinGrace(today, snapshotBatchGrace(running)));
+                snapshotCalendar(running).firstDayWithinGrace(today, snapshotDays(running, GRACE_DAYS_BATCH_UNPAID)));
         LOG.log(System.Logger.Level.INFO, "Run {0} on source {1}: Stage B matched {2} by B1 over {3} settling PSP "
                         + "sources, opened {4} batch amount mismatch, {5} unexpected bank line, {6} ambiguity, "
                         + "{7} duplicate line, {8} changed batch and {9} grace breaks, and resolved {10} as MATCHED_LATE",
@@ -295,8 +297,8 @@ public final class RunMatching {
     }
 
     /**
-     * The business calendar a bank source's run counts its batch grace in, as its snapshot recorded it
-     * when the run started (FR-MAT-8, v1.17), so the grace the run applied is the one its record shows.
+     * The business calendar a run counts its windows and grace periods in, as its snapshot recorded it
+     * when the run started (FR-MAT-8, v1.19), so the days the run counted are the ones its record shows.
      */
     private static BusinessCalendar snapshotCalendar(ReconciliationRun running) {
         Map<String, String> snapshot = running.configSnapshot();
@@ -305,9 +307,17 @@ public final class RunMatching {
                 listed(snapshot.get(BUSINESS_CALENDAR_HOLIDAYS)).stream().map(LocalDate::parse).collect(Collectors.toSet()));
     }
 
-    /** The bank source's grace-days-batch-unpaid, as the run's snapshot recorded it. */
-    private static int snapshotBatchGrace(ReconciliationRun running) {
-        return Integer.parseInt(running.configSnapshot().get(GRACE_DAYS_BATCH_UNPAID));
+    /** A window or grace period in business days, as the run's snapshot recorded it under {@code key}. */
+    private static int snapshotDays(ReconciliationRun running, String key) {
+        return Integer.parseInt(running.configSnapshot().get(key));
+    }
+
+    /**
+     * The run's day at {@code at} in the value-date zone its snapshot recorded (FR-MAT-8, v1.19): the
+     * day grace periods are counted up to, in the zone value dates were given in.
+     */
+    private static LocalDate snapshotToday(ReconciliationRun running, Instant at) {
+        return LocalDate.ofInstant(at, ZoneId.of(running.configSnapshot().get(VALUE_DATE_ZONE)));
     }
 
     /** A snapshot's comma-separated list; an empty value is an empty list. */

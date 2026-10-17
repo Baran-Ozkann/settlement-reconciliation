@@ -62,14 +62,8 @@ public record SourceDefinition(SourceCode code, SourceType type, Set<UUID> ledge
             throw new InvalidSourceConfigurationException("PSP source " + code + " needs " + STAGE_A_KEYS);
         }
         if (type == SourceType.BANK_STATEMENT && stageA.isPresent()) {
-            throw new InvalidSourceConfigurationException(
-                    "source " + code + " is a bank statement source; only a PSP source has " + STAGE_A_KEYS);
+            throw stageAOnBankSource(code);
         }
-        stageA.ifPresent(settings -> {
-            requireBusinessDays(code, "value-date-window-days", settings.valueDateWindowDays());
-            requireBusinessDays(code, "grace-days-ledger-unmatched", settings.graceDaysLedgerUnmatched());
-            requireBusinessDays(code, "grace-days-psp-unmatched", settings.graceDaysPspUnmatched());
-        });
         // Without settles-to, no bank run would read the PSP source's batches, so they would never be
         // reconciled and never reported missing.
         if (type == SourceType.PSP_SETTLEMENT && settlesTo.isEmpty()) {
@@ -93,6 +87,28 @@ public record SourceDefinition(SourceCode code, SourceType type, Set<UUID> ledge
             throw new InvalidSourceConfigurationException("grace-days-batch-unpaid of bank statement source " + code
                     + " is a number of business days, not negative");
         }
+    }
+
+    /**
+     * A source's Stage A settings, each checked here first so a negative one is refused naming the
+     * source as well as the key, as a negative grace-days-batch-unpaid is. {@link StageASettings} checks
+     * them again on its own, so no other path can build negative ones, but it knows only the key. On a
+     * bank source they are refused as misplaced, whatever their values, as the constructor refuses them.
+     */
+    public static StageASettings stageASettings(SourceCode code, SourceType type, int valueDateWindowDays,
+                                                int graceDaysLedgerUnmatched, int graceDaysPspUnmatched) {
+        if (type == SourceType.BANK_STATEMENT) {
+            throw stageAOnBankSource(code);
+        }
+        requireBusinessDays(code, "value-date-window-days", valueDateWindowDays);
+        requireBusinessDays(code, "grace-days-ledger-unmatched", graceDaysLedgerUnmatched);
+        requireBusinessDays(code, "grace-days-psp-unmatched", graceDaysPspUnmatched);
+        return new StageASettings(valueDateWindowDays, graceDaysLedgerUnmatched, graceDaysPspUnmatched);
+    }
+
+    private static InvalidSourceConfigurationException stageAOnBankSource(SourceCode code) {
+        return new InvalidSourceConfigurationException(
+                "source " + code + " is a bank statement source; only a PSP source has " + STAGE_A_KEYS);
     }
 
     private static void requireBusinessDays(SourceCode code, String key, int days) {
