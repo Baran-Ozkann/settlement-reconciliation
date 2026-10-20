@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.19 — Milestone 6 part C3's questions settled: a run reads its settings from its snapshot, the late-line break names the matched bank line; part D split into D1, D2 and D3
+Version: 1.20 — Milestone 6 part D1's questions settled: the scheduled run's key, time and dependence on the automatic trigger; part D3 measures the 30-day daily load
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -361,7 +361,13 @@ ArchUnit rules (Milestone 1):
   sources', each in configuration order, one queue place per source; a full queue refuses a source
   with a WARN, as it refuses a file. A day the application was down at the scheduled time is not run
   later: the next day's look-back covers it. `look-back-days` below 1 or a malformed time stops
-  startup. "Today" comes from the injected `Clock` in the value-date zone.
+  startup. "Today" comes from the injected `Clock` in the value-date zone. The time is
+  `recon.matching.scheduled-run.time-of-day`, `HH:mm`, default `06:00`: after statement files that
+  arrive overnight, before the working day (v1.20). The scheduled run uses the automatic trigger's
+  queue, so switching it on with the automatic trigger off stops startup, naming both keys; there is
+  no second queue (v1.20). `look-back-days` is not checked against the largest grace plus window:
+  those count business days and the look-back calendar days, and the default of 30 is well above any
+  configured grace plus window (v1.20).
 
 ---
 
@@ -1064,12 +1070,14 @@ write technique is settled here first.
   grace, skipping batches a break names; the late-line break (`BATCH_CHANGED_AFTER_MATCH`) over the
   batches of active B1 matches; the business calendar in the bank run's snapshot; and Stage A's
   settings messages naming the source. Its open questions are settled in v1.19.
-- Part D1: the daily scheduled run (§5.3); Stage A reads its settings back from its snapshot, as the
-  bank run does (FR-MAT-8, v1.19); `StageASettings` validates itself again, with `SourceDefinition`
-  naming the source; the late-line break names the matched bank line.
+- Part D1 (done): the daily scheduled run (§5.3); Stage A reads its settings back from its snapshot,
+  as the bank run does (FR-MAT-8, v1.19); `StageASettings` validates itself again, with
+  `SourceDefinition` naming the source; the late-line break names the matched bank line. Its open
+  questions are settled in v1.20.
 - Part D2: INV-1/INV-4/INV-5 property tests extended to Stage B; the end-to-end three-way test.
 - Part D3: Stage B measured at NFR-PERF-2's scale, with a long match history, under the measurement
-  conditions of §4.6, and recorded; the late-line pre-filter or an index on the batch-id columns
+  conditions of §4.6, and recorded, including a bank run over the scheduled run's 30-day range, the
+  daily load (v1.20); the late-line pre-filter or an index on the batch-id columns
   added only if the measurement shows it is needed (v1.17).
 - Exit: Stage B rules and details of §8.2 covered, each by name; INV-1/INV-4/INV-5 extended to Stage B
   (shuffled inputs, fixed seed); a test pins the SQL batch id equal to `BatchKey.itemId()`; the
