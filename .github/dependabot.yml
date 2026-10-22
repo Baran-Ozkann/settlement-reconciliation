@@ -1,9 +1,9 @@
 version: 2
 
 # The workflow pins each action to a full commit hash, which never moves on its own. Dependabot opens
-# a pull request when an action releases a new version, with the new hash and its release comment,
-# and the pull request is verified like any other. Actions only: dependency scanning of the Maven
-# build is Milestone 9.
+# a pull request when an action or a Maven dependency releases a new version, and the pull request is
+# verified commit by commit like any other. These are version updates; scanning the build for known
+# vulnerabilities is Milestone 9.
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -14,3 +14,15 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Minor and patch updates together in one pull request; a major version (Spring Boot 4 to 5, say)
+    # comes alone, so what it changes can be read and verified on its own.
+    groups:
+      maven-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
