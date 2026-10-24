@@ -1,12 +1,71 @@
 # Progress
 
-**Current milestone:** 6 — Stage B matching. Part D1 added the daily scheduled run, so a grace break
-opens without waiting for a later file, and closed part C3's questions from design doc v1.19: both
-stages read every setting back from their snapshot, the late-line break names the matched bank line,
-and `StageASettings` validates itself again. Part D2 adds the Stage B properties and the end-to-end
-test, part D3 the measurement
-**Branch:** `milestone-6/part-d1` (one branch per session from Milestone 5.1 on)
-**Last updated:** 2026-10-17
+**Current milestone:** 6 — Stage B matching. Part D2 pinned the Maven Wrapper's downloads by
+checksum, extended the INV-1, INV-4 and INV-5 property tests to Stage B, and added the end-to-end
+three-way test, closing every exit criterion of §14 but Stage B's measurement, which is part D3's
+**Branch:** `milestone-6/part-d2` (one branch per session from Milestone 5.1 on)
+**Last updated:** 2026-10-24
+
+## Milestone 6 part D2 — Stage B's property tests and the end-to-end three-way test
+
+No production code changed. The build now verifies what the Maven Wrapper downloads, Stage B's
+invariants are tested on generated data, and one test follows a small dataset from the ledger's
+events through a PSP file and a bank file to the scheduled run.
+
+### What was built, by commit
+
+- `2f4c203` stores `mvnw.cmd` with LF in the index, as `.gitattributes` (`*.cmd text eol=crlf`)
+  requires; the checked-out file is unchanged. Dependabot's PR #22 committed it with CRLF in the index,
+  so every checkout showed it modified. **A future Dependabot update of the wrapper may do the same**;
+  `git add --renormalize mvnw.cmd` in a commit of its own fixes it.
+- `cf39cf3` pins the Maven Wrapper 3.3.4's downloads in `.mvn/wrapper/maven-wrapper.properties`:
+  - `wrapperSha256Sum=4e2fbf6554bc8a4702cdfdd3bef464f423393d784ddbb037216320ce55d5e4e1`, the
+    committed jar's hash (its SHA-1 equals Maven Central's `maven-wrapper-3.3.4.jar.sha1`, as the
+    owner verified on 2026-10-23);
+  - `distributionSha256Sum=1f6d9909266510f039f59aa0e13dcd2c66da85f043e56276e41f2918f8bddaff`, the
+    hash of `apache-maven-3.10.0-bin.zip` as the wrapper itself downloaded it into a fresh
+    `MAVEN_USER_HOME` in the session scratchpad, after its SHA-512 was checked against the value the
+    owner took from the Apache archive.
+
+  Both scripts (`mvnw`, `mvnw.cmd`) check the jar on every start, the committed one included. The
+  wrapper checks the distribution only when it downloads it: a home that already holds Maven is not
+  checked again.
+- `c092473` adds `StageBPropertiesTest`: INV-1, INV-4 and INV-5 for Stage B over generated batches
+  and bank lines, two PSP sources settling to one bank, in two deliveries with a run after each.
+- `f33cf4b` adds `ThreeWayReconciliationTest`, Milestone 6's end-to-end exit criterion.
+
+### The property class's time
+
+On the developer machine (Windows 11, Docker Desktop), `StageBPropertiesTest` alone took 29.4 s and
+29.8 s in two runs, by Surefire's report (INV-5, 20 tries of three orders, 23.0 s including the
+context's start; INV-1/INV-4, 40 tries, 5.4 s). The end-to-end test took 29.0 s alone. Neither is a
+performance measurement.
+
+### Break proofs
+
+Recorded in `docs/break-proofs.md`, section "Milestone 6, part D2": the wrapper refusing a changed
+distribution or jar checksum; INV-1 failing on batches named by a break counted as pending; INV-4
+failing on bank lines of the range's last day left out of both totals; INV-5 failing on a duplicate
+claimant picked by stored id; the end-to-end test failing on a B2 break that names no batch. A first
+end-to-end defect (the B2 break on the batch) was refused by the domain's strict reading before the
+test's own assertions ran, and is recorded as such.
+
+### Verification (part D2)
+
+At `f33cf4b`, the last code commit, in the default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 302 s, 1246 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic-link cases in `UploadDirectoryTest`, by assumption on Windows). Within it,
+  `StageBPropertiesTest` took 16.5 s and `ThreeWayReconciliationTest` 2.3 s, sharing containers
+  already started. JaCoCo line coverage: domain 99.4 % (721/725), overall 97.0 % (2731/2816),
+  unchanged, as no production code changed.
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0.
+- Targeted tests ran before every other commit. No commit added a migration or changed a grant.
+
+### Part D1's pull request CI
+
+The owner reports that part D1's pull request (#18, `milestone-6/part-d1`) was all green on the first
+attempt: every per-commit job and the reverse-order run passed.
 
 ## Milestone 6 part D1 — the daily scheduled run, and settings read from the snapshot
 
