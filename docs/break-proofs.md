@@ -430,3 +430,17 @@ Nothing was committed broken.
 |---|---|---|---|
 | TDD 5.3 (v1.19): a malformed `recon.matching.scheduled-run.time-of-day` or a `look-back-days` below 1 stops startup, naming the key, whether the run is on or off | each bad value bound in the test's own context (`6:00`, `24:00`, `06:60`, `06:00:00`, `noon`, a missing time, `0`, `-1`) | `ScheduledRunConfigurationTest#impossibleSettingFails`, `#missingTimeFails` | the binding fails with the key's message as its root cause |
 | TDD 5.3 (v1.19): the scheduled run queues on the automatic trigger's thread, so it does not start without that trigger | a context with the run on and `RunTrigger.NONE` | `ScheduledRunConfigurationTest#switchedOnWithoutTheAutomaticTriggerFails` | the context fails, its root cause naming both keys |
+
+## Milestone 6, part D2
+
+Part D2 pins the Maven Wrapper's downloads by checksum, adds Stage B's INV-1, INV-4 and INV-5
+property tests, and adds the end-to-end three-way test. Every one-off below edited the named file
+after copying it to the session scratchpad, ran the named command or test classes, and copied the
+file back (`cmp` identical); the command or classes then passed again. Nothing was committed broken.
+
+### Recorded one-offs
+
+| Rule | Broken by | Test | What it reported |
+|---|---|---|---|
+| Build supply chain: the Maven Wrapper 3.3.4 refuses a Maven distribution whose SHA-256 differs from `distributionSha256Sum` in `.mvn/wrapper/maven-wrapper.properties` | `distributionSha256Sum`'s last hex digit changed from `f` to `e`, with `MAVEN_USER_HOME` pointed at a fresh, empty directory in the session scratchpad, so the wrapper downloads the distribution | `.\mvnw.cmd -v` (PowerShell) and `sh ./mvnw -v` (Git Bash), each with its own fresh `MAVEN_USER_HOME` | Both exit 1: `java.lang.RuntimeException: Failed to validate Maven distribution SHA-256, your Maven distribution might be compromised.` at `HashAlgorithmVerifier.verify` from `Installer.createDist`. The zip was downloaded and left unextracted; Maven did not start. Restored, each with another fresh `MAVEN_USER_HOME`: both exit 0, `Apache Maven 3.10.0 (c43a36b8d67be7e0805a411bc0898af1a51f5472)`. The check runs only when the wrapper downloads: with the wrong digit and a home that already holds the extracted distribution, `sh ./mvnw -v` exits 0 |
+| Build supply chain: the wrapper scripts refuse a `maven-wrapper.jar` whose SHA-256 differs from `wrapperSha256Sum`. Both 3.3.4 scripts check the jar on every start, the committed jar included, not only a downloaded one: the check follows the download block, outside it | `wrapperSha256Sum`'s last hex digit changed from `1` to `0` | `.\mvnw.cmd -v` and `sh ./mvnw -v`, the distribution already installed | Both exit 1 before Java starts. `mvnw.cmd`: `Error: Failed to validate Maven wrapper SHA-256, your Maven wrapper might be compromised.` from its PowerShell `Get-FileHash` check. `mvnw`: the same message from its `sha256sum -c` check. Restored: both exit 0 |
