@@ -1,6 +1,6 @@
 # Settlement Reconciliation — Design Document
 
-Version: 1.20 — Milestone 6 part D1's questions settled: the scheduled run's key, time and dependence on the automatic trigger; part D3 measures the 30-day daily load
+Version: 1.21 — NFR-PERF-4 (Stage B) with its rule set before measuring; part D2's questions settled; part D3 split into D3a and D3b
 Status: Approved for implementation
 Related system: `ledger-payment-core` (double-entry ledger, Java 21 / Spring Boot / PostgreSQL / Kafka)
 
@@ -229,6 +229,24 @@ IDs are stable. Tests and commit bodies reference them.
   those figures were left in an uncommitted draft, so Milestone 5.1 measures again. No constraint, foreign
   key, index or trigger is dropped or disabled to meet the target, and no durability setting changes.
 - **NFR-PERF-3** Kafka projection throughput target: ≥ 5,000 events/s sustained in the local setup.
+- **NFR-PERF-4** (v1.21) A bank source's run at NFR-PERF-2's scale under `-Xmx512m`, timed from the
+  RUNNING row to the COMPLETED return, in two shapes: **file**, a bank file's three-day range; and
+  **daily**, the scheduled run's 30-day range (§5.3). The data: 1,000,000 PSP lines over two settling
+  PSP sources in batches of about 100 lines, the bank lines that pay, conflict with, duplicate or name
+  no batch, and a match history of 180 days of earlier B1 matches, so the late-line check and the
+  statistics read a long history. **Target: ≤ 180 s for each shape**, NFR-PERF-2's bound, since a bank
+  run follows each PSP file as a Stage A run does. The rule is fixed here, before the measurements it
+  applies to, as NFR-PERF-2's was in v1.12:
+  1. Measure each shape three times under §4.6's measurement conditions, with the per-statement
+     breakdown and an `EXPLAIN (ANALYZE, BUFFERS)` of the slowest statement.
+  2. If all three runs of both shapes are ≤ 180 s, nothing is added: no index, no pre-filter.
+  3. Otherwise, try in this order, each measured three times and kept only if its median is at least
+     10 % below the form before it: the late-line pre-filter of §8.2 (matched batches with a line dated
+     in the range); then an index on `psp_lines (source_code, batch_id)`; then one on
+     `bank_lines (source_code, extracted_batch_id)`. If the kept form is still above 180 s, the
+     figures go back to the owner; the target is not raised without them.
+  No constraint, foreign key, index or trigger is dropped or disabled to meet it, and no durability
+  setting changes.
 - **NFR-REL-1** A crash during ingestion leaves no partial data; re-uploading the same file succeeds.
 - **NFR-REL-2** A crash during a run leaves no partial matches; re-running is safe.
 - **NFR-REL-3** Replaying the entire ledger topic from offset 0 produces no new rows.
@@ -1074,16 +1092,21 @@ write technique is settled here first.
   as the bank run does (FR-MAT-8, v1.19); `StageASettings` validates itself again, with
   `SourceDefinition` naming the source; the late-line break names the matched bank line. Its open
   questions are settled in v1.20.
-- Part D2: INV-1/INV-4/INV-5 property tests extended to Stage B; the end-to-end three-way test.
-- Part D3: Stage B measured at NFR-PERF-2's scale, with a long match history, under the measurement
-  conditions of §4.6, and recorded, including a bank run over the scheduled run's 30-day range, the
-  daily load (v1.20); the late-line pre-filter or an index on the batch-id columns
-  added only if the measurement shows it is needed (v1.17).
+- Part D2 (done): INV-1/INV-4/INV-5 property tests extended to Stage B; the end-to-end three-way
+  test; the Maven Wrapper's jar and distribution pinned by SHA-256. Its open questions are settled in
+  v1.21.
+- Part D3a: CI deletes `~/.m2/wrapper` before each build, so the Maven distribution is always
+  downloaded and checked against `distributionSha256Sum` whatever `setup-java` caches (v1.21);
+  `ci/check-rules.sh` fails when a tracked file is stored with CRLF in the index against
+  `.gitattributes`, as Dependabot's PR #22 stored `mvnw.cmd` (v1.21); the NFR-PERF-4 performance test
+  and its data generator, with one diagnostic run (not official).
+- Part D3b: NFR-PERF-4's official runs under §4.6's measurement conditions, and its rule applied.
 - Exit: Stage B rules and details of §8.2 covered, each by name; INV-1/INV-4/INV-5 extended to Stage B
   (shuffled inputs, fixed seed); a test pins the SQL batch id equal to `BatchKey.itemId()`; the
   scheduled run opens a grace break no file-triggered run would; break proofs for every new
   mechanism; an end-to-end three-way test with a small hand-written dataset (ledger events, a PSP
-  file, a bank file) whose expected results are asserted item by item.
+  file, a bank file) whose expected results are asserted item by item; NFR-PERF-4 measured and its
+  rule applied.
 
 ### Milestone 7 — Break management and API
 - Break transitions endpoint, resolution codes, reopen-as-new-break, match
