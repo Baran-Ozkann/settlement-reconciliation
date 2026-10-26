@@ -1,10 +1,128 @@
 # Progress
 
-**Current milestone:** 6 — Stage B matching. Part D2 pinned the Maven Wrapper's downloads by
-checksum, extended the INV-1, INV-4 and INV-5 property tests to Stage B, and added the end-to-end
-three-way test, closing every exit criterion of §14 but Stage B's measurement, which is part D3's
-**Branch:** `milestone-6/part-d2` (one branch per session from Milestone 5.1 on)
-**Last updated:** 2026-10-24
+**Current milestone:** 6 — Stage B matching. Part D3a added two build guards and the NFR-PERF-4
+test, with one diagnostic run; every exit criterion of §14 is met but NFR-PERF-4's official runs and
+its rule, which are part D3b's
+**Branch:** `milestone-6/part-d3a` (one branch per session from Milestone 5.1 on)
+**Last updated:** 2026-10-26
+
+## Milestone 6 part D3a — build guards, and the NFR-PERF-4 test
+
+No production code changed. CI now always downloads and checks the Maven distribution, the rules
+check refuses a file stored with CRLF in the index, and a performance test measures a bank run at
+NFR-PERF-2's scale in NFR-PERF-4's two shapes. Its one run here is **diagnostic, not official**.
+
+### What was built, by commit
+
+- `c4e29aa` removes `~/.m2/wrapper` before the build in CI's `verify` (skipped with the build on a
+  Markdown-only commit) and `reverse-order` jobs. The wrapper checks `distributionSha256Sum` only when
+  it downloads, and `setup-java`'s Maven cache may restore a distribution, which would then be used
+  unchecked (v1.21, part D2 question 1).
+- `c91651e` makes `ci/check-rules.sh` fail, naming each file, when `git ls-files --eol` reports
+  `i/crlf` or `i/mixed` for a tracked file. A failing git or an empty listing is a guard error, not a
+  clean result (v1.21, part D2 question 2).
+- `855d736` adds the NFR-PERF-4 test: `StageBFileRunPerformanceTest` and
+  `StageBDailyRunPerformanceTest` over the abstract `StageBPerformanceTest`, `-Pperf` only. Each class
+  loads the same data into a throwaway database of its own, so both shapes start from one state.
+
+### NFR-PERF-4's data
+
+Made by PostgreSQL from item numbers in a fixed order. Only the 10,000 batches' definitions are made
+in Java. The run's day is Monday 2026-10-12 (`FixedRunClock`). The batch grace is 2 business days, so
+the first day within grace is Thursday 2026-10-08.
+
+- **PSP lines:** 1,000,000 in 10,000 batches of 100 lines, odd batches in `PSP_STAGE_B_PERF_ALPHA`, even
+  in `PSP_STAGE_B_PERF_BETA`, both settling to `BANK_STAGE_B_PERF`. The batches are spread over the 180
+  days 2026-04-16 to 2026-10-12, 55 or 56 a day, all in TRY.
+- **History:** the 8,278 batches dated before the daily range (2026-09-12) each have one bank line of
+  their day's sum and an active B1 match (8,278 matches, 16,556 match items, 8,278 match events), made
+  by one completed run per history day (149 runs). 165 of them (one in 50) have their last line dated
+  in the daily range, after their match.
+- **Daily range** (2026-09-12 to 2026-10-12, 1,722 batches), by batch number modulo 20:
+
+  | Kind | Bank lines | Batches (daily / file range) |
+  |---|---|---|
+  | paid exactly (B1) | 1 of the batch's sum | 1,292 / 122 |
+  | paid one kuruş more (B2) | 1 | 172 / 17 |
+  | paid twice (`DUPLICATE_LINE`) | 2 of the batch's sum | 86 / 9 |
+  | not paid (`MISSING_SETTLEMENT` past grace) | none | 172 / 18, of which 144 / 0 past grace |
+
+  Each day also has a fee with no batch id and a line naming a batch no PSP sent: 62 lines, both
+  `UNEXPECTED_BANK_LINE`. That makes 9,976 bank lines in all.
+- **In each run's scope** (every count asserted by the test):
+  - daily: 1,698 bank lines (1,292 matched, 406 broken), and 1,887 batches (1,457 matched, the late
+    ones included; 402 broken; 28 pending);
+  - file (2026-10-10 to 2026-10-12): 163 bank lines (122 matched, 41 broken), and 183 batches (139
+    matched, 26 broken, 18 pending).
+
+The test asserts that each run completes and checks every match by rule and every break by side and
+type that it made. It also checks its statistics, per status in count and sum, against the generated
+data. It asserts **no time bound**: that is part D3b's, once the rule is applied.
+
+### Diagnostic run (not official)
+
+**Diagnostic only.** The machine conditions of §4.6 were not controlled or recorded (power source,
+power mode, other applications, Docker). Nothing here is compared with the 180 s target.
+
+- **When and what:** 2026-10-26, at `855d736`, on the Windows 11 developer machine (12 processors seen
+  by the JVM, Java 21.0.12, Docker Desktop), with `-Xmx512m`.
+- **Command:** `.\mvnw.cmd -q -B test -Pperf "-Dtest=StageB*RunPerformanceTest"`, one invocation,
+  both classes; the daily one ran first. Exit 0, 2 tests, 0 failures, 260 s wall time.
+
+| Shape | Run | RUNNING row | B1 | bank line breaks | changed batches | MATCHED_LATE | grace breaks | statistics | commit | Peak heap |
+|---|---|---|---|---|---|---|---|---|---|---|
+| daily (31 days) | **4.789 s** | 0.011 | 0.633 | 0.354 | 0.956 | 0.007 | 0.889 | 1.923 | 0.003 | 50 MB |
+| file (3 days) | **3.638 s** | 0.007 | 0.417 | 0.396 | 0.763 | 0.004 | 0.695 | 1.349 | 0.002 | 53 MB |
+
+Times are in seconds; peak heap is out of 512 MB. "Statistics" is `itemTotals` plus the two ledger
+counts.
+
+The data's load is timed apart from the runs: 104.3 s (daily) and 101.6 s (file), from the first
+insert to the end of `VACUUM (ANALYZE)`. The EXPLAIN rehearsal before each timed run, with its
+vacuum, took 5.2 s and 4.3 s. Each class took 127.1 s and 120.2 s by Surefire's report, its Spring
+context and its PostgreSQL container's start included.
+
+**The slowest statement** was `ITEM_TOTALS` (`itemTotals`) in both shapes: 1.910 s and 1.342 s.
+Under EXPLAIN (ANALYZE, BUFFERS) it took 2,125 ms (daily), of which 1,494 ms is the batch scope
+recount (`scope_batch` joined back to `psp_lines` for `count(DISTINCT …)`):
+
+- that join's inner side, the grouping of every PSP line by batch, runs once in each of three
+  parallel processes, so all 1,000,000 lines are scanned three times;
+- the join's 188,700 rows are then sorted, spilling to disk (about 20 MB over three processes);
+- JIT compilation took 0.29 s of the plan.
+
+Every other statement but MATCHED_LATE scans all 1,000,000 PSP lines once (about 0.2 s each). No
+index serves `psp_lines (source_code, batch_id)`, the second candidate of NFR-PERF-4's step 3.
+
+### Break proofs
+
+Recorded in `docs/break-proofs.md`, section "Milestone 6, part D3a". The CRLF check was run in a
+scratch clone with throwaway commits:
+
+- a CRLF file and a mixed file make it fail, naming both;
+- `mvnw.cmd` stored with CRLF, as in PR #22, makes it fail;
+- renormalizing makes it pass;
+- a failing git and an empty listing are guard errors.
+
+CI's removal of the cached distribution can run only on GitHub's runners, so it is recorded as
+unproven locally.
+
+### Verification (part D3a)
+
+At `855d736`, the last code commit, in the default order:
+
+- `.\mvnw.cmd -q -B clean verify`: exit 0 in 281 s, 1246 tests, 0 failures, 0 errors, 3 skipped (the
+  symbolic-link cases in `UploadDirectoryTest`, by assumption on Windows). The new performance classes
+  are not among them: the default build excludes the `perf` group. JaCoCo line coverage: domain 99.4 %
+  (721/725), overall 97.0 % (2731/2816), unchanged.
+- `& "C:\Program Files\Git\bin\bash.exe" ci/check-rules.sh`: exit 0.
+- Each commit's workflow was parsed with SnakeYAML and its scripts checked with `bash -n`. 19 steps
+  (17 before), 14 `run` scripts, all pass, and no expression appears inside a `run`.
+
+### Part D2's pull request CI
+
+The owner reports that part D2's pull request (#23, `milestone-6/part-d2`) was all green on the first
+attempt: every per-commit job and the reverse-order run passed.
 
 ## Milestone 6 part D2 — Stage B's property tests and the end-to-end three-way test
 

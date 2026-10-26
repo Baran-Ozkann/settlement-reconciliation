@@ -186,6 +186,43 @@ require "Ryuk disabled for the test run" \
 deny "docker compose port published beyond loopback" \
   -E '^\s*-\s*"?(\$\{[A-Z_]+(:-[0-9]+)?\}|[0-9]+):' docker-compose.yml
 
+# .gitattributes stores every text file with LF in the index; eol=crlf changes only the checkout.
+# A file committed with CRLF in the index shows modified on every checkout, as Dependabot's PR #22
+# stored mvnw.cmd (design doc v1.21). git ls-files reports the index's line endings, so this reads
+# what is committed, not the working tree. A file with both endings (i/mixed) holds CRLF lines too.
+# An empty listing is a failure to look, not a clean result: every checkout tracks files.
+deny_crlf_in_index() {
+  local desc="tracked file stored with CRLF in the index (git add --renormalize fixes it)"
+  local listing out status
+  listing=$(git ls-files --eol 2>&1)
+  status=$?
+  if [ $status -ne 0 ]; then
+    guard_error "listing the tracked files' line endings" "$status" "$listing"
+    return
+  fi
+  if [ -z "$listing" ]; then
+    guard_error "listing the tracked files' line endings" "empty listing" "git ls-files --eol listed no file"
+    return
+  fi
+  out=$(printf '%s\n' "$listing" | grep -E '^i/(crlf|mixed)[[:space:]]')
+  status=$?
+  case $status in
+    0)
+      echo "RULE VIOLATION: $desc"
+      # The path follows the only tab; every offending file is named.
+      printf '%s\n' "$out" | cut -f2-
+      violation=1
+      ;;
+    1)
+      : # no match, clean
+      ;;
+    *)
+      guard_error "$desc" "$status" "$out"
+      ;;
+  esac
+}
+deny_crlf_in_index
+
 deny "AI tool reference in committed content" \
   -iE 'co-authored-by|generated (by|with)|anthropic|copilot|chatgpt' \
   --exclude='reference-ledger-tdd.md' \

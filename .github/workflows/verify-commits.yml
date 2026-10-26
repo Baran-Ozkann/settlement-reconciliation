@@ -211,6 +211,16 @@ jobs:
           java-version: '21'
           cache: maven
 
+      # The wrapper checks distributionSha256Sum only when it downloads the distribution, and a cache
+      # restored by the step above may already hold one in ~/.m2/wrapper, which would then be used
+      # unchecked. Removing it makes every build download Maven and check it (design doc v1.21). The
+      # same step is in reverse-order.
+      - name: Remove any cached Maven distribution
+        if: steps.kind.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/.m2/wrapper"
+
       # Unit, contract, architecture and Testcontainers integration tests in one run of this commit's
       # own build. The exit status is kept rather than ending the job, so the summary below is written
       # for a failing commit too; the last step fails the job.
@@ -336,6 +346,12 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+
+      # Why: the same step in verify. This job always builds.
+      - name: Remove any cached Maven distribution
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/.m2/wrapper"
 
       - name: Build and test in reverse alphabetical class order
         run: ./mvnw -B clean verify -Dsurefire.runOrder=reversealphabetical
